@@ -1,0 +1,139 @@
+# Engineering conventions
+
+This document captures the decisions that are architectural or behavioral and
+therefore cannot be preserved by copying files alone. They come from the useful
+common ground between Ferric and Plateau, including the defects found while
+auditing them.
+
+## Product and DSP boundaries
+
+There is one DSP core. It includes no CLAP, VST3, AU, Pugl or NanoVG header and
+can be rendered in a command-line test without loading a plugin. The format
+layer translates host events into its parameter struct; it does not contain a
+second version of the algorithm. All formats therefore differ only in wrapper
+behavior, never in sound.
+
+The core owns signal history, delay lines, smoothers and preallocated scratch.
+`prepare()` establishes sample-rate/channel topology and allocation. `setParams()`
+updates bounded targets. `process()` performs steady-state audio work. Reset and
+re-prepare preserve the current parameter state and do not revive constructor
+defaults.
+
+Prefer physically or mathematically meaningful state to arbitrary waveshaping
+when a product claims modeling behavior. Listening decides taste, while tests
+establish factual properties: latency, bandwidth, aliasing, ceiling behavior,
+block invariance, nulls, channel behavior, CPU cost and denormal safety. Loudness
+comparisons should attenuate the louder render rather than boost the quieter one.
+
+## Real-time discipline
+
+The normal audio callback is bounded and allocation-free. No mutex, system call,
+file/network I/O, exception, logging, GUI access or unbounded retry belongs in
+it. Vectors and delay buffers are sized during activation. Avoid saying the
+whole path is allocation-free unless an allocator-instrumented test proves it;
+source inspection only proves the narrower hot paths inspected.
+
+Move expensive parameter-derived geometry, filters or kernels to a controlled
+update cadence and coalesce dense automation where the tiny control latency is
+acceptable. The final value must remain exact. Do not apply this pattern to an
+audible sample-accurate control without measuring the consequence.
+
+Treat silence, NaN/Inf input, denormals, sample rates from 44.1 through 192 kHz,
+host blocks from 1 through thousands of samples, float/double buffers, mono,
+stereo and declared multichannel layouts as normal test cases.
+
+## Parameters, automation, state and latency
+
+`StarterParams.h` is the source of truth for IDs, names, modules, ranges,
+defaults, units, flags, normalization and text. Generic host UI, custom editor,
+automation and state must agree with it.
+
+CLAP events are applied at their sample offsets by splitting only at actual
+events. UI changes are mirrored locally for immediate feedback and sent through
+a bounded queue to the host. The stopped-transport path uses `params.flush`;
+playback also drains edits in `process`.
+
+State is a versioned list of parameter ID/value pairs. New parameters append;
+missing old values receive current defaults. Unknown retired/future IDs are
+ignored safely. Never serialize a C++ struct or depend on display order.
+
+Latency is a protocol contract, not only an integer. If a future parameter can
+change it, document whether it requires stopped transport or plugin restart and
+implement the correct CLAP callback/restart behavior. Keep bypass latency
+compensated when the processor itself has latency, unless the product explicitly
+chooses a different host-visible behavior.
+
+## Telemetry and metering
+
+The UI never reads mutable DSP objects directly. Audio publishes small plain
+frames through a two-index SPSC ring; GUI consumes them. Producer and consumer
+each own one index, publication uses release/acquire ordering, and a full queue
+drops the newest frame instead of overwriting a slot being copied.
+
+Editor visibility gates telemetry work. The starter uses 250 Hz observations,
+which is responsive without turning one host block into hundreds of tiny DSP
+calls. Choose a rate from what the display needs, not from the audio sample rate.
+Where possible capture a raw meaningful state at control rate rather than run a
+second expensive model solely for the graph.
+
+Meter labels must match the measured point and definition: sample peak is not
+true peak, saturation including bias is not audio-only saturation, linear tape
+loss is not complete nonlinear response, and gain reduction must not include
+unrelated linear filtering. If no honest compact label exists, explain it in
+the UI help/documentation.
+
+## GUI architecture
+
+The panel renders in one fixed design coordinate space. `Window` performs the
+single transform to the host view and handles backing scale. Resize keeps aspect
+ratio and varies scale rather than stretching layout. Editor hit testing uses
+the same design geometry and works before the first expose event.
+
+Pugl owns the embedded native view and events. NanoVG owns product drawing.
+macOS uses the local Pugl Metal backend plus `nanovg_metal`; Linux and Windows
+use NanoVG GL2. A separate GL editor is built on macOS only for framebuffer
+capture by the preview tool. Renderer code remains behind a tiny C seam so the
+product UI and input logic contain no renderer-specific branches.
+
+The host timer drives roughly 60 Hz ticks. clap-wrapper's AUv2 timer registration
+can refuse the CLAP timer request, so the realized native view starts a Pugl
+fallback timer on macOS/Windows. X11 Pugl timers themselves require `puglUpdate`,
+so a Linux host that refuses CLAP timer support remains an explicit integration
+assumption to test in real Linux hosts.
+
+Repaint only when telemetry, automation, input, resize or an unfinished timed
+animation makes the image dirty. Peak holds, decays and other motion use actual
+elapsed time between draws, so CLAP/VST3/AU hosts with different refresh rates
+show the same dynamics.
+
+Keyboard support is part of every product: Tab/Shift-Tab focus, arrows, Shift
+fine adjustment, Home/End bounds, Enter/Space toggles, visible focus, and focus
+loss that closes every gesture. Text contrast must remain legible without
+flattening the product's visual identity.
+
+## Platform and release priorities
+
+CLAP on Linux is first-class. macOS must build CLAP, VST3 and AUv2 from the same
+implementation; Windows builds CLAP and VST3. Platform support is evidence-based:
+a successful macOS compiler run does not verify X11 embedding, Windows GL symbol
+loading or behavior in a Linux DAW.
+
+Keep the dependency commits pinned. Revalidate all formats before updating any
+SDK or GUI dependency. In particular, do not alter the opposite Objective-C
+ownership requirements: Pugl/custom Pugl Metal/backend glue are non-ARC, while
+`nanovg_mtl.m` is ARC.
+
+An install target moves every built format together so a DAW cannot accidentally
+load a stale CLAP beside a new AU. Ordinary builds never write into user plugin
+folders. Release validation should include clean configure/build, unit tests,
+CLAP bundle probe, resize/reopen/hot teardown/fallback timer, format scanners,
+DAW automation/state recall, sample-rate matrix and a final artifact identity
+check.
+
+## Visual identity
+
+Infrastructure should remain consistent; products should not all look like a
+reskinned template. Keep the interaction language, typography quality, spacing
+discipline, accessibility and renderer architecture, while deriving layout,
+telemetry centerpiece, palette and visual metaphor from what the DSP actually
+does. A graph earns its space only when it explains meaningful product state.

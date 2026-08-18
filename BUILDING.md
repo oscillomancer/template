@@ -1,0 +1,107 @@
+# Building and validation
+
+Dependencies are fetched at configure time and pinned in CMake. No git
+submodules are required.
+
+## macOS
+
+Requirements: Xcode command-line tools, CMake 3.21 or newer, Git, and a current
+macOS SDK.
+
+```sh
+cmake --preset release
+cmake --build --preset release -j
+ctest --preset release
+```
+
+Outputs are under `build-cmake/starter_assets/`. macOS builds `Starter.clap`,
+`Starter.vst3` and `Starter.component`. Metal is the default. To exercise the
+OpenGL plugin path explicitly:
+
+```sh
+cmake -S . -B build-gl -DCMAKE_BUILD_TYPE=Release -DSTARTER_METAL=OFF
+cmake --build build-gl -j
+```
+
+Install all formats together only when wanted:
+
+```sh
+cmake --build build-cmake --target starter-install
+```
+
+## Linux
+
+Typical Debian/Ubuntu build dependencies:
+
+```sh
+sudo apt install build-essential cmake git libx11-dev libxcursor-dev \
+  libxrandr-dev libxext-dev libgl1-mesa-dev
+cmake --preset release
+cmake --build --preset release -j
+ctest --preset release
+```
+
+Linux builds CLAP and VST3 using X11/OpenGL. Test the resulting bundle in real
+Linux hosts before claiming support; macOS does not validate X11 embedding or
+host timer behavior.
+
+## Windows
+
+Use a current Visual Studio developer prompt with CMake and Git available:
+
+```powershell
+cmake --preset release
+cmake --build --preset release --config Release
+ctest --preset release -C Release
+```
+
+The custom NanoVG backend dynamically loads post-OpenGL-1.1 entry points on
+Windows. Validate the CLAP and VST3 editors in real hosts on an actual Windows
+machine.
+
+## Host-level CLAP probe
+
+On macOS, load the binary inside the built bundle:
+
+```sh
+./build-cmake/starter-clap-probe \
+  ./build-cmake/starter_assets/Starter.clap/Contents/MacOS/Starter \
+  200 --mono --resize --reopen
+```
+
+Useful stress switches are `--no-host-timer`, `--destroy-hot`, `--drop-parent`,
+`--mono`, `--resize`, and `--reopen`. The exact shared-library path inside CLAP
+bundles differs on Linux and Windows.
+
+## Offline audio rendering
+
+```sh
+./build-cmake/starter-cli input.wav output.wav \
+  --input-gain 3 --output-gain -1 --block 257
+```
+
+The offline renderer calls the same SDK-free processor as every plugin format.
+Vary `--block` when investigating history or boundary bugs. Extend this tool
+with product-specific traces and independent measurements rather than making a
+DAW meter the only source of truth.
+
+## Visual preview
+
+```sh
+./build-cmake/starter-gui-preview 180 starter-gui.ppm
+```
+
+This renders the real editor and is useful for layout review. It is not a host
+integration test and cannot validate wrapper timers, parent views or automation.
+
+## Pre-release matrix
+
+- clean Release and Debug configure/build;
+- core and editor tests;
+- CLAP probe with host timer and fallback timer;
+- mono/stereo, float/double, block sizes 1/64/512/4096;
+- 44.1/48/88.2/96/176.4/192 kHz where supported;
+- editor resize, close/reopen, hot teardown and state recall;
+- CLAP/VST3 scanners on Linux, macOS and Windows; `auval` on macOS;
+- automation while playing and stopped;
+- plugin IDs, vendor, version, description, AU codes and license notices.

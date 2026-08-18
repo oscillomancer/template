@@ -1,0 +1,8 @@
+/build-cmake/
+/build-debug/
+/build-*/
+/.cache/
+/.DS_Store
+*.ppm
+probe-window.png
+CMakeUserPresets.json
