@@ -26,6 +26,15 @@ Replace identifiers deliberately, respecting case:
 - `StCo` — AU manufacturer code.
 - `StFx` — AU subtype code.
 
+On macOS the `Starter` form additionally namespaces the Objective-C classes that
+pugl and nanovg_metal define (`STARTER_OBJC_CLASSES` in `plugin/gui/CMakeLists.txt`,
+applied as `-DPuglWrapperView=Starter_PuglWrapperView` and so on). Objective-C has
+one flat, process-wide class namespace, so two products that both keep the
+placeholder prefix will collide in any host that loads them together: the runtime
+warns, keeps whichever loaded first, and every subsequent lookup by name resolves
+to that image. Renaming `Starter` throughout carries this along automatically --
+just do not special-case those lines out.
+
 Also rename `StarterParams.h`, the entry/wrapper source files and the DSP include
 directory. Update the state magic in `starter_clap.cpp` to a new four-byte tag;
 once a product ships, retain its old versions and migration rules.

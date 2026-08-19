@@ -52,6 +52,37 @@ endif()
 # Built as a function so a Metal build can also produce a GL variant for the
 # offline preview tool. The two differ only on Apple; elsewhere GL is the only
 # backend and the second target is never created.
+# Objective-C has one flat, process-wide class namespace, and every plugin
+# built from this template statically links the same pugl and nanovg_metal
+# sources. Two of them in one host therefore register the same class names
+# twice. The runtime keeps whichever image loaded first, prints "Class X is
+# implemented in both ... mysterious crashes", and from then on every lookup by
+# name resolves to that first image regardless of which plugin is asking.
+#
+# Direct references still bind within each image, so identical copies happen to
+# behave. What this guards against is the version skew that follows: the moment
+# one product's pugl or nanovg_metal moves and an ivar layout changes, two
+# same-named classes with different instance sizes coexist and any name-based
+# lookup reads at the wrong offsets. It also guards against third-party plugins,
+# which vendor pugl just as widely and are outside our control.
+#
+# Class names are ordinary identifiers in the source, so renaming them at the
+# preprocessor gives this product its own corner of the namespace and leaves the
+# vendored sources untouched.
+set(STARTER_OBJC_CLASSES
+    PuglWindow PuglWindowDelegate PuglWrapperView
+    PuglStubView PuglOpenGLView PuglMetalView PuglCairoView PuglVulkanView
+    MNVGbuffers MNVGcontext MNVGtexture)
+
+function(starter_namespace_objc target)
+    if (NOT APPLE)
+        return()
+    endif()
+    foreach(cls ${STARTER_OBJC_CLASSES})
+        target_compile_definitions(${target} PRIVATE "${cls}=Starter_${cls}")
+    endforeach()
+endfunction()
+
 function(starter_pugl_target name useMetal)
     set(src ${pugl_SOURCE_DIR}/src/common.c ${pugl_SOURCE_DIR}/src/internal.c)
 
@@ -75,6 +106,8 @@ function(starter_pugl_target name useMetal)
     set_target_properties(${name} PROPERTIES C_STANDARD 99 POSITION_INDEPENDENT_CODE ON)
     # PUGL_STATIC stops the headers asking for dllimport on Windows.
     target_compile_definitions(${name} PUBLIC PUGL_STATIC)
+
+    starter_namespace_objc(${name})
 
     if (APPLE)
         # pugl manages its own retain/release; ARC must stay off, and our Metal
@@ -146,6 +179,7 @@ endif()
 
 if (STARTER_METAL)
     add_library(starter-nanovg-mtl STATIC ${nanovg_metal_SOURCE_DIR}/src/nanovg_mtl.m)
+    starter_namespace_objc(starter-nanovg-mtl)
     target_include_directories(starter-nanovg-mtl PUBLIC ${nanovg_metal_SOURCE_DIR}/src)
     target_link_libraries(starter-nanovg-mtl PUBLIC
         starter-nanovg "-framework Metal" "-framework QuartzCore")
