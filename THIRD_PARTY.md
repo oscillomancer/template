@@ -12,8 +12,17 @@ source and include the applicable licenses with distributed binaries/source.
   maintained wjakob fork pinned in `plugin/gui/CMakeLists.txt`.
 - IBM Plex fonts — SIL Open Font License 1.1. The complete notice is shipped at
   `plugin/gui/fonts/LICENSE-IBM-Plex.txt`.
-- VST3 SDK and Apple AudioUnit SDK are fetched by clap-wrapper and retain their
-  own upstream terms. Review current distribution obligations before release.
+- gulrak/filesystem — MIT, copyright Steffen Schümann; pulled in transitively by
+  clap-wrapper.
+- VST3 SDK — MIT, copyright Steinberg Media Technologies GmbH. Note that this
+  applies to v3.8.0, the version clap-wrapper pins here; earlier releases were
+  dual GPLv3/proprietary, which is a materially different obligation. The
+  separately-licensed vstgui4 component is not used.
+- Apple AudioUnit SDK — Apache-2.0, copyright Apple Inc.
+
+The full text of every license above is reproduced in `NOTICES.txt`, which is
+what satisfies the attribution requirement — naming a license is not the same as
+including it. Regenerate that file whenever a pinned dependency moves.
 
 This summary is not a substitute for the full upstream license texts or legal
 review. The template itself intentionally does not select a product license.
