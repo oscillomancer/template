@@ -181,6 +181,51 @@ if (STARTER_BUILD_PLUGIN)
         AUV2_SUBTYPE_CODE "StFx"
         AUV2_INSTRUMENT_TYPE "aufx")
 
+    # Attribution has to travel with the binary. NOTICES.txt sitting in the
+    # repository does nothing for someone who is handed only a bundle, and every
+    # dependency in the stack requires its notice to accompany what is
+    # distributed. The install target copies whole bundles, so anything placed
+    # inside one is carried along for free.
+    #
+    # This is a target of its own rather than a POST_BUILD on each plugin: a
+    # POST_BUILD only runs when its target relinks, so editing NOTICES.txt alone
+    # would leave the bundles holding the previous copy. That is the same
+    # staleness that already bit the AU's Info.plist, and a custom target is
+    # always out of date, so the copy is reconsidered every build.
+    set(starter_notices "${CMAKE_CURRENT_SOURCE_DIR}/NOTICES.txt")
+
+    add_custom_target(starter-notices ALL
+        COMMENT "Staging third-party notices with the built plugins")
+
+    if (APPLE)
+        # All three macOS formats are bundles, so the notices go where a bundle
+        # is supposed to keep them. The AU is absent here on purpose: its copy
+        # has to precede the code signature, so it lives in the prepare step
+        # below instead.
+        foreach(spec "starter-plugin_clap:Starter.clap" "starter-plugin_vst3:Starter.vst3")
+            string(REPLACE ":" ";" parts ${spec})
+            list(GET parts 0 target)
+            list(GET parts 1 bundle)
+            if (TARGET ${target})
+                add_dependencies(starter-notices ${target})
+                add_custom_command(TARGET starter-notices POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "${CMAKE_BINARY_DIR}/starter_assets/${bundle}/Contents/Resources"
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${starter_notices}"
+                        "${CMAKE_BINARY_DIR}/starter_assets/${bundle}/Contents/Resources/NOTICES.txt"
+                    VERBATIM)
+            endif()
+        endforeach()
+    else()
+        # A CLAP on Linux or Windows is a single shared library with no bundle
+        # to put anything in, so the file lands beside the built artifacts and
+        # it is the release archive that has to carry it.
+        add_custom_command(TARGET starter-notices POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${starter_notices}"
+                "${CMAKE_BINARY_DIR}/starter_assets/NOTICES.txt"
+            VERBATIM)
+    endif()
+
     if (APPLE AND TARGET starter-plugin_auv2)
         # CMake regenerates the bundle's generic Info.plist at configure time,
         # while clap-wrapper writes the real AudioComponents plist from its
@@ -191,6 +236,12 @@ if (STARTER_BUILD_PLUGIN)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_BINARY_DIR}/starter-plugin_auv2-build-helper-output/auv2_Info.plist"
                 "${CMAKE_BINARY_DIR}/starter_assets/Starter.component/Contents/Info.plist"
+            # Before the signature, not after: adding a file to a signed bundle
+            # invalidates it, and the auv2-bundle test checks the signature.
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${CMAKE_BINARY_DIR}/starter_assets/Starter.component/Contents/Resources"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${starter_notices}"
+                "${CMAKE_BINARY_DIR}/starter_assets/Starter.component/Contents/Resources/NOTICES.txt"
             COMMAND /usr/bin/codesign --force --deep --sign - --timestamp=none
                 "${CMAKE_BINARY_DIR}/starter_assets/Starter.component"
             DEPENDS starter-plugin_auv2

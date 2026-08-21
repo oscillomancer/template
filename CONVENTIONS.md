@@ -144,6 +144,18 @@ implementation; Windows builds CLAP and VST3. Platform support is evidence-based
 a successful macOS compiler run does not verify X11 embedding, Windows GL symbol
 loading or behavior in a Linux DAW.
 
+Every dependency in the stack requires its notice to accompany what is
+distributed, and that obligation is independent of the licence the product
+itself ships under. `NOTICES.txt` reproduces those texts in full -- naming a
+licence is not the same as including it -- and the build stages it into each
+bundle's `Contents/Resources`, because a recipient handed only a binary never
+sees the repository. That copy is an always-out-of-date target rather than a
+`POST_BUILD` on the plugin targets: a `POST_BUILD` runs only when its target
+relinks, so editing the notices alone would ship the previous copy. The AU's
+copy is made inside the prepare step instead, before the code signature, since
+adding a file to a signed bundle invalidates it. Regenerate `NOTICES.txt`
+whenever a pinned dependency moves.
+
 Keep the dependency commits pinned -- an explicit commit, never a branch name:
 a moving `GIT_TAG main` means two checkouts of the same source can produce
 different plugins. Revalidate all formats before updating any SDK or GUI
