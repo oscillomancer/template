@@ -66,16 +66,11 @@ struct Plug
     int preparedChannels = 0;
     bool active = false;
     std::atomic<int> latencyAtomic{0};
-    // Scratch for process(): sized to the connected bus, so >8-channel buses
-    // work and no fixed cap silently drops channels. Sized only by sizeScratch()
-    // below -- never from the hot path.
+    // Scratch for process(), sized once from the selected mono/stereo port
+    // configuration during activation and never resized on the audio thread.
     std::vector<float*> ptrs32;
     std::vector<double*> ptrs64;
 
-    // Both channel-count decisions route through here, so process() can index
-    // the vectors without resizing and never allocates in the steady state.
-    // Called from activate(), and from the channel-mismatch branch of process()
-    // which is already re-preparing the processor and allocating anyway.
     void sizeScratch(int nch) {
         ptrs32.resize((size_t)nch);
         ptrs64.resize((size_t)nch);
@@ -105,6 +100,7 @@ struct Plug
 #if STARTER_WITH_GUI
     starter::gui::TelemetryRing telemetryRing;
     starter::gui::ParamRing editRing;
+    starter::gui::GestureRing deferredGestureRing;
     starter::gui::Gui* gui = nullptr;
     // Whether anything is looking. Read by the audio thread every chunk, so it
     // is atomic; written by the main thread from the editor's lifecycle.
@@ -112,6 +108,14 @@ struct Plug
     bool guiTimerRunning = false;
     clap_id guiTimerId = 0;
     int telemetryChunk = 192;
+    // Main-thread gesture producer state.
+    bool gestureQueued = false;
+    uint32_t gestureId = 0;
+    // Audio-thread retry state for one compact deferred gesture.
+    bool deferredGestureActive = false;
+    starter::gui::ParamGesture deferredGesture{};
+    int deferredGesturePhase = 0;
+    std::atomic<bool> editRetryOnMain{false};
 
     void captureTelemetry() {
         const starter::Processor::Telemetry t = processor.takeTelemetry();
@@ -160,7 +164,13 @@ struct Plug
 
     double paramValue(uint32_t id) const override { return pv(id); }
 
-    void beginEdit(uint32_t id) override { queueEdit({id, pv(id), starter::gui::ParamEdit::kBegin}); }
+    void beginEdit(uint32_t id) override {
+        gestureId = id;
+        gestureQueued = !deferredGestureRing.pending() && editRing.free() >= 3 &&
+                        queueEdit({id, pv(id), starter::gui::ParamEdit::kBegin}, true);
+        if (!gestureQueued && hostParams && hostParams->request_flush)
+            hostParams->request_flush(host);
+    }
 
     void setParam(uint32_t id, double v) override {
         const ParamDef* d = findParam(id);
@@ -169,10 +179,21 @@ struct Plug
         // Apply locally at once so the knob tracks the mouse even with the
         // transport stopped; the ring is what tells the host.
         sv(id, c);
-        queueEdit({id, c, starter::gui::ParamEdit::kValue});
+        if (gestureQueued && id == gestureId)
+            queueEdit({id, c, starter::gui::ParamEdit::kValue});
     }
 
-    void endEdit(uint32_t id) override { queueEdit({id, pv(id), starter::gui::ParamEdit::kEnd}); }
+    void endEdit(uint32_t id) override {
+        if (gestureQueued && id == gestureId) {
+            // The begin reserved these two slots for the exact final value/end.
+            queueEdit({id, pv(id), starter::gui::ParamEdit::kValue}, true);
+            queueEdit({id, pv(id), starter::gui::ParamEdit::kEnd}, true);
+        } else {
+            deferredGestureRing.push({id, pv(id)});
+            if (hostParams && hostParams->request_flush) hostParams->request_flush(host);
+        }
+        gestureQueued = false;
+    }
 
     starter::gui::TelemetryRing& telemetry() override { return telemetryRing; }
 
@@ -180,11 +201,14 @@ struct Plug
 
     double sampleRate() const override { return srAtomic.load(std::memory_order_relaxed); }
 
-    void queueEdit(const starter::gui::ParamEdit& e) {
-        editRing.push(e);
+    bool queueEdit(const starter::gui::ParamEdit& e, bool boundary = false) {
+        if (!boundary && e.kind == starter::gui::ParamEdit::kValue && editRing.free() <= 2)
+            return false;
+        if (!editRing.push(e)) return false;
         // Without this the host never sees the edit while the transport is
         // stopped, because process() is not being called.
         if (hostParams && hostParams->request_flush) hostParams->request_flush(host);
+        return true;
     }
 #endif
 };
@@ -204,11 +228,48 @@ bool CLAP_ABI apGet(const clap_plugin_t* p, uint32_t index, bool isInput,
     info->flags = CLAP_AUDIO_PORT_IS_MAIN;
     info->channel_count = (uint32_t)self->channels;
     info->port_type = self->channels == 2 ? CLAP_PORT_STEREO : CLAP_PORT_MONO;
-    info->in_place_pair = 0;
+    // The input may be processed in place against output 0; the output itself
+    // has no further pair and must not claim one.
+    info->in_place_pair = isInput ? 0 : CLAP_INVALID_ID;
     return true;
 }
 
 const clap_plugin_audio_ports_t kAudioPorts = {apCount, apGet};
+
+// ---------------------------------------------------------------------------
+// Extension: audio port configurations
+// ---------------------------------------------------------------------------
+
+constexpr clap_id kMonoConfig = 1;
+constexpr clap_id kStereoConfig = 2;
+
+uint32_t CLAP_ABI apcCount(const clap_plugin_t*) { return 2; }
+
+bool CLAP_ABI apcGet(const clap_plugin_t*, uint32_t index, clap_audio_ports_config_t* config) {
+    if (index >= 2) return false;
+    std::memset(config, 0, sizeof(*config));
+    const bool stereo = index == 1;
+    config->id = stereo ? kStereoConfig : kMonoConfig;
+    std::snprintf(config->name, sizeof(config->name), "%s", stereo ? "Stereo" : "Mono");
+    config->input_port_count = 1;
+    config->output_port_count = 1;
+    config->has_main_input = true;
+    config->main_input_channel_count = stereo ? 2u : 1u;
+    config->main_input_port_type = stereo ? CLAP_PORT_STEREO : CLAP_PORT_MONO;
+    config->has_main_output = true;
+    config->main_output_channel_count = stereo ? 2u : 1u;
+    config->main_output_port_type = stereo ? CLAP_PORT_STEREO : CLAP_PORT_MONO;
+    return true;
+}
+
+bool CLAP_ABI apcSelect(const clap_plugin_t* p, clap_id id) {
+    auto* self = (Plug*)p->plugin_data;
+    if (self->active || (id != kMonoConfig && id != kStereoConfig)) return false;
+    self->channels = id == kMonoConfig ? 1 : 2;
+    return true;
+}
+
+const clap_plugin_audio_ports_config_t kAudioPortsConfig = {apcCount, apcGet, apcSelect};
 
 // ---------------------------------------------------------------------------
 // Extension: latency
@@ -280,39 +341,72 @@ void applyEvent(Plug* self, const clap_event_header_t* h) {
 // Returns true if any edit was drained, which means values[] has moved and the
 // processor has to be told. Forgetting that is silent and total: the knob tracks
 // the mouse, the host records the automation, and the audio never changes.
+#if STARTER_WITH_GUI
+bool emitEdit(const clap_output_events_t* out, const starter::gui::ParamEdit& e, uint32_t frame) {
+    if (!out) return false;
+    if (e.kind == starter::gui::ParamEdit::kValue) {
+        clap_event_param_value_t ev{};
+        ev.header.size = sizeof(ev);
+        ev.header.time = frame;
+        ev.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        ev.header.type = CLAP_EVENT_PARAM_VALUE;
+        ev.header.flags = 0;
+        ev.param_id = e.id;
+        ev.cookie = nullptr;
+        ev.note_id = -1;
+        ev.port_index = -1;
+        ev.channel = -1;
+        ev.key = -1;
+        ev.value = e.value;
+        return out->try_push(out, &ev.header);
+    }
+    clap_event_param_gesture_t ev{};
+    ev.header.size = sizeof(ev);
+    ev.header.time = frame;
+    ev.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    ev.header.type = e.kind == starter::gui::ParamEdit::kBegin
+                         ? CLAP_EVENT_PARAM_GESTURE_BEGIN
+                         : CLAP_EVENT_PARAM_GESTURE_END;
+    ev.header.flags = 0;
+    ev.param_id = e.id;
+    return out->try_push(out, &ev.header);
+}
+
+void requestEditRetry(Plug* self) {
+    // request_flush is explicitly forbidden on the audio thread. Hop through
+    // the CLAP main-thread callback instead; request_callback itself is
+    // thread-safe and coalescing avoids callback storms under host backpressure.
+    if (!self->editRetryOnMain.exchange(true, std::memory_order_acq_rel) &&
+        self->host && self->host->request_callback)
+        self->host->request_callback(self->host);
+}
+#endif
+
 bool drainEdits(Plug* self, const clap_output_events_t* out, uint32_t frame) {
 #if STARTER_WITH_GUI
     bool any = false;
     starter::gui::ParamEdit e;
-    while (self->editRing.pop(e)) {
+    while (self->editRing.peek(e)) {
         any = true;
-        if (!out) continue;
-        if (e.kind == starter::gui::ParamEdit::kValue) {
-            clap_event_param_value_t ev{};
-            ev.header.size = sizeof(ev);
-            ev.header.time = frame;
-            ev.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            ev.header.type = CLAP_EVENT_PARAM_VALUE;
-            ev.header.flags = 0;
-            ev.param_id = e.id;
-            ev.cookie = nullptr;
-            ev.note_id = -1;
-            ev.port_index = -1;
-            ev.channel = -1;
-            ev.key = -1;
-            ev.value = e.value;
-            out->try_push(out, &ev.header);
-        } else {
-            clap_event_param_gesture_t ev{};
-            ev.header.size = sizeof(ev);
-            ev.header.time = frame;
-            ev.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            ev.header.type = e.kind == starter::gui::ParamEdit::kBegin
-                                 ? CLAP_EVENT_PARAM_GESTURE_BEGIN
-                                 : CLAP_EVENT_PARAM_GESTURE_END;
-            ev.header.flags = 0;
-            ev.param_id = e.id;
-            out->try_push(out, &ev.header);
+        if (!emitEdit(out, e, frame)) { requestEditRetry(self); return any; }
+        self->editRing.consume();
+    }
+
+    for (;;) {
+        if (!self->deferredGestureActive) {
+            if (!self->deferredGestureRing.peek(self->deferredGesture)) break;
+            self->deferredGestureActive = true;
+            self->deferredGesturePhase = 0;
+        }
+        const auto kind = self->deferredGesturePhase == 0 ? starter::gui::ParamEdit::kBegin
+                         : self->deferredGesturePhase == 1 ? starter::gui::ParamEdit::kValue
+                                                         : starter::gui::ParamEdit::kEnd;
+        e = {self->deferredGesture.id, self->deferredGesture.value, kind};
+        any = true;
+        if (!emitEdit(out, e, frame)) { requestEditRetry(self); return any; }
+        if (++self->deferredGesturePhase == 3) {
+            self->deferredGestureRing.consume();
+            self->deferredGestureActive = false;
         }
     }
     return any;
@@ -494,17 +588,11 @@ clap_process_status CLAP_ABI plugProcess(const clap_plugin_t* p, const clap_proc
     const uint32_t nch = std::min(ib.channel_count, ob.channel_count);
     if (nch == 0) return CLAP_PROCESS_CONTINUE;
 
-    // The connected bus is not necessarily what the processor was prepared for:
-    // hosts can put a stereo plugin on a mono track, or ask for more channels
-    // than activate() saw. Re-prepare rather than read past the buffer list.
-    // This is the audio thread, so only re-prepare on an actual mismatch.
-    if ((int)nch != self->preparedChannels) {
-        self->channels = (int)nch;
-        self->processor.prepare(self->srAtomic.load(std::memory_order_relaxed), (int)nch);
-        self->preparedChannels = (int)nch;
-        self->sizeScratch((int)nch);
-        self->pushParams();
-    }
+    // Port selection happens while deactivated and the channel count is fixed
+    // by activate(). A mismatch is a host-contract violation, not permission to
+    // allocate or rebuild topology on the realtime thread.
+    if ((int)nch != self->preparedChannels)
+        return CLAP_PROCESS_ERROR;
 
     // Editor edits are drained before any audio is rendered, so a knob move
     // takes effect in the block you hear it in rather than the next one.
@@ -694,11 +782,24 @@ void CLAP_ABI guiSuggestTitle(const clap_plugin_t*, const char*) {}
 
 bool CLAP_ABI guiShow(const clap_plugin_t* p) {
     auto* self = (Plug*)p->plugin_data;
-    return self->gui && self->gui->show();
+    if (!self->gui) return false;
+    starter::gui::Frame stale;
+    while (self->telemetryRing.pop(stale)) {}
+    const bool shown = self->gui->show();
+    self->telemetryOn.store(shown, std::memory_order_relaxed);
+    if (shown) {
+        startGuiTimer(self);
+        if (!self->guiTimerRunning)
+            self->gui->startFallbackTimer((double)kGuiTimerMs / 1000.0);
+    }
+    return shown;
 }
 
 bool CLAP_ABI guiHide(const clap_plugin_t* p) {
     auto* self = (Plug*)p->plugin_data;
+    self->telemetryOn.store(false, std::memory_order_relaxed);
+    stopGuiTimer(self);
+    if (self->gui) self->gui->stopFallbackTimer();
     return self->gui && self->gui->hide();
 }
 
@@ -718,6 +819,7 @@ const clap_plugin_timer_support_t kTimerSupport = {plugOnGuiTimer};
 
 const void* CLAP_ABI plugGetExtension(const clap_plugin_t*, const char* id) {
     if (!std::strcmp(id, CLAP_EXT_AUDIO_PORTS)) return &kAudioPorts;
+    if (!std::strcmp(id, CLAP_EXT_AUDIO_PORTS_CONFIG)) return &kAudioPortsConfig;
     if (!std::strcmp(id, CLAP_EXT_PARAMS)) return &kParamsExt;
     if (!std::strcmp(id, CLAP_EXT_STATE)) return &kState;
     if (!std::strcmp(id, CLAP_EXT_LATENCY)) return &kLatency;
@@ -728,7 +830,16 @@ const void* CLAP_ABI plugGetExtension(const clap_plugin_t*, const char* id) {
     return nullptr;
 }
 
-void CLAP_ABI plugOnMainThread(const clap_plugin_t*) {}
+void CLAP_ABI plugOnMainThread(const clap_plugin_t* p) {
+#if STARTER_WITH_GUI
+    auto* self = (Plug*)p->plugin_data;
+    if (self->editRetryOnMain.exchange(false, std::memory_order_acq_rel) &&
+        self->hostParams && self->hostParams->request_flush)
+        self->hostParams->request_flush(self->host);
+#else
+    (void)p;
+#endif
+}
 
 // ---------------------------------------------------------------------------
 // Factory

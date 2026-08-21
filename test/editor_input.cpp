@@ -31,6 +31,13 @@ int main() {
     int a = 0, b = 0;
     check(ring.pop(a) && ring.pop(b) && a == 10 && b == 20,
           "full SPSC ring never overwrites unread storage");
+    Ring<int, 1> retry;
+    retry.push(7); retry.push(8);
+    int held = 0, heldAgain = 0;
+    check(retry.peek(held) && retry.peek(heldAgain) && held == 7 && heldAgain == 7,
+          "peek retains an event until the consumer accepts it");
+    retry.consume();
+    check(retry.pop(held) && held == 8, "consume advances a retained event exactly once");
 
     Host host;
     Editor editor(host);

@@ -8,6 +8,10 @@ submodules are required.
 Requirements: Xcode command-line tools, CMake 3.21 or newer, Git, and a current
 macOS SDK.
 
+Release artifacts target macOS 11.0 by default, the first release that can run
+their arm64 slice. Override `CMAKE_OSX_DEPLOYMENT_TARGET` explicitly when
+building a separate Intel-only compatibility artifact.
+
 ```sh
 cmake --preset release
 cmake --build --preset release -j
@@ -28,6 +32,10 @@ Install all formats together only when wanted:
 ```sh
 cmake --build build-cmake --target starter-install
 ```
+
+`starter-install` prepares and ad-hoc signs the AUv2 bundle before copying it,
+so the installed component carries clap-wrapper's AudioComponents plist and a
+valid signature rather than CMake's generic plist.
 
 ## Linux
 
@@ -70,8 +78,21 @@ On macOS, load the binary inside the built bundle:
 ```
 
 Useful stress switches are `--no-host-timer`, `--destroy-hot`, `--drop-parent`,
-`--mono`, `--resize`, and `--reopen`. The exact shared-library path inside CLAP
+`--mono`, `--resize`, and `--reopen`. `--mono` selects the declared mono port
+configuration before activation. The exact shared-library path inside CLAP
 bundles differs on Linux and Windows.
+
+## Sanitizers and warnings
+
+Starter-owned core/plugin targets build with `-Wall -Wextra -Wpedantic` (or
+`/W4`) by default. The tools-only sanitizer preset keeps SDK and renderer code
+out of the run and exercises the allocation-free DSP core under ASan and UBSan:
+
+```sh
+cmake --preset sanitizers
+cmake --build --preset sanitizers -j
+ctest --preset sanitizers
+```
 
 ## Offline audio rendering
 

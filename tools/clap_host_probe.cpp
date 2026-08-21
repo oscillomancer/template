@@ -44,6 +44,8 @@ struct Probe {
     int onTimerCalls = 0;
     int flushRequests = 0;
     int outEventsSeen = 0;
+    int callbacksRequested = 0;
+    bool callbackPending = false;
     bool guiCreated = false;
     bool guiParented = false;
     bool guiShown = false;
@@ -92,7 +94,10 @@ const void* CLAP_ABI hostGetExtension(const clap_host_t*, const char* id) {
 }
 void CLAP_ABI hostRequestRestart(const clap_host_t*) {}
 void CLAP_ABI hostRequestProcess(const clap_host_t*) {}
-void CLAP_ABI hostRequestCallback(const clap_host_t*) {}
+void CLAP_ABI hostRequestCallback(const clap_host_t*) {
+    ++g.callbacksRequested;
+    g.callbackPending = true;
+}
 
 // --- event plumbing --------------------------------------------------------
 
@@ -112,8 +117,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     int blocks = 400;
-    // Hosts do put a stereo plugin on a mono track, and the plugin re-prepares
-    // on the audio thread when that happens. --mono runs that branch.
+    // --mono selects the plugin's declared mono port configuration before
+    // activation, the same contract a real host follows.
     uint32_t channels = 2;
     // AU hosts open and close the editor repeatedly, and the AU wrapper owns
     // the Cocoa view rather than the plugin. --reopen runs the editor through a
@@ -165,6 +170,12 @@ int main(int argc, char** argv) {
         return 1;
     }
     constexpr uint32_t kBlock = 512;
+    auto* portConfigs = (const clap_plugin_audio_ports_config_t*)g.plugin->get_extension(
+        g.plugin, CLAP_EXT_AUDIO_PORTS_CONFIG);
+    if (!portConfigs || !portConfigs->select(g.plugin, channels == 1 ? 1 : 2)) {
+        std::fprintf(stderr, "audio port configuration unavailable\n");
+        return 1;
+    }
     g.plugin->activate(g.plugin, 48000.0, kBlock, kBlock);
     g.plugin->start_processing(g.plugin);
 
@@ -327,6 +338,10 @@ int main(int argc, char** argv) {
             r[i] = s;
         }
         g.plugin->process(g.plugin, &proc);
+        if (g.callbackPending) {
+            g.callbackPending = false;
+            g.plugin->on_main_thread(g.plugin);
+        }
         proc.steady_time += kBlock;
 
         if (timer && g.timerId != CLAP_INVALID_ID) {
@@ -392,6 +407,7 @@ int main(int argc, char** argv) {
     std::printf("output meter      : %.3f dBFS  %s\n", outputLevel, meterStatus);
     std::printf("flush requests    : %d\n", g.flushRequests);
     std::printf("out events        : %d\n", g.outEventsSeen);
+    std::printf("main callbacks    : %d\n", g.callbacksRequested);
 
     if (gui) gui->destroy(g.plugin);
     g.plugin->stop_processing(g.plugin);

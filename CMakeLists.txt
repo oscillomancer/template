@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.21)
 
+# This must be set before project(): project() creates the cache entry, and a
+# later non-FORCE assignment leaves it empty. macOS 11 is the first release that
+# can run the arm64 slice produced by current Apple Silicon builds.
+if (NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET OR CMAKE_OSX_DEPLOYMENT_TARGET STREQUAL "")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version" FORCE)
+endif()
+
 if (APPLE)
     project(starter VERSION 0.1.0 LANGUAGES C CXX OBJC OBJCXX)
 else()
@@ -8,7 +15,6 @@ endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
 if (UNIX AND NOT APPLE)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
@@ -16,6 +22,29 @@ endif()
 option(STARTER_BUILD_PLUGIN "Build CLAP / VST3 / AUv2 formats" ON)
 option(STARTER_BUILD_TOOLS "Build tests and integration probes" ON)
 option(STARTER_BUILD_GUI "Build the Pugl + NanoVG editor" ON)
+option(STARTER_STRICT_WARNINGS "Enable warnings on starter-owned code" ON)
+option(STARTER_SANITIZERS "Enable AddressSanitizer and UBSan on starter-owned code" OFF)
+
+function(starter_target_defaults target)
+    if (STARTER_STRICT_WARNINGS)
+        if (MSVC)
+            target_compile_options(${target} PRIVATE /W4)
+        else()
+            target_compile_options(${target} PRIVATE
+                -Wall -Wextra -Wpedantic)
+            if (APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+                # NanoVG's public color type intentionally uses this C extension.
+                target_compile_options(${target} PRIVATE
+                    -Wno-gnu-anonymous-struct -Wno-nested-anon-types)
+            endif()
+        endif()
+    endif()
+    if (STARTER_SANITIZERS AND NOT MSVC)
+        target_compile_options(${target} PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+    endif()
+endfunction()
 
 add_library(starter-dsp INTERFACE)
 target_include_directories(starter-dsp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/dsp/include)
@@ -24,8 +53,10 @@ if (STARTER_BUILD_TOOLS)
     enable_testing()
     add_executable(starter-cli tools/starter_cli.cpp)
     target_link_libraries(starter-cli PRIVATE starter-dsp)
+    starter_target_defaults(starter-cli)
     add_executable(starter-test test/test_core.cpp)
     target_link_libraries(starter-test PRIVATE starter-dsp)
+    starter_target_defaults(starter-test)
     add_test(NAME core COMMAND starter-test)
 endif()
 
@@ -50,8 +81,41 @@ if (STARTER_BUILD_PLUGIN)
         GIT_SHALLOW OFF)
     FetchContent_MakeAvailable(clap-wrapper)
 
+    # clap-wrapper 0.16.0 keeps only the final VST3 automation point in each
+    # parameter queue. Apply the small upstreamable fix after population; the
+    # reverse check makes repeated configure runs idempotent.
+    set(starter_wrapper_vst3_patch ${CMAKE_CURRENT_SOURCE_DIR}/cmake/clap-wrapper-vst3-all-points.patch)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} apply --check ${starter_wrapper_vst3_patch}
+        WORKING_DIRECTORY ${clap-wrapper_SOURCE_DIR}
+        RESULT_VARIABLE wrapper_patch_applicable
+        OUTPUT_QUIET ERROR_QUIET)
+    if (wrapper_patch_applicable EQUAL 0)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} apply ${starter_wrapper_vst3_patch}
+            WORKING_DIRECTORY ${clap-wrapper_SOURCE_DIR}
+            COMMAND_ERROR_IS_FATAL ANY)
+    else()
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} apply --reverse --check ${starter_wrapper_vst3_patch}
+            WORKING_DIRECTORY ${clap-wrapper_SOURCE_DIR}
+            RESULT_VARIABLE wrapper_patch_present
+            OUTPUT_QUIET ERROR_QUIET)
+        if (NOT wrapper_patch_present EQUAL 0)
+            message(FATAL_ERROR "clap-wrapper VST3 automation patch no longer applies")
+        endif()
+    endif()
+
+    if (STARTER_BUILD_TOOLS)
+        add_test(NAME wrapper-automation
+            COMMAND ${CMAKE_COMMAND}
+                -DWRAPPER_FILE=${clap-wrapper_SOURCE_DIR}/src/detail/vst3/process.cpp
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/test/check_wrapper_automation.cmake)
+    endif()
+
     add_library(starter-impl STATIC plugin/src/starter_clap.cpp)
     target_link_libraries(starter-impl PUBLIC clap clap-wrapper-extensions starter-dsp)
+    starter_target_defaults(starter-impl)
 
     if (STARTER_BUILD_GUI)
         add_subdirectory(plugin/gui)
@@ -102,6 +166,29 @@ if (STARTER_BUILD_PLUGIN)
         AUV2_SUBTYPE_CODE "StFx"
         AUV2_INSTRUMENT_TYPE "aufx")
 
+    if (APPLE AND TARGET starter-plugin_auv2)
+        # CMake regenerates the bundle's generic Info.plist at configure time,
+        # while clap-wrapper writes the real AudioComponents plist from its
+        # build helper. If the AU binary is already up to date, its post-build
+        # copy does not rerun and an install can otherwise copy an unregistered
+        # component. Prepare it unconditionally before aggregate builds/install.
+        add_custom_target(starter-prepare-auv2 ALL
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_BINARY_DIR}/starter-plugin_auv2-build-helper-output/auv2_Info.plist"
+                "${CMAKE_BINARY_DIR}/starter_assets/Starter.component/Contents/Info.plist"
+            COMMAND /usr/bin/codesign --force --deep --sign - --timestamp=none
+                "${CMAKE_BINARY_DIR}/starter_assets/Starter.component"
+            DEPENDS starter-plugin_auv2
+            COMMENT "Preparing and ad-hoc signing Starter.component"
+            VERBATIM)
+        if (STARTER_BUILD_TOOLS)
+            add_test(NAME auv2-bundle
+                COMMAND ${CMAKE_COMMAND}
+                    -DBUNDLE=${CMAKE_BINARY_DIR}/starter_assets/Starter.component
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/test/check_auv2_bundle.cmake)
+        endif()
+    endif()
+
     if (APPLE)
         set(STARTER_INSTALL_SPECS
             "Starter.clap:$ENV{HOME}/Library/Audio/Plug-Ins/CLAP:starter-plugin_clap"
@@ -115,6 +202,9 @@ if (STARTER_BUILD_PLUGIN)
 
     if (STARTER_INSTALL_SPECS)
         add_custom_target(starter-install COMMENT "Installing every Starter format")
+        if (TARGET starter-prepare-auv2)
+            add_dependencies(starter-install starter-prepare-auv2)
+        endif()
         foreach(spec ${STARTER_INSTALL_SPECS})
             string(REPLACE ":" ";" parts ${spec})
             list(GET parts 0 bundle)

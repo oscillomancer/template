@@ -13,14 +13,28 @@
       "displayName": "Debug",
       "binaryDir": "${sourceDir}/build-debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "sanitizers",
+      "displayName": "ASan + UBSan",
+      "binaryDir": "${sourceDir}/build-sanitizers",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "STARTER_BUILD_PLUGIN": "OFF",
+        "STARTER_BUILD_GUI": "OFF",
+        "STARTER_BUILD_TOOLS": "ON",
+        "STARTER_SANITIZERS": "ON"
+      }
     }
   ],
   "buildPresets": [
     { "name": "release", "configurePreset": "release" },
-    { "name": "debug", "configurePreset": "debug" }
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "sanitizers", "configurePreset": "sanitizers" }
   ],
   "testPresets": [
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
-    { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } }
+    { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
+    { "name": "sanitizers", "configurePreset": "sanitizers", "output": { "outputOnFailure": true } }
   ]
 }
