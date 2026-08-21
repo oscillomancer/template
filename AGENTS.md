@@ -20,10 +20,19 @@ before implementation.
    a feature is transparent, analog, true peak, alias free, lossless or exact.
 6. Adapt the editor to the product rather than merely relabeling this generic
    panel. Preserve keyboard access, balanced gestures, contrast, resize/DPI
-   behavior, frame-rate-independent time and renderer isolation.
-7. Run core tests, editor tests, the real CLAP host probe and format validators.
-   A preview image proves drawing only. Never describe Linux/Windows host
-   behavior as verified from a macOS build.
+   behavior, frame-rate-independent time and renderer isolation. Rewrite
+   `Theme.h`; keep `Widgets.h` shared, and keep the token contract in
+   `CONVENTIONS.md` satisfied.
+7. Run all five ctest tests, the sanitizer preset, the real CLAP host probe and
+   the format validators. `host-smoke` needs its compile definitions set for
+   the new product before it means anything -- see `CUSTOMIZE.md`. A preview
+   image proves drawing only. Never describe Linux/Windows host behavior as
+   verified from a macOS build.
+8. When a fix belongs to the shared stack rather than the product, make it in
+   the template and carry it to every product that has the same file. The
+   shared GUI stack is kept byte-identical apart from the product namespace,
+   and drifting copies are how the same bug gets fixed three times and missed
+   the fourth.
 
 ## Non-negotiable implementation rules
 

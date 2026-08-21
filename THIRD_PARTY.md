@@ -17,3 +17,7 @@ source and include the applicable licenses with distributed binaries/source.
 
 This summary is not a substitute for the full upstream license texts or legal
 review. The template itself intentionally does not select a product license.
+
+Note that the vendored Objective-C sources (Pugl and nanovg_metal) are compiled
+with their class names prefixed per product -- see `plugin/gui/CMakeLists.txt`.
+The sources themselves are unmodified.

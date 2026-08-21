@@ -82,6 +82,25 @@ Useful stress switches are `--no-host-timer`, `--destroy-hot`, `--drop-parent`,
 configuration before activation. The exact shared-library path inside CLAP
 bundles differs on Linux and Windows.
 
+## Tests
+
+`ctest` runs five, and all five are expected to pass before a release:
+
+- `core` -- the DSP, offline and SDK-free.
+- `editor-input` -- gesture and keyboard handling, without a renderer.
+- `wrapper-automation` -- that the clap-wrapper VST3 automation patch is still
+  applied to the pinned checkout.
+- `auv2-bundle` -- that the built AU carries clap-wrapper's AudioComponents
+  plist and a valid signature, rather than CMake's generic plist that no host
+  reads (macOS only).
+- `host-smoke` -- a real host that loads the built `.clap` and drives it the
+  way a DAW does: parameters, processing, latency and restart behaviour, state
+  round trip, teardown. It is the same file in every product; what differs is
+  passed in as compile definitions from CMake. A new product must set
+  `HOST_SMOKE_PLUGIN_ID` and `HOST_SMOKE_PLAIN_PARAM` (the display name of a
+  parameter that must never change latency), plus `HOST_SMOKE_LATENCY_PARAM`
+  if it has a parameter that does.
+
 ## Sanitizers and warnings
 
 Starter-owned core/plugin targets build with `-Wall -Wextra -Wpedantic` (or
@@ -118,7 +137,7 @@ integration test and cannot validate wrapper timers, parent views or automation.
 ## Pre-release matrix
 
 - clean Release and Debug configure/build;
-- core and editor tests;
+- all five ctest tests, plus the sanitizer preset;
 - CLAP probe with host timer and fallback timer;
 - mono/stereo, float/double, block sizes 1/64/512/4096;
 - 44.1/48/88.2/96/176.4/192 kHz where supported;

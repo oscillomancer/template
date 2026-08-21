@@ -66,6 +66,9 @@ endif()
 # lookup reads at the wrong offsets. It also guards against third-party plugins,
 # which vendor pugl just as widely and are outside our control.
 #
+# This is not hypothetical: auval reported the collision the moment one product
+# from this lineage was installed alongside another.
+#
 # Class names are ordinary identifiers in the source, so renaming them at the
 # preprocessor gives this product its own corner of the namespace and leaves the
 # vendored sources untouched.

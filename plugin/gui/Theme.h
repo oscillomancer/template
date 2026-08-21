@@ -34,6 +34,13 @@ constexpr unsigned dim = 0x747D89;
 constexpr unsigned accent = 0xE8944A;
 constexpr unsigned cool = 0x71A7A0;
 constexpr unsigned alert = 0xC25B4E;
+
+// Knob tones. The shared knob widget in Widgets.h requires all four, so every
+// product's palette has to define them -- see CONVENTIONS.md.
+constexpr unsigned knobWell = 0x1B222C;  // the track the value arc runs in
+constexpr unsigned knobTop = 0x232B36;   // body gradient, lit edge
+constexpr unsigned knobBot = 0x141A22;   // body gradient, shadowed edge
+constexpr unsigned knobRim = 0x2E3744;   // the ring around the body
 }
 
 constexpr const char* kFontMono = "starter-mono";

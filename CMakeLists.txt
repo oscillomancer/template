@@ -144,6 +144,21 @@ if (STARTER_BUILD_PLUGIN)
         target_compile_definitions(starter-impl PUBLIC STARTER_WITH_GUI=0)
     endif()
 
+    # A tiny host that dlopens the built .clap and drives it the way a DAW
+    # would. The CLAP is what clap-wrapper turns into the VST3 and the AU, so
+    # exercising it covers the shared code path in all three formats.
+    if (STARTER_BUILD_TOOLS)
+        add_executable(starter-host-smoke test/host_smoke.cpp)
+        target_link_libraries(starter-host-smoke PRIVATE clap)
+        target_compile_definitions(starter-host-smoke PRIVATE
+            HOST_SMOKE_PLUGIN_ID="com.example.starter"
+            HOST_SMOKE_PLAIN_PARAM="Input Gain")
+        starter_target_defaults(starter-host-smoke)
+        add_test(NAME host-smoke
+                 COMMAND starter-host-smoke
+                         ${CMAKE_BINARY_DIR}/starter_assets/Starter.clap)
+    endif()
+
     set(STARTER_FORMATS CLAP VST3)
     if (APPLE)
         list(APPEND STARTER_FORMATS AUV2)

@@ -2,8 +2,13 @@
 
 This document captures the decisions that are architectural or behavioral and
 therefore cannot be preserved by copying files alone. They come from the useful
-common ground between Ferric and Plateau, including the defects found while
-auditing them.
+common ground between the products built from this lineage -- Ferric, Plateau
+and Vellum -- including the defects found while auditing them.
+
+Where a rule below names a specific file or symbol, that name is the contract:
+the shared GUI stack is kept byte-identical across products apart from the
+product's own namespace, so a fix made in one place is expected to be made in
+all of them.
 
 ## Product and DSP boundaries
 
@@ -53,6 +58,16 @@ events. UI changes are mirrored locally for immediate feedback and sent through
 a bounded queue to the host. The stopped-transport path uses `params.flush`;
 playback also drains edits in `process`.
 
+A gesture is all-or-nothing. A BEGIN is only published when the queue can also
+hold the exact final value and the END, because a BEGIN whose END is dropped
+leaves the host with a parameter latched in "being edited" forever. When the
+queue cannot promise those slots -- a stopped or unresponsive host is the usual
+cause -- the whole gesture is deferred as one `ParamGesture` and expanded into
+its three events later. Intermediate values may be coalesced away; the final
+value may not. Drain with `peek`/`consume` so an event the host's output queue
+refuses is retried rather than lost, and ask for the retry through
+`host->request_callback` -- `request_flush` is forbidden on the audio thread.
+
 State is a versioned list of parameter ID/value pairs. New parameters append;
 missing old values receive current defaults. Unknown retired/future IDs are
 ignored safely. Never serialize a C++ struct or depend on display order.
@@ -70,9 +85,20 @@ frames through a two-index SPSC ring; GUI consumes them. Producer and consumer
 each own one index, publication uses release/acquire ordering, and a full queue
 drops the newest frame instead of overwriting a slot being copied.
 
+`Ring<T, CapacityPow2>` in `Telemetry.h` is that queue, and it is shared code:
+identical in every product apart from the namespace. Its API is the contract --
+`push` returns false rather than overwriting, `peek`/`consume` let a consumer
+look at an item before committing to having taken it, and `free()` reports the
+remaining slots. `pop` is `peek` plus `consume`. The payload structs around it
+(`Frame`, and whatever else a product needs) are the part that is product
+specific; the queue itself is not.
+
 Editor visibility gates telemetry work. The starter uses 250 Hz observations,
 which is responsive without turning one host block into hundreds of tiny DSP
-calls. Choose a rate from what the display needs, not from the audio sample rate.
+calls. Choose a rate from what the display needs, not from the audio sample
+rate: Vellum runs at 1 kHz because a two-millisecond drum attack has to be
+several columns wide, and that is a display requirement rather than a default
+to copy.
 Where possible capture a raw meaningful state at control rate rather than run a
 second expensive model solely for the graph.
 
@@ -118,10 +144,40 @@ implementation; Windows builds CLAP and VST3. Platform support is evidence-based
 a successful macOS compiler run does not verify X11 embedding, Windows GL symbol
 loading or behavior in a Linux DAW.
 
-Keep the dependency commits pinned. Revalidate all formats before updating any
-SDK or GUI dependency. In particular, do not alter the opposite Objective-C
-ownership requirements: Pugl/custom Pugl Metal/backend glue are non-ARC, while
+Keep the dependency commits pinned -- an explicit commit, never a branch name:
+a moving `GIT_TAG main` means two checkouts of the same source can produce
+different plugins. Revalidate all formats before updating any SDK or GUI
+dependency. In particular, do not alter the opposite Objective-C ownership
+requirements: Pugl/custom Pugl Metal/backend glue are non-ARC, while
 `nanovg_mtl.m` is ARC.
+
+`CMAKE_OSX_DEPLOYMENT_TARGET` is set before `project()` and with `FORCE`.
+`project()` creates the cache entry, so a later plain `set()` is silently
+ignored and the deployment target is whatever the toolchain defaulted to.
+
+Warnings are on for the project's own targets and off for vendored ones, via
+the `<product>_target_defaults()` helper: third-party sources are not ours to
+keep clean, and burying our own warnings in theirs is how they get ignored.
+The same helper carries the ASan/UBSan switch, exposed as the `sanitizers`
+preset in `CMakePresets.json`.
+
+Every product runs the same five tests, and adding a product means making all
+five pass rather than dropping one:
+
+- `core` -- the DSP, offline and SDK-free.
+- `editor-input` -- gesture and keyboard handling, no renderer.
+- `wrapper-automation` -- that the clap-wrapper VST3 automation patch is still
+  applied to the pinned checkout.
+- `auv2-bundle` -- that the built AU has clap-wrapper's AudioComponents plist
+  and a valid signature, rather than CMake's generic one that no host reads.
+- `host-smoke` -- a real host that dlopens the built `.clap` and drives the
+  full lifecycle: parameters, processing, latency/restart behaviour, state
+  round trip, teardown. It is one file, identical in every product; what
+  differs is supplied as compile definitions (`HOST_SMOKE_PLUGIN_ID`,
+  `HOST_SMOKE_PLAIN_PARAM`, and optionally `HOST_SMOKE_LATENCY_PARAM`). It
+  detects an instrument from a declared audio-input count of zero rather than
+  being told, and it searches a latency-changing parameter's range for a
+  setting that actually moves latency rather than assuming which one does.
 
 An install target moves every built format together so a DAW cannot accidentally
 load a stale CLAP beside a new AU. Ordinary builds never write into user plugin
@@ -137,3 +193,26 @@ reskinned template. Keep the interaction language, typography quality, spacing
 discipline, accessibility and renderer architecture, while deriving layout,
 telemetry centerpiece, palette and visual metaphor from what the DSP actually
 does. A graph earns its space only when it explains meaningful product state.
+
+`Widgets.h` is shared and identical across products; `Theme.h` is where a
+product differs. That split only works if the widgets can name what they draw
+with, so every `Theme.h` defines the same token set and gives it product
+values:
+
+- `ink`, `panel`, `well`, `edge`, `edgeHi` -- ground, raised surface, recess,
+  hairline, lit hairline. `well` is the inside of a recess, not a knob.
+- `dim`, `dust`, `bone` -- text, from least to most emphasis.
+- `accent`, `alert` -- the product's accent, and over/error.
+- `knobWell`, `knobTop`, `knobBot`, `knobRim` -- the knob's track, its body
+  gradient, and its ring. Required because the shared knob needs four tones and
+  must not hard-code them; a knob drawn in another product's greys is the bug
+  this prevents.
+
+A product adds whatever else it needs beyond that. Fonts are registered under
+product-prefixed names (`<product>-mono`, `-mono-medium`, `-display`), and
+`rgb`/`rgba` are the same two helpers everywhere -- `rgba` keeps alpha as a
+float rather than rounding it through a byte.
+
+Do not re-implement a shared widget locally to get a variant of it. Add the
+variant to the shared widget instead: the pill's `showDot` argument exists
+because two products had each grown their own copy of a dotless pill.

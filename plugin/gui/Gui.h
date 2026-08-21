@@ -36,12 +36,10 @@ class Gui {
     // fits inside what it offered -- fitting inside matters, because a host
     // that gets back something larger than it asked for will clip.
     bool adjustSize(uint32_t& w, uint32_t& h) const {
-        constexpr double aspect = (double)kDesignW / (double)kDesignH;
         double scale = std::min((double)w / kDesignW, (double)h / kDesignH);
         scale = std::max(0.6, std::min(2.0, scale));
         w = (uint32_t)std::lround(kDesignW * scale);
         h = (uint32_t)std::lround(kDesignH * scale);
-        (void)aspect;
         return true;
     }
 
@@ -57,6 +55,11 @@ class Gui {
         window_.onFrameDrawn = fn;
         window_.frameUser = user;
     }
+
+    // Also only the preview tool: it drives a click so that transient panel
+    // states -- an open menu, a held control -- can be reviewed offline
+    // instead of only ever capturing the panel at rest.
+    void previewClick(float x, float y) { editor_.onMouseDown(x, y); }
 
     static void resizeHints(bool& horizontal, bool& vertical, bool& preserveAspect,
                             uint32_t& aw, uint32_t& ah) {

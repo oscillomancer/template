@@ -173,6 +173,9 @@ void Window::tick() {
     if (!world_) return;
     // Zero timeout: the host owns the loop, and blocking here would stall it.
     puglUpdate(world_, 0.0);
+    // Repaint only when something on screen could have changed: telemetry
+    // pending, a gesture in flight, or a parameter moved. An idle editor —
+    // bypassed plugin, transport stopped, nobody touching it — costs nothing.
     if (view_ && realized_ && editor_.wantsRepaint()) puglObscureView(view_);
 }
 
@@ -190,6 +193,7 @@ void Window::handleEvent(const void* eventPtr) {
             // under Metal it is the CAMetalLayer, which nvgCreateMTL requires.
             vg_ = starterNvgCreate(puglGetContext(view_));
             if (!vg_) break;
+            // A context without fonts draws shapes and no text; refuse it.
             if (!editor_.attach(vg_)) {
                 starterNvgDelete(vg_);
                 vg_ = nullptr;
@@ -205,6 +209,8 @@ void Window::handleEvent(const void* eventPtr) {
                 starterNvgDelete(vg_);
                 vg_ = nullptr;
             }
+            // Font handles died with the context; the next attach() must
+            // re-upload them or every text draw silently disappears.
             editor_.onContextLost();
             realized_ = false;
             haveDrawTime_ = false;

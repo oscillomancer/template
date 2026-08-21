@@ -76,6 +76,7 @@ class Window {
     PuglViewImpl* view_ = nullptr;
     NVGcontext* vg_ = nullptr;
 
+    // From the theme, so the window and the layout cannot disagree.
     uint32_t width_ = (uint32_t)kDesignW;
     uint32_t height_ = (uint32_t)kDesignH;
     bool realized_ = false;

@@ -39,6 +39,27 @@ Also rename `StarterParams.h`, the entry/wrapper source files and the DSP includ
 directory. Update the state magic in `starter_clap.cpp` to a new four-byte tag;
 once a product ships, retain its old versions and migration rules.
 
+The fonts are registered under product-prefixed names (`starter-mono`,
+`starter-mono-medium`, `starter-display` in `Theme.h`). These follow the
+`starter` rename automatically; do not collapse them back to bare `mono` and
+`display`.
+
+Two things need a decision rather than a rename:
+
+- **`host-smoke` needs to be told what to drive.** In `CMakeLists.txt`, set
+  `HOST_SMOKE_PLUGIN_ID` to the new CLAP id and `HOST_SMOKE_PLAIN_PARAM` to the
+  display name of a parameter that must never change latency. If the product
+  has a parameter that *does* change latency, name it in
+  `HOST_SMOKE_LATENCY_PARAM` as well; if it does not, leave that undefined and
+  the restart section is skipped rather than faked. The test detects an
+  instrument on its own, from a declared audio-input count of zero.
+- **`Theme.h` is the file a product is supposed to rewrite**, but the token set
+  is a contract with the shared widgets: `ink`, `panel`, `well`, `edge`,
+  `edgeHi`, `dim`, `dust`, `bone`, `accent`, `alert`, and the four knob tones
+  `knobWell`, `knobTop`, `knobBot`, `knobRim`. Give them the new product's
+  values; do not delete any of them, and do not hard-code a colour in
+  `Widgets.h` to avoid adding one. See `CONVENTIONS.md`.
+
 Finally delete the old build directory and configure from scratch. Wrapper and
 AU metadata are generated at configure time, so an incremental build can retain
 stale identity even when source strings have changed.

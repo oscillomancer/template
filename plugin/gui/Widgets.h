@@ -7,6 +7,7 @@
 // two or three times at decreasing alpha.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -157,18 +158,18 @@ inline void knob(NVGcontext* vg, float cx, float cy, float r, float t,
     // track
     nvgBeginPath(vg);
     nvgArc(vg, cx, cy, r, kKnobA0, kKnobA1, NVG_CW);
-    nvgStrokeColor(vg, rgb(0x1B222C));
+    nvgStrokeColor(vg, rgb(col::knobWell));
     nvgStrokeWidth(vg, 3.5f);
     nvgLineCap(vg, NVG_ROUND);
     nvgStroke(vg);
 
     // body
-    NVGpaint body = nvgLinearGradient(vg, cx, cy - r, cx, cy + r, rgb(0x232B36), rgb(0x141A22));
+    NVGpaint body = nvgLinearGradient(vg, cx, cy - r, cx, cy + r, rgb(col::knobTop), rgb(col::knobBot));
     nvgBeginPath(vg);
     nvgCircle(vg, cx, cy, r - 6.5f);
     nvgFillPaint(vg, body);
     nvgFill(vg);
-    nvgStrokeColor(vg, rgb(0x2E3744));
+    nvgStrokeColor(vg, rgb(col::knobRim));
     nvgStrokeWidth(vg, 1.0f);
     nvgStroke(vg);
 
@@ -202,8 +203,13 @@ inline void knob(NVGcontext* vg, float cx, float cy, float r, float t,
         num(vg, unit, cx, cy + 11.0f, 7.5f, rgb(col::dim), Align::Center, false);
 }
 
+// showDot: a lit dot on the left, for a control that is simply on or off. A
+// pill that is one of a set does not need it -- the fill already says which is
+// chosen -- and dropping it gives the text the whole pill, which the long
+// labels need: several of them do not fit beside a dot at any size worth
+// reading.
 inline void pill(NVGcontext* vg, float x, float y, float w, float h, const char* text, bool on,
-                 NVGcolor accent) {
+                 NVGcolor accent, bool showDot = true) {
     if (on) {
         NVGpaint g = nvgLinearGradient(vg, x, y, x, y + h, nvgRGBAf(accent.r, accent.g, accent.b, 0.23f),
                                        nvgRGBAf(accent.r, accent.g, accent.b, 0.09f));
@@ -216,15 +222,37 @@ inline void pill(NVGcontext* vg, float x, float y, float w, float h, const char*
         strokeRoundRect(vg, x, y, w, h, 3.0f, rgb(col::edgeHi));
     }
 
-    if (on) glowDot(vg, x + 11.0f, y + h * 0.5f, 2.6f, accent);
-    else {
-        nvgBeginPath(vg);
-        nvgCircle(vg, x + 11.0f, y + h * 0.5f, 2.6f);
-        nvgFillColor(vg, rgb(col::edgeHi));
-        nvgFill(vg);
+    if (showDot) {
+        if (on) glowDot(vg, x + 11.0f, y + h * 0.5f, 2.6f, accent);
+        else {
+            nvgBeginPath(vg);
+            nvgCircle(vg, x + 11.0f, y + h * 0.5f, 2.6f);
+            nvgFillColor(vg, rgb(col::edgeHi));
+            nvgFill(vg);
+        }
     }
-    label(vg, text, x + 21.0f, y + h * 0.5f + 0.5f, 9.0f, on ? rgb(col::bone) : rgb(col::dust),
-          Align::Left, 1.5f);
+
+    // Fit the text to the pill rather than trusting the caller's width. Letter
+    // spacing goes first, because it is decoration; size goes second, and only
+    // as far as legibility allows. Without this a label simply runs out past
+    // the border, which is what several of them were doing.
+    const float inset = showDot ? 21.0f : 8.0f;
+    const float avail = w - inset - (showDot ? 7.0f : 8.0f);
+    float size = 9.0f, track = 1.5f;
+    nvgFontFace(vg, kFontMono);
+    nvgFontSize(vg, size);
+    if (trackedWidth(vg, text, track) > avail) {
+        track = 0.5f;
+        const float tw = trackedWidth(vg, text, track);
+        if (tw > avail && tw > 0.0f) {
+            size = std::max(6.5f, size * avail / tw);
+            nvgFontSize(vg, size);
+        }
+    }
+
+    const NVGcolor c = on ? rgb(col::bone) : rgb(col::dust);
+    if (showDot) label(vg, text, x + inset, y + h * 0.5f + 0.5f, size, c, Align::Left, track);
+    else label(vg, text, x + w * 0.5f, y + h * 0.5f + 0.5f, size, c, Align::Center, track);
 }
 
 // A titled panel with a hairline border; the strip cells and the meter well
