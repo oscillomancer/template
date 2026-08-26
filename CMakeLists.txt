@@ -13,6 +13,18 @@ else()
     project(starter VERSION 0.1.0 LANGUAGES C CXX)
 endif()
 
+# A bare `cmake -S . -B build` sets no build type on single-config generators,
+# which silently produces an unoptimised plugin. The presets always name one;
+# this is for everybody who does not use them.
+get_property(_starter_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if (NOT _starter_multi_config AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+    message(STATUS "No CMAKE_BUILD_TYPE given; defaulting to Release")
+endif()
+
+
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if (UNIX AND NOT APPLE)
