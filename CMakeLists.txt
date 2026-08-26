@@ -118,11 +118,41 @@ if (STARTER_BUILD_PLUGIN)
         endif()
     endif()
 
+    # register_timer() clamps every request to 30ms upstream, capping a VST3
+    # editor at 33fps however fast it asked to run. The AUv2 path returns false
+    # instead and falls through to the plugin's own timer at the full 60Hz,
+    # which is why an AU looks smoother than the VST3 of the same build.
+    set(starter_wrapper_vst3_patch_timer ${CMAKE_CURRENT_SOURCE_DIR}/cmake/clap-wrapper-vst3-timer-floor.patch)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} apply --check ${starter_wrapper_vst3_patch_timer}
+        WORKING_DIRECTORY ${clap-wrapper_SOURCE_DIR}
+        RESULT_VARIABLE wrapper_timer_applicable
+        OUTPUT_QUIET ERROR_QUIET)
+    if (wrapper_timer_applicable EQUAL 0)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} apply ${starter_wrapper_vst3_patch_timer}
+            WORKING_DIRECTORY ${clap-wrapper_SOURCE_DIR}
+            COMMAND_ERROR_IS_FATAL ANY)
+    else()
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} apply --reverse --check ${starter_wrapper_vst3_patch_timer}
+            WORKING_DIRECTORY ${clap-wrapper_SOURCE_DIR}
+            RESULT_VARIABLE wrapper_timer_present
+            OUTPUT_QUIET ERROR_QUIET)
+        if (NOT wrapper_timer_present EQUAL 0)
+            message(FATAL_ERROR "clap-wrapper VST3 timer floor patch no longer applies")
+        endif()
+    endif()
+
     if (STARTER_BUILD_TOOLS)
         add_test(NAME wrapper-automation
             COMMAND ${CMAKE_COMMAND}
                 -DWRAPPER_FILE=${clap-wrapper_SOURCE_DIR}/src/detail/vst3/process.cpp
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/test/check_wrapper_automation.cmake)
+        add_test(NAME wrapper-timer
+            COMMAND ${CMAKE_COMMAND}
+                -DWRAPPER_FILE=${clap-wrapper_SOURCE_DIR}/src/wrapasvst3.cpp
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/test/check_wrapper_timer.cmake)
     endif()
 
     add_library(starter-impl STATIC plugin/src/starter_clap.cpp)
