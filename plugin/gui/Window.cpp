@@ -172,11 +172,9 @@ void Window::stopFallbackTimer() {
 void Window::tick() {
     if (!world_) return;
     // Zero timeout: the host owns the loop, and blocking here would stall it.
+    // The repaint request itself belongs in the PUGL_UPDATE handler rather
+    // than here; see there for why the difference is a factor of two.
     puglUpdate(world_, 0.0);
-    // Repaint only when something on screen could have changed: telemetry
-    // pending, a gesture in flight, or a parameter moved. An idle editor —
-    // bypassed plugin, transport stopped, nobody touching it — costs nothing.
-    if (view_ && realized_ && editor_.wantsRepaint()) puglObscureView(view_);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +212,27 @@ void Window::handleEvent(const void* eventPtr) {
             editor_.onContextLost();
             realized_ = false;
             haveDrawTime_ = false;
+            break;
+
+        case PUGL_UPDATE:
+            // pugl dispatches this from inside puglUpdate, immediately before
+            // the expose phase, precisely so an application can mark itself
+            // dirty in time to be drawn in the same cycle. Asked for here, the
+            // obscure is merged into this update and rendered now.
+            //
+            // Asked for from tick() instead -- outside any update -- pugl
+            // takes its other branch and posts an X expose to be picked up
+            // "next time", so the frame is drawn one whole tick later. Every
+            // frame then costs two ticks and X11 renders at half the timer
+            // rate: measured at 98 renders per 200 ticks before this moved.
+            // Cocoa hides the mistake because setNeedsDisplay is coalesced
+            // into the same run-loop turn, which is why only Linux looked slow.
+            //
+            // Repaint only when something on screen could have changed:
+            // telemetry pending, a gesture in flight, or a parameter moved. An
+            // idle editor -- bypassed plugin, transport stopped, nobody
+            // touching it -- still costs nothing.
+            if (realized_ && editor_.wantsRepaint()) puglObscureView(view_);
             break;
 
         case PUGL_CONFIGURE:
