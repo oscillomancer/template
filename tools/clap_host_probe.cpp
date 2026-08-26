@@ -11,10 +11,32 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <dlfcn.h>
+#include <string>
 #include <vector>
 
 #include <clap/clap.h>
+
+// Loading a shared library is the one thing these hosts do that has no
+// portable spelling. dlopen is POSIX; MSVC ships no <dlfcn.h> at all, so the
+// three calls below are the whole of the difference.
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+namespace {
+using LibHandle = HMODULE;
+LibHandle libOpen(const char* p) { return LoadLibraryA(p); }
+void* libSym(LibHandle h, const char* n) { return (void*)GetProcAddress(h, n); }
+std::string libError() { return "error " + std::to_string((unsigned long)GetLastError()); }
+}  // namespace
+#else
+#  include <dlfcn.h>
+namespace {
+using LibHandle = void*;
+LibHandle libOpen(const char* p) { return dlopen(p, RTLD_LOCAL | RTLD_NOW); }
+void* libSym(LibHandle h, const char* n) { return dlsym(h, n); }
+std::string libError() { const char* e = dlerror(); return e ? e : "unknown error"; }
+}  // namespace
+#endif
 
 #if defined(__APPLE__)
 #import <Cocoa/Cocoa.h>
@@ -138,12 +160,12 @@ int main(int argc, char** argv) {
     if (gRefuseTimers) std::printf("(refusing to register host timers)\n");
     std::printf("(bus channels: %u)\n", channels);
 
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+    LibHandle lib = libOpen(argv[1]);
     if (!lib) {
-        std::fprintf(stderr, "dlopen failed: %s\n", dlerror());
+        std::fprintf(stderr, "load failed: %s\n", libError().c_str());
         return 1;
     }
-    auto* entry = (const clap_plugin_entry_t*)dlsym(lib, "clap_entry");
+    auto* entry = (const clap_plugin_entry_t*)libSym(lib, "clap_entry");
     if (!entry) {
         std::fprintf(stderr, "no clap_entry\n");
         return 1;

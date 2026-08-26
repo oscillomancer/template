@@ -77,10 +77,28 @@ STARTER_GL_PROCS
 STARTER_GL_PROCS
 #  undef X
 
+// wglGetProcAddress does not signal failure with NULL alone: the documented
+// failure values are 0, 1, 2, 3 and -1, and drivers have historically returned
+// the small integers. Treating one of those as a function pointer crashes on
+// the first call rather than failing here, where the caller already has a
+// clean path for a context it cannot use.
+static PROC starterResolveGL(const char* name)
+{
+    PROC p = wglGetProcAddress(name);
+    if (p == 0 || p == (PROC)1 || p == (PROC)2 || p == (PROC)3 ||
+        p == (PROC)-1) {
+        // The pre-1.5 entry points can live in opengl32.dll instead, where
+        // wglGetProcAddress is not required to find them.
+        HMODULE gl = GetModuleHandleA("opengl32.dll");
+        p = gl ? GetProcAddress(gl, name) : 0;
+    }
+    return p;
+}
+
 int starterLoadGL(void)
 {
 #  define X(name, ret, params)                                                 \
-    starter_##name = (starter_pfn_##name)wglGetProcAddress(#name);             \
+    starter_##name = (starter_pfn_##name)starterResolveGL(#name);                \
     if (!starter_##name) return 0;
     STARTER_GL_PROCS
 #  undef X
