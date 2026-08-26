@@ -129,6 +129,13 @@ int starterLoadGL(void) { return 1; }
 
 #else
 
+// glext.h declares the post-1.1 entry points only when GL_GLEXT_PROTOTYPES
+// is set; without it the header is typedefs alone and every call NanoVG
+// makes above GL 1.1 is an implicit declaration. Mesa's libGL exports the
+// symbols, so the prototypes are all that is missing.
+#  ifndef GL_GLEXT_PROTOTYPES
+#    define GL_GLEXT_PROTOTYPES 1
+#  endif
 #  include <GL/gl.h>
 #  include <GL/glext.h>
 

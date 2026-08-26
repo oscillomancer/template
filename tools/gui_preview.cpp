@@ -1,9 +1,11 @@
 // Offline render of the real editor. The CLAP probe separately validates
 // embedding, timers, resize and teardown in a host-like lifecycle.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 #include <vector>
 
 #include "Gui.h"
@@ -85,7 +87,15 @@ int main(int argc, char** argv) {
     host.advance(static_cast<int>(kHistorySeconds * kRate) + 100);
     for (int i = 0; i < frames; ++i) { host.advance(4); gui.tick(); }
     cap.want = true;
-    for (int i = 0; i < 60 && !cap.got; ++i) gui.tick();
+    // tick() polls with a zero timeout, by design: in a host it must never
+    // block the loop it is called from. Here there is no host, and on X11 the
+    // map and expose come back from the server rather than being generated
+    // locally, so a tight spin finishes long before either arrives. Pace the
+    // wait instead of burning through it.
+    for (int i = 0; i < 300 && !cap.got; ++i) {
+        gui.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     if (!cap.got) return 2;
     FILE* file = std::fopen(output, "wb");
     if (!file) return 3;

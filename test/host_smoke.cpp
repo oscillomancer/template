@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -113,15 +114,20 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // The executable inside a .clap bundle is named after the bundle, so the
-    // one argument is enough and no product name has to be compiled in here.
+    // A .clap is a bundle directory on macOS and a bare shared object
+    // everywhere else. When it is a bundle, the executable inside is named
+    // after it, so the one argument is enough either way and no product name
+    // has to be compiled in here.
     const std::string bundle = argv[1];
-    std::string name = bundle;
-    if (const size_t slash = name.find_last_of('/'); slash != std::string::npos)
-        name = name.substr(slash + 1);
-    if (name.size() > 5 && name.compare(name.size() - 5, 5, ".clap") == 0)
-        name.erase(name.size() - 5);
-    const std::string path = bundle + "/Contents/MacOS/" + name;
+    std::string path = bundle;
+    if (std::filesystem::is_directory(bundle)) {
+        std::string name = bundle;
+        if (const size_t slash = name.find_last_of('/'); slash != std::string::npos)
+            name = name.substr(slash + 1);
+        if (name.size() > 5 && name.compare(name.size() - 5, 5, ".clap") == 0)
+            name.erase(name.size() - 5);
+        path = bundle + "/Contents/MacOS/" + name;
+    }
 
     // Hosts do put a stereo plugin on a mono track, and process() re-prepares
     // on the audio thread when that happens. --mono runs that branch, which a

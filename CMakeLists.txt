@@ -257,13 +257,15 @@ if (STARTER_BUILD_PLUGIN)
 
     if (APPLE)
         set(STARTER_INSTALL_SPECS
-            "Starter.clap:$ENV{HOME}/Library/Audio/Plug-Ins/CLAP:starter-plugin_clap"
-            "Starter.vst3:$ENV{HOME}/Library/Audio/Plug-Ins/VST3:starter-plugin_vst3"
-            "Starter.component:$ENV{HOME}/Library/Audio/Plug-Ins/Components:starter-plugin_auv2")
+            "Starter.clap:$ENV{HOME}/Library/Audio/Plug-Ins/CLAP:starter-plugin_clap:dir"
+            "Starter.vst3:$ENV{HOME}/Library/Audio/Plug-Ins/VST3:starter-plugin_vst3:dir"
+            "Starter.component:$ENV{HOME}/Library/Audio/Plug-Ins/Components:starter-plugin_auv2:dir")
     elseif (UNIX)
+        # On Linux a CLAP is a bare shared object, not a bundle directory --
+        # only the VST3 is a folder here -- so the two are copied differently.
         set(STARTER_INSTALL_SPECS
-            "Starter.clap:$ENV{HOME}/.clap:starter-plugin_clap"
-            "Starter.vst3:$ENV{HOME}/.vst3:starter-plugin_vst3")
+            "Starter.clap:$ENV{HOME}/.clap:starter-plugin_clap:file"
+            "Starter.vst3:$ENV{HOME}/.vst3:starter-plugin_vst3:dir")
     endif()
 
     if (STARTER_INSTALL_SPECS)
@@ -276,12 +278,18 @@ if (STARTER_BUILD_PLUGIN)
             list(GET parts 0 bundle)
             list(GET parts 1 destination)
             list(GET parts 2 target)
+            list(GET parts 3 kind)
+            if (kind STREQUAL "dir")
+                set(copyCmd copy_directory)
+            else()
+                set(copyCmd copy)
+            endif()
             if (TARGET ${target})
                 add_dependencies(starter-install ${target})
                 add_custom_command(TARGET starter-install POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E rm -rf "${destination}/${bundle}"
                     COMMAND ${CMAKE_COMMAND} -E make_directory "${destination}"
-                    COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    COMMAND ${CMAKE_COMMAND} -E ${copyCmd}
                         "${CMAKE_BINARY_DIR}/starter_assets/${bundle}"
                         "${destination}/${bundle}"
                     VERBATIM)

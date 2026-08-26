@@ -49,9 +49,12 @@ cmake --build --preset release -j
 ctest --preset release
 ```
 
-Linux builds CLAP and VST3 using X11/OpenGL. Test the resulting bundle in real
-Linux hosts before claiming support; macOS does not validate X11 embedding or
-host timer behavior.
+Linux builds CLAP and VST3 using X11/OpenGL. This was first actually compiled
+on 2026-08-25 (Arch, GCC 16, CMake 4.4, Mesa): both formats build and install,
+ctest passes, and the offline GUI preview renders correctly. Note that a CLAP
+is a bare `.so` here rather than a bundle directory as on macOS; only the VST3
+is a folder. Still test the result in real Linux hosts before claiming support:
+a successful build does not validate X11 embedding or host timer behaviour.
 
 ## Windows
 
