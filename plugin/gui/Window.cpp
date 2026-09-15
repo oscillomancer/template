@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <type_traits>
+#include <utility>
 
 #include <pugl/gl.h>
 #include <pugl/pugl.h>
@@ -35,6 +37,176 @@ constexpr uintptr_t kFallbackTimerId = 1;
 
 constexpr double kDoubleClickSeconds = 0.4;
 constexpr float kDoubleClickSlop = 4.0f;
+
+// --- extended input dispatch ------------------------------------------------
+//
+// Each optional editor method from Window.h is detected here, and the event
+// handler below routes through these templates rather than calling the editor
+// directly. The point of the template is the discarded branch: inside a
+// function template an `if constexpr` branch that is not taken is never
+// instantiated, so naming a method the product's Editor lacks is not an error.
+// Written straight into handleEvent, which is not a template, both branches
+// would have to compile and every product would need every method.
+
+template <typename E, typename = void> struct HasPointerDown : std::false_type {};
+template <typename E>
+struct HasPointerDown<E, std::void_t<decltype(std::declval<E&>().onPointerDown(
+                             0.0f, 0.0f, 0, uint32_t{}))>> : std::true_type {};
+
+template <typename E, typename = void> struct HasPointerDouble : std::false_type {};
+template <typename E>
+struct HasPointerDouble<E, std::void_t<decltype(std::declval<E&>().onPointerDouble(
+                               0.0f, 0.0f, 0, uint32_t{}))>> : std::true_type {};
+
+template <typename E, typename = void> struct HasPointerUp : std::false_type {};
+template <typename E>
+struct HasPointerUp<E, std::void_t<decltype(std::declval<E&>().onPointerUp(
+                           0.0f, 0.0f, 0, uint32_t{}))>> : std::true_type {};
+
+template <typename E, typename = void> struct HasPointerMove : std::false_type {};
+template <typename E>
+struct HasPointerMove<E, std::void_t<decltype(std::declval<E&>().onPointerMove(
+                             0.0f, 0.0f, uint32_t{}))>> : std::true_type {};
+
+template <typename E, typename = void> struct HasWheel : std::false_type {};
+template <typename E>
+struct HasWheel<E, std::void_t<decltype(std::declval<E&>().onWheel(
+                       0.0f, 0.0f, 0.0f, 0.0f, uint32_t{}))>> : std::true_type {};
+
+template <typename E, typename = void> struct HasKeyCode : std::false_type {};
+template <typename E>
+struct HasKeyCode<E, std::void_t<decltype(std::declval<E&>().onKeyCode(uint32_t{}, uint32_t{}))>>
+    : std::true_type {};
+
+template <typename E, typename = void> struct HasKeyRelease : std::false_type {};
+template <typename E>
+struct HasKeyRelease<E, std::void_t<decltype(std::declval<E&>().onKeyRelease(uint32_t{},
+                                                                             uint32_t{}))>>
+    : std::true_type {};
+
+template <typename E, typename = void> struct HasText : std::false_type {};
+template <typename E>
+struct HasText<E, std::void_t<decltype(std::declval<E&>().onText(uint32_t{}))>>
+    : std::true_type {};
+
+template <typename E, typename = void> struct HasPointerEnter : std::false_type {};
+template <typename E>
+struct HasPointerEnter<E, std::void_t<decltype(std::declval<E&>().onPointerEnter())>>
+    : std::true_type {};
+
+template <typename E, typename = void> struct HasPointerLeave : std::false_type {};
+template <typename E>
+struct HasPointerLeave<E, std::void_t<decltype(std::declval<E&>().onPointerLeave())>>
+    : std::true_type {};
+
+template <typename E, typename = void> struct HasCursor : std::false_type {};
+template <typename E>
+struct HasCursor<E, std::void_t<decltype(std::declval<const E&>().cursor())>>
+    : std::true_type {};
+
+uint32_t modsOf(PuglMods state) {
+    uint32_t m = 0;
+    if (state & PUGL_MOD_SHIFT) m |= kModShift;
+    if (state & PUGL_MOD_CTRL) m |= kModCtrl;
+    if (state & PUGL_MOD_ALT) m |= kModAlt;
+    if (state & PUGL_MOD_SUPER) m |= kModSuper;
+    return m;
+}
+
+PuglCursor puglCursorOf(Cursor c) {
+    switch (c) {
+        case Cursor::Hand: return PUGL_CURSOR_HAND;
+        case Cursor::Crosshair: return PUGL_CURSOR_CROSSHAIR;
+        case Cursor::Caret: return PUGL_CURSOR_CARET;
+        case Cursor::LeftRight: return PUGL_CURSOR_LEFT_RIGHT;
+        case Cursor::UpDown: return PUGL_CURSOR_UP_DOWN;
+        case Cursor::AllScroll: return PUGL_CURSOR_ALL_SCROLL;
+        case Cursor::No: return PUGL_CURSOR_NO;
+        default: return PUGL_CURSOR_ARROW;
+    }
+}
+
+template <typename E>
+void dispatchPress(E& ed, float x, float y, int button, uint32_t mods, bool dbl) {
+    if constexpr (HasPointerDown<E>::value) {
+        if (dbl) {
+            if constexpr (HasPointerDouble<E>::value) {
+                ed.onPointerDouble(x, y, button, mods);
+                return;
+            }
+        }
+        ed.onPointerDown(x, y, button, mods);
+    } else {
+        (void)mods;
+        if (button != 0) return;
+        if (dbl) ed.onDoubleClick(x, y);
+        else ed.onMouseDown(x, y);
+    }
+}
+
+template <typename E>
+void dispatchRelease(E& ed, float x, float y, int button, uint32_t mods) {
+    if constexpr (HasPointerUp<E>::value) {
+        ed.onPointerUp(x, y, button, mods);
+    } else {
+        (void)x; (void)y; (void)mods;
+        if (button == 0) ed.onMouseUp();
+    }
+}
+
+template <typename E>
+void dispatchMotion(E& ed, float x, float y, uint32_t mods) {
+    if constexpr (HasPointerMove<E>::value) ed.onPointerMove(x, y, mods);
+    else ed.onMouseMove(x, y, (mods & kModShift) != 0);
+}
+
+template <typename E>
+void dispatchScroll(E& ed, float x, float y, float dx, float dy, uint32_t mods) {
+    if constexpr (HasWheel<E>::value) ed.onWheel(x, y, dx, dy, mods);
+    else { (void)dx; (void)mods; ed.onScroll(x, y, dy); }
+}
+
+// Returns true when the editor took the raw key, so the EditorKey mapping
+// below is skipped. An editor that handles only a few extra keys returns
+// false for the rest and keeps the shared Tab/arrow behaviour for free.
+template <typename E>
+bool dispatchKeyCode(E& ed, uint32_t key, uint32_t mods) {
+    if constexpr (HasKeyCode<E>::value) return ed.onKeyCode(key, mods);
+    else { (void)ed; (void)key; (void)mods; return false; }
+}
+
+template <typename E>
+void dispatchKeyRelease(E& ed, uint32_t key, uint32_t mods) {
+    if constexpr (HasKeyRelease<E>::value) ed.onKeyRelease(key, mods);
+    else { (void)ed; (void)key; (void)mods; }
+}
+
+template <typename E>
+void dispatchText(E& ed, uint32_t codepoint) {
+    if constexpr (HasText<E>::value) ed.onText(codepoint);
+    else { (void)ed; (void)codepoint; }
+}
+
+template <typename E>
+void dispatchEnter(E& ed) {
+    if constexpr (HasPointerEnter<E>::value) ed.onPointerEnter();
+    else (void)ed;
+}
+
+// The basic rule -- a pointer that leaves mid-drag ends the drag, so the
+// host's automation gesture cannot be left open -- stays for editors that do
+// not say otherwise. One that declares onPointerLeave takes on that duty.
+template <typename E>
+void dispatchLeave(E& ed) {
+    if constexpr (HasPointerLeave<E>::value) ed.onPointerLeave();
+    else if (ed.dragging()) ed.onMouseUp();
+}
+
+template <typename E>
+bool wantedCursor(const E& ed, Cursor& out) {
+    if constexpr (HasCursor<E>::value) { out = ed.cursor(); return true; }
+    else { (void)ed; (void)out; return false; }
+}
 }  // namespace
 
 // Matches PuglEventFunc exactly, so no function-pointer cast is needed.
@@ -254,9 +426,10 @@ void Window::handleEvent(const void* eventPtr) {
             break;
 
         case PUGL_BUTTON_PRESS: {
-            if (e->button.button != 0) break;
             puglGrabFocus(view_);
             const float x = (float)e->button.x, y = (float)e->button.y;
+            // A second press of any button within the window counts; the
+            // dispatcher decides which buttons the editor gets to see.
             const bool dbl = (e->button.time - lastClickTime_) < kDoubleClickSeconds &&
                              std::fabs(x - lastClickX_) < kDoubleClickSlop &&
                              std::fabs(y - lastClickY_) < kDoubleClickSlop;
@@ -265,32 +438,44 @@ void Window::handleEvent(const void* eventPtr) {
             lastClickY_ = y;
 
             const float sx = x / (float)scaleX(), sy = y / (float)scaleY();
-            if (dbl) editor_.onDoubleClick(sx, sy);
-            else editor_.onMouseDown(sx, sy);
+            dispatchPress(editor_, sx, sy, (int)e->button.button, modsOf(e->button.state), dbl);
+            syncCursor();
             break;
         }
 
         case PUGL_BUTTON_RELEASE:
-            if (e->button.button == 0) editor_.onMouseUp();
+            dispatchRelease(editor_, (float)(e->button.x / scaleX()),
+                            (float)(e->button.y / scaleY()), (int)e->button.button,
+                            modsOf(e->button.state));
+            syncCursor();
             break;
 
         case PUGL_MOTION:
-            editor_.onMouseMove((float)(e->motion.x / scaleX()), (float)(e->motion.y / scaleY()),
-                                (e->motion.state & PUGL_MOD_SHIFT) != 0);
+            dispatchMotion(editor_, (float)(e->motion.x / scaleX()),
+                           (float)(e->motion.y / scaleY()), modsOf(e->motion.state));
+            syncCursor();
             break;
 
         case PUGL_SCROLL:
-            editor_.onScroll((float)(e->scroll.x / scaleX()), (float)(e->scroll.y / scaleY()),
-                             (float)e->scroll.dy);
+            dispatchScroll(editor_, (float)(e->scroll.x / scaleX()),
+                           (float)(e->scroll.y / scaleY()), (float)e->scroll.dx,
+                           (float)e->scroll.dy, modsOf(e->scroll.state));
+            break;
+
+        case PUGL_POINTER_IN:
+            dispatchEnter(editor_);
+            syncCursor();
             break;
 
         case PUGL_POINTER_OUT:
             // Losing the pointer mid-drag would otherwise leave the host's
-            // automation gesture open forever.
-            if (editor_.dragging()) editor_.onMouseUp();
+            // automation gesture open forever; see dispatchLeave.
+            dispatchLeave(editor_);
             break;
 
         case PUGL_KEY_PRESS: {
+            const uint32_t mods = modsOf(e->key.state);
+            if (dispatchKeyCode(editor_, e->key.key, mods)) break;
             EditorKey key = EditorKey::Tab;
             bool handled = true;
             switch (e->key.key) {
@@ -305,9 +490,17 @@ void Window::handleEvent(const void* eventPtr) {
                 case PUGL_KEY_SPACE: key = EditorKey::Space; break;
                 default: handled = false; break;
             }
-            if (handled) editor_.onKey(key, (e->key.state & PUGL_MOD_SHIFT) != 0);
+            if (handled) editor_.onKey(key, (mods & kModShift) != 0);
             break;
         }
+
+        case PUGL_KEY_RELEASE:
+            dispatchKeyRelease(editor_, e->key.key, modsOf(e->key.state));
+            break;
+
+        case PUGL_TEXT:
+            dispatchText(editor_, e->text.character);
+            break;
 
         case PUGL_FOCUS_OUT:
             editor_.onFocusLost();
@@ -316,6 +509,16 @@ void Window::handleEvent(const void* eventPtr) {
         default:
             break;
     }
+}
+
+// Asks an editor that has an opinion about the cursor what it wants now, and
+// tells pugl only when that changed. Nothing happens for an editor without
+// cursor(); the arrow it never asked to change stays.
+void Window::syncCursor() {
+    Cursor wanted = Cursor::Arrow;
+    if (!view_ || !wantedCursor(editor_, wanted) || wanted == cursor_) return;
+    cursor_ = wanted;
+    puglSetCursor(view_, puglCursorOf(wanted));
 }
 
 void Window::draw() {
