@@ -225,12 +225,12 @@ bool CLAP_ABI apGet(const clap_plugin_t* p, uint32_t index, bool isInput,
     auto* self = (Plug*)p->plugin_data;
     info->id = 0;
     std::snprintf(info->name, sizeof(info->name), "%s", isInput ? "Input" : "Output");
-    info->flags = CLAP_AUDIO_PORT_IS_MAIN;
+    info->flags = CLAP_AUDIO_PORT_IS_MAIN | CLAP_AUDIO_PORT_SUPPORTS_64BITS |
+                  CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE;
     info->channel_count = (uint32_t)self->channels;
     info->port_type = self->channels == 2 ? CLAP_PORT_STEREO : CLAP_PORT_MONO;
-    // The input may be processed in place against output 0; the output itself
-    // has no further pair and must not claim one.
-    info->in_place_pair = isInput ? 0 : CLAP_INVALID_ID;
+    // Both directions name their partner; CLAP in-place pairing is reciprocal.
+    info->in_place_pair = 0;
     return true;
 }
 

@@ -199,6 +199,20 @@ int main(int argc, char** argv) {
 
     check(plug->init(plug), "plugin init");
 
+    // A bus configuration is chosen while the plugin is deactivated, and it is
+    // what fixes the channel count activate() prepares for. Selecting it is not
+    // optional bookkeeping: process() rejects a buffer whose channel count does
+    // not match what was prepared, so a host that asks for a mono bus without
+    // switching the configuration gets CLAP_PROCESS_ERROR on every block --
+    // which is exactly what this harness did before it selected anything.
+    auto* portConfigs = (const clap_plugin_audio_ports_config_t*)plug->get_extension(
+        plug, CLAP_EXT_AUDIO_PORTS_CONFIG);
+    check(portConfigs != nullptr, "advertises audio port configurations");
+    if (portConfigs) {
+        const bool selected = portConfigs->select(plug, channels == 1 ? 1u : 2u);
+        check(selected, channels == 1 ? "switched to the mono bus" : "switched to the stereo bus");
+    }
+
     auto* params = (const clap_plugin_params_t*)plug->get_extension(plug, CLAP_EXT_PARAMS);
     auto* ports = (const clap_plugin_audio_ports_t*)plug->get_extension(plug,
                                                                        CLAP_EXT_AUDIO_PORTS);
@@ -229,6 +243,103 @@ int main(int argc, char** argv) {
     }
     check(namesOk, "every parameter reports info and a name");
     check(textOk, "every parameter formats its default value");
+
+    // --- text round trip ---
+    //
+    // value_to_text and text_to_value have to be inverses of each other, not
+    // merely both implemented: a host reading a parameter's display string and
+    // writing it back -- a text field, a preset editor, a control surface
+    // script -- must land on the value it started from. A parameter that
+    // spells its value as words rather than a number (a bypass showing as
+    // "Bypassed") is exactly the case a numeric-only parser breaks, and it
+    // breaks silently: text_to_value returns false and the value simply does
+    // not move.
+    bool roundTripOk = true;
+    for (uint32_t i = 0; i < np; ++i) {
+        clap_param_info_t info{};
+        if (!params->get_info(plug, i, &info)) continue;
+        char buf[128] = {0};
+        if (!params->value_to_text(plug, info.id, info.default_value, buf, sizeof(buf))) continue;
+        double back = 0.0;
+        const double range = info.max_value - info.min_value;
+        const double tol = std::max(1e-6, 1e-3 * (range > 0.0 ? range : 1.0));
+        if (!params->text_to_value(plug, info.id, buf, &back) ||
+            std::fabs(back - info.default_value) > tol) {
+            roundTripOk = false;
+            std::printf("     %s: printed \"%s\", read back %g\n", info.name, buf, back);
+        }
+    }
+    check(roundTripOk, "every parameter parses the text it printed");
+
+    // strtod() happily consumes "nan", "inf" and "infinity", and clamp() does
+    // not sanitise NaN (both of its comparisons are false, so it returns the
+    // NaN unchanged). Without an explicit finite check, a host or a script
+    // pasting one of those strings puts a NaN into the parameters and then
+    // into the smoothers -- which is silence or noise, not an error. The
+    // invariant testable from here is simple: no text may produce a value that
+    // is not finite.
+    bool textFinite = true;
+    for (uint32_t i = 0; i < np && textFinite; ++i) {
+        clap_param_info_t info{};
+        if (!params->get_info(plug, i, &info)) continue;
+        for (const char* junk : {"nan", "-nan", "inf", "-inf", "infinity", "NaN", "nan db"}) {
+            double v = 0.0;
+            if (params->text_to_value(plug, info.id, junk, &v) && !std::isfinite(v)) {
+                textFinite = false;
+                std::printf("     %s accepted \"%s\" as %g\n", info.name, junk, v);
+                break;
+            }
+        }
+    }
+    check(textFinite, "non-finite text never becomes a parameter value");
+
+    // --- audio port contract ---
+    //
+    // These flags are the whole of what a host knows before it hands over
+    // buffers: whether it may send doubles, and whether one buffer may serve
+    // as both the input and the output. Under-declaring costs the plugin those
+    // fast paths silently -- the host simply never takes them. Port flags are
+    // scanned while the plugin is deactivated, which is where this runs.
+    clap_audio_port_info_t portIn{}, portOut{};
+    const bool haveInPort = !isInstrument && ports->get(plug, 0, true, &portIn);
+    const bool haveOutPort = ports->count(plug, false) > 0 && ports->get(plug, 0, false, &portOut);
+    check(haveOutPort, "reports an audio output port");
+    if (haveOutPort) {
+        check((portOut.flags & CLAP_AUDIO_PORT_IS_MAIN) != 0, "output port is the main bus");
+        check(portOut.channel_count > 0, "output port declares channels");
+        check(portOut.port_type != nullptr && portOut.port_type[0],
+              "output port declares a port type");
+    }
+    bool pairingReciprocal = false;
+    if (haveInPort) {
+        check((portIn.flags & CLAP_AUDIO_PORT_IS_MAIN) != 0, "input port is the main bus");
+        check(portIn.channel_count == portOut.channel_count,
+              "input and output agree on the channel count");
+
+        // in_place_pair is the *other* port's id, so it has to be set on both
+        // halves. A host that inspects only the output side -- and plenty do,
+        // since that is the buffer it has to write -- sees no pairing at all
+        // when the output says CLAP_INVALID_ID, and the coupled path goes
+        // unused even though process() supports it.
+        check(portIn.in_place_pair != CLAP_INVALID_ID &&
+              portOut.in_place_pair != CLAP_INVALID_ID,
+              "both ports advertise in-place processing");
+        pairingReciprocal = portIn.in_place_pair == portOut.id &&
+                            portOut.in_place_pair == portIn.id;
+        check(pairingReciprocal, "in-place pairing is reciprocal");
+
+        // process() reads one sample representation for the whole pass and has
+        // no mixed-size path, so declaring this is the honest description, and
+        // it is what keeps a host from handing in floats and asking for
+        // doubles.
+        check((portIn.flags & CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE) != 0 &&
+              (portOut.flags & CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE) != 0,
+              "both ports require a common sample size");
+    }
+    // process() implements a double-precision path; without this flag no host
+    // will ever use it.
+    const bool supports64 = (portOut.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) != 0;
+    check(supports64, "advertises 64-bit audio");
 
     const uint32_t block = 512;
     check(plug->activate(plug, 48000.0, 32, block), "activate at 48 kHz");
@@ -281,6 +392,111 @@ int main(int argc, char** argv) {
     check(peak < 2.0, "output stays bounded");
     if (!isInstrument) check(peak > 0.05, "effect passes signal through");
     std::printf("     output peak: %.4f\n", peak);
+
+    // --- the two paths the port flags above promise ---
+    //
+    // Both flags are promises a host acts on, so both are exercised rather
+    // than assumed: one buffer serving as input and output, and a
+    // double-precision pass. A flag that is advertised but not honoured is
+    // worse than no flag at all, because the host stops protecting the plugin
+    // from itself.
+    if (pairingReciprocal && !isInstrument) {
+        std::vector<float> shared(block, 0.0f);
+        std::vector<float*> sharedBufs((size_t)channels, shared.data());
+        clap_audio_buffer_t sb{};
+        sb.data32 = sharedBufs.data();
+        sb.channel_count = channels;
+        clap_process_t iproc = proc;
+        iproc.audio_inputs = &sb;
+        iproc.audio_outputs = &sb;
+
+        bool ipOk = true;
+        double ipPeak = 0.0;
+        for (int b = 0; b < 20; ++b) {
+            for (uint32_t i = 0; i < block; ++i) {
+                const double t = (double)(b * block + i) / 48000.0;
+                shared[i] = (float)(0.3 * std::sin(2.0 * M_PI * 220.0 * t));
+            }
+            if (plug->process(plug, &iproc) == CLAP_PROCESS_ERROR) ipOk = false;
+            for (uint32_t i = 0; i < block; ++i) {
+                if (!std::isfinite(shared[i])) ipOk = false;
+                ipPeak = std::max(ipPeak, (double)std::fabs(shared[i]));
+            }
+        }
+        check(ipOk, "processes in place on one shared buffer");
+        check(ipPeak > 0.05, "in-place processing still passes signal");
+        std::printf("     in-place peak: %.4f\n", ipPeak);
+    }
+
+    if (supports64 && !isInstrument) {
+        std::vector<double> dl(block, 0.0), dr(block, 0.0), ol(block, 0.0), orr(block, 0.0);
+        std::vector<double*> din((size_t)channels), dout((size_t)channels);
+        for (uint32_t c = 0; c < channels; ++c) {
+            din[c] = c == 0 ? dl.data() : dr.data();
+            dout[c] = c == 0 ? ol.data() : orr.data();
+        }
+        clap_audio_buffer_t ib64{};
+        ib64.data64 = din.data();
+        ib64.channel_count = channels;
+        clap_audio_buffer_t ob64{};
+        ob64.data64 = dout.data();
+        ob64.channel_count = channels;
+        clap_process_t dproc = proc;
+        dproc.audio_inputs = &ib64;
+        dproc.audio_outputs = &ob64;
+
+        bool dOk = true;
+        double dPeak = 0.0;
+        for (int b = 0; b < 20; ++b) {
+            for (uint32_t i = 0; i < block; ++i) {
+                const double t = (double)(b * block + i) / 48000.0;
+                const double v = 0.3 * std::sin(2.0 * M_PI * 220.0 * t);
+                dl[i] = v;
+                dr[i] = v;
+                ol[i] = orr[i] = 0.0;
+            }
+            if (plug->process(plug, &dproc) == CLAP_PROCESS_ERROR) dOk = false;
+            for (uint32_t i = 0; i < block; ++i) {
+                if (!std::isfinite(ol[i]) || !std::isfinite(orr[i])) dOk = false;
+                dPeak = std::max(dPeak, std::fabs(ol[i]));
+            }
+        }
+        check(dOk, "processes 64-bit buffers without error or NaN");
+        check(dPeak > 0.05, "64-bit pass reaches the DSP at all");
+
+        // The two branches share one DSP core, so the same signal in both
+        // representations has to come out the same. Disagreeing output is how
+        // a 64-bit path that is not actually wired up shows itself: it returns
+        // either silence or the untouched input buffer.
+        std::vector<float> fin1(block), fin2(block), fout1(block), fout2(block);
+        for (uint32_t i = 0; i < block; ++i) {
+            fin1[i] = (float)dl[i];
+            fin2[i] = (float)dr[i];
+        }
+        std::vector<float*> fin((size_t)channels), fout((size_t)channels);
+        for (uint32_t c = 0; c < channels; ++c) {
+            fin[c] = c == 0 ? fin1.data() : fin2.data();
+            fout[c] = c == 0 ? fout1.data() : fout2.data();
+        }
+        clap_audio_buffer_t fib{};
+        fib.data32 = fin.data();
+        fib.channel_count = channels;
+        clap_audio_buffer_t fob{};
+        fob.data32 = fout.data();
+        fob.channel_count = channels;
+        clap_process_t fproc = proc;
+        fproc.audio_inputs = &fib;
+        fproc.audio_outputs = &fob;
+        plug->process(plug, &fproc);
+
+        double divergence = 0.0;
+        for (uint32_t i = 0; i < block; ++i) {
+            divergence = std::max(divergence, std::fabs((double)fout1[i] - ol[i]));
+            divergence = std::max(divergence, std::fabs((double)fout2[i] - orr[i]));
+        }
+        check(divergence < 1e-5, "64-bit and 32-bit passes agree");
+        std::printf("     64-bit peak: %.4f, max divergence from float: %.3g\n", dPeak, divergence);
+    }
 
     // --- restart storm regression ---
     //

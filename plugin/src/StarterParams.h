@@ -69,9 +69,13 @@ inline void formatCompact(uint32_t id, double v, char* out, size_t size) {
 inline bool parseValue(uint32_t id, const char* text, double& out) {
     const ParamDef* p = findParam(id);
     if (!p || !text) return false;
+    if (id == kBypass) {
+        if (!std::strcmp(text, "Active")) { out = 0.0; return true; }
+        if (!std::strcmp(text, "Bypassed")) { out = 1.0; return true; }
+    }
     char* end = nullptr;
     double v = std::strtod(text, &end);
-    if (end == text) return false;
+    if (end == text || !std::isfinite(v)) return false;
     if (id == kMix && std::strchr(text, '%')) v *= 0.01;
     out = std::clamp(v, p->min, p->max);
     return true;
