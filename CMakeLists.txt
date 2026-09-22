@@ -199,6 +199,9 @@ if (STARTER_BUILD_PLUGIN)
         add_test(NAME host-smoke
                  COMMAND starter-host-smoke
                          ${CMAKE_BINARY_DIR}/starter_assets/Starter.clap)
+        add_test(NAME host-smoke-mono
+                 COMMAND starter-host-smoke
+                         ${CMAKE_BINARY_DIR}/starter_assets/Starter.clap --mono)
     endif()
 
     set(STARTER_FORMATS CLAP VST3)

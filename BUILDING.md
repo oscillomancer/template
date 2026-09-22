@@ -87,22 +87,25 @@ bundles differs on Linux and Windows.
 
 ## Tests
 
-`ctest` runs five, and all five are expected to pass before a release:
+`ctest` runs the following checks, all expected to pass before a release:
 
 - `core` -- the DSP, offline and SDK-free.
 - `editor-input` -- gesture and keyboard handling, without a renderer.
 - `wrapper-automation` -- that the clap-wrapper VST3 automation patch is still
   applied to the pinned checkout.
+- `wrapper-timer` -- that the VST3 timer-floor patch is still applied.
 - `auv2-bundle` -- that the built AU carries clap-wrapper's AudioComponents
   plist and a valid signature, rather than CMake's generic plist that no host
   reads (macOS only).
 - `host-smoke` -- a real host that loads the built `.clap` and drives it the
   way a DAW does: parameters, processing, latency and restart behaviour, state
-  round trip, teardown. It is the same file in every product; what differs is
-  passed in as compile definitions from CMake. A new product must set
+  round trip, teardown. Port/text/render checks are shared in `host_contract.h`;
+  lifecycle tests can be product-specific. A new product must set
   `HOST_SMOKE_PLUGIN_ID` and `HOST_SMOKE_PLAIN_PARAM` (the display name of a
   parameter that must never change latency), plus `HOST_SMOKE_LATENCY_PARAM`
   if it has a parameter that does.
+- `host-smoke-mono` -- the same lifecycle and contract checks on the negotiated
+  mono configuration.
 
 ## Sanitizers and warnings
 
@@ -137,10 +140,29 @@ DAW meter the only source of truth.
 This renders the real editor and is useful for layout review. It is not a host
 integration test and cannot validate wrapper timers, parent views or automation.
 
+## CLAP host-contract regression checks
+
+`ctest --test-dir build-cmake -R host-smoke --output-on-failure` runs the
+built CLAP through `test/host_smoke.cpp`. Its shared `test/host_contract.h`
+checks port precision declarations, effect in-place pairing (or no pairing for
+an instrument), and parameter text at defaults, bounds and interior values.
+Small stepped ranges are enumerated; non-finite/overflowing text must be
+**rejected**, not merely clamped to a finite endpoint.
+
+Audio comparisons render identical inputs and events on fresh, identically
+configured instances. Float/double renders compare every sample; effects also
+compare separate buffers against per-channel in-place buffers, with distinct
+left/right signals. Instruments receive note events and fixed seeds rather than
+passing this check with silence. These are host-contract regressions, not a
+replacement for format validators or real DAW/editor testing.
+
+Mono and stereo smoke runs are registered with CTest. Configuration IDs
+are discovered from the advertised layouts rather than assumed.
+
 ## Pre-release matrix
 
 - clean Release and Debug configure/build;
-- all five ctest tests, plus the sanitizer preset;
+- all registered ctest tests, plus the sanitizer preset;
 - CLAP probe with host timer and fallback timer;
 - mono/stereo, float/double, block sizes 1/64/512/4096;
 - 44.1/48/88.2/96/176.4/192 kHz where supported;

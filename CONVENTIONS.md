@@ -173,8 +173,8 @@ keep clean, and burying our own warnings in theirs is how they get ignored.
 The same helper carries the ASan/UBSan switch, exposed as the `sanitizers`
 preset in `CMakePresets.json`.
 
-Every product runs the same five tests, and adding a product means making all
-five pass rather than dropping one:
+Every product retains these baseline checks, plus product-specific regressions.
+A new product adds coverage rather than dropping applicable checks:
 
 - `core` -- the DSP, offline and SDK-free.
 - `editor-input` -- gesture and keyboard handling, no renderer.
@@ -184,9 +184,11 @@ five pass rather than dropping one:
   and a valid signature, rather than CMake's generic one that no host reads.
 - `host-smoke` -- a real host that dlopens the built `.clap` and drives the
   full lifecycle: parameters, processing, latency/restart behaviour, state
-  round trip, teardown. It is one file, identical in every product; what
-  differs is supplied as compile definitions (`HOST_SMOKE_PLUGIN_ID`,
-  `HOST_SMOKE_PLAIN_PARAM`, and optionally `HOST_SMOKE_LATENCY_PARAM`). It
+  round trip, teardown. Shared port/text/render assertions live in the
+  byte-identical `test/host_contract.h`; `host_smoke.cpp` retains product-specific
+  lifecycle and state regressions. Product identity is supplied as compile
+  definitions (`HOST_SMOKE_PLUGIN_ID`, `HOST_SMOKE_PLAIN_PARAM`, and optionally
+  `HOST_SMOKE_LATENCY_PARAM`). The harness
   detects an instrument from a declared audio-input count of zero rather than
   being told, and it searches a latency-changing parameter's range for a
   setting that actually moves latency rather than assuming which one does.
