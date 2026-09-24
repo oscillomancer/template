@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: MIT AND ISC
+// Copyright (c) 2026 Supple Audio
+// Derived in part from pugl's src/mac_vulkan.m,
+// Copyright 2012-2022 David Robillard <d@drobilla.net>, ISC license
+// (full text in NOTICES.txt).
+//
+//
 // A Metal backend for pugl.
 //
 // pugl ships backends for GL, Cairo and Vulkan but not Metal, and upstream has

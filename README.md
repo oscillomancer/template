@@ -17,7 +17,7 @@ DSP; do not build a product by accumulating hacks in the wrapper.
 ## Start here
 
 1. Read `AGENTS.md` and `CONVENTIONS.md` before changing code.
-2. Follow the identity checklist in `CUSTOMIZE.md` before opening the project
+2. Follow the product identity checklist in `AGENTS.md` before opening the project
    in a DAW. Plugin IDs and AU four-character codes must be unique forever.
 3. Build and run the untouched baseline once, following `BUILDING.md`.
 4. Add DSP behind `starter::Processor`, extend the single parameter table, and
@@ -41,6 +41,10 @@ DSP; do not build a product by accumulating hacks in the wrapper.
   audio tests.
 - `tools/gui_preview.cpp` — image rendering for visual review only.
 
-The root project deliberately has no product license. Choose one for the new
-product rather than accidentally inheriting a template-wide decision. Required
-dependency and font notices are summarized in `THIRD_PARTY.md`.
+## License
+
+The template is MIT licensed, copyright (c) 2026 Supple Audio; see
+[LICENSE](LICENSE). Products built from it choose their own license (Supple
+Audio products are GPL-3.0-or-later; the checklist in `AGENTS.md` covers the
+switch). Required dependency and font notices are summarized in
+[THIRD_PARTY.md](THIRD_PARTY.md), with full texts in [NOTICES.txt](NOTICES.txt).

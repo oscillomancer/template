@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Starter DSP core -- intentionally independent of every plug-in SDK.
 #pragma once
 

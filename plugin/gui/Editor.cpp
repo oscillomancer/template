@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+
 #include "Editor.h"
 
 #include <algorithm>
@@ -109,7 +112,7 @@ void Editor::render(NVGcontext* vg) {
                                       rgb(col::panel), rgb(col::ink)));
     nvgFill(vg);
     hairline(vg, 0, kHeaderH + 0.5f, kDesignW, kHeaderH + 0.5f, rgb(col::edgeHi));
-    label(vg, "Your Company", 30, 21, 10.0f, rgb(col::dust));
+    label(vg, "Supple Audio", 30, 21, 10.0f, rgb(col::dust));
     nvgFontFace(vg, kFontUiSemi);
     nvgFontSize(vg, 24.0f);
     nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);

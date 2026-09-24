@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Starter — a minimal CLAP host, for finding out what actually happens.
 //
 // The GUI preview tool renders the editor directly, which proves the drawing

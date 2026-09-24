@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Starter GUI — the Metal half of the rendering backend.
 //
 // The sibling of NanoVGBackend.c, implementing the same starter* seam so that

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Shared black-box CLAP contract checks. Keep identical across products.
 #pragma once
 

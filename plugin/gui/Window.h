@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Starter GUI — the embedded window.
 //
 // pugl owns the native view, the GL context and the event stream; this wraps it

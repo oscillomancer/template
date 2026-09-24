@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Starter GUI — the object a plugin format holds on to.
 //
 // Owns the editor and its window and nothing else. The format layer implements

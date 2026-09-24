@@ -217,8 +217,8 @@ if (STARTER_BUILD_PLUGIN)
         list(APPEND STARTER_FORMATS AUV2)
     endif()
 
-    # CUSTOMIZE BEFORE SHIPPING: every product needs permanent unique IDs,
-    # vendor text and AU four-character codes.
+    # CUSTOMIZE BEFORE SHIPPING: every product needs permanent unique IDs and
+    # AU four-character codes (see the checklist in AGENTS.md).
     make_clapfirst_plugins(
         TARGET_NAME starter-plugin
         IMPL_TARGET starter-impl
@@ -229,15 +229,15 @@ if (STARTER_BUILD_PLUGIN)
         COPY_AFTER_BUILD FALSE
         PLUGIN_FORMATS ${STARTER_FORMATS}
         ASSET_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/starter_assets
-        AUV2_MANUFACTURER_NAME "Your Company"
+        AUV2_MANUFACTURER_NAME "Supple Audio"
         AUV2_MANUFACTURER_CODE "StCo"
         AUV2_SUBTYPE_CODE "StFx"
         AUV2_INSTRUMENT_TYPE "aufx")
 
-    # Attribution has to travel with the binary. NOTICES.txt sitting in the
-    # repository does nothing for someone who is handed only a bundle, and every
-    # dependency in the stack requires its notice to accompany what is
-    # distributed. The install target copies whole bundles, so anything placed
+    # The license and attribution have to travel with the binary. Files sitting
+    # in the repository do nothing for someone who is handed only a bundle, and
+    # both the product license and every dependency in the stack require their
+    # text to accompany what is distributed. The install target copies whole bundles, so anything placed
     # inside one is carried along for free.
     #
     # This is a target of its own rather than a POST_BUILD on each plugin: a
@@ -246,9 +246,10 @@ if (STARTER_BUILD_PLUGIN)
     # staleness that already bit the AU's Info.plist, and a custom target is
     # always out of date, so the copy is reconsidered every build.
     set(starter_notices "${CMAKE_CURRENT_SOURCE_DIR}/NOTICES.txt")
+    set(starter_license "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 
     add_custom_target(starter-notices ALL
-        COMMENT "Staging third-party notices with the built plugins")
+        COMMENT "Staging the license and third-party notices with the built plugins")
 
     if (APPLE)
         # All three macOS formats are bundles, so the notices go where a bundle
@@ -266,6 +267,8 @@ if (STARTER_BUILD_PLUGIN)
                         "${CMAKE_BINARY_DIR}/starter_assets/${bundle}/Contents/Resources"
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${starter_notices}"
                         "${CMAKE_BINARY_DIR}/starter_assets/${bundle}/Contents/Resources/NOTICES.txt"
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${starter_license}"
+                        "${CMAKE_BINARY_DIR}/starter_assets/${bundle}/Contents/Resources/LICENSE.txt"
                     VERBATIM)
             endif()
         endforeach()
@@ -276,6 +279,8 @@ if (STARTER_BUILD_PLUGIN)
         add_custom_command(TARGET starter-notices POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${starter_notices}"
                 "${CMAKE_BINARY_DIR}/starter_assets/NOTICES.txt"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${starter_license}"
+                "${CMAKE_BINARY_DIR}/starter_assets/LICENSE.txt"
             VERBATIM)
     endif()
 
@@ -295,6 +300,8 @@ if (STARTER_BUILD_PLUGIN)
                 "${CMAKE_BINARY_DIR}/starter_assets/Starter.component/Contents/Resources"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${starter_notices}"
                 "${CMAKE_BINARY_DIR}/starter_assets/Starter.component/Contents/Resources/NOTICES.txt"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${starter_license}"
+                "${CMAKE_BINARY_DIR}/starter_assets/Starter.component/Contents/Resources/LICENSE.txt"
             COMMAND /usr/bin/codesign --force --deep --sign - --timestamp=none
                 "${CMAKE_BINARY_DIR}/starter_assets/Starter.component"
             DEPENDS starter-plugin_auv2

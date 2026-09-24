@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Entry points implemented in starter_clap.cpp (the static impl library) and
 // exported by starter_entry.cpp. Split this way because clap-wrapper recompiles
 // the export fragment once per plugin format while linking the same impl.

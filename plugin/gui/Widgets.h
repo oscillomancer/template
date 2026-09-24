@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Starter GUI — shared drawing primitives. Product colours and fonts live in Theme.h.
 #pragma once
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // A real X11 CLAP host: embedding, resize, reopen, hot teardown and pixels.
 // Product-independent. Build with CLAP headers, -lX11 -ldl -pthread.
 #include <clap/clap.h>

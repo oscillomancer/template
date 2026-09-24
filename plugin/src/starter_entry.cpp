@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // The exported clap_entry symbol. Deliberately tiny: clap-wrapper compiles this
 // file once per output format (CLAP, VST3, AUv2), each time linking the same
 // static implementation library, so every format runs identical DSP.

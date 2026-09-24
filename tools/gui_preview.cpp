@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Offline render of the real editor. The CLAP probe separately validates
 // embedding, timers, resize and teardown in a host-like lifecycle.
 #include <algorithm>

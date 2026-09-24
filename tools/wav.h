@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Minimal RIFF/WAVE reader+writer for the offline tools.
 // Handles PCM 16/24/32-bit and IEEE float 32/64, WAVE_FORMAT_EXTENSIBLE, and
 // skips unknown chunks (bext, LIST, iXML...). Deinterleaved double output.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Offline WAV renderer for DSP development and independent measurements.
 #include <algorithm>
 #include <chrono>

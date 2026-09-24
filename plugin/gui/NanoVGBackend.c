@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // The single translation unit that instantiates NanoVG's OpenGL backend.
 //
 // GL2 rather than GL3: everything this panel draws is ordinary filled and

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Starter — CLAP plugin implementation.
 //
 // Built as a static library exposing clap_init / clap_deinit / clap_get_factory;
@@ -38,7 +41,7 @@ const clap_plugin_descriptor_t kDesc = {
     CLAP_VERSION_INIT,
     "com.example.starter",
     "Starter",
-    "Your Company",
+    "Supple Audio",
     "",
     "",
     "",

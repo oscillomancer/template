@@ -7,7 +7,7 @@ and Vellum -- including the defects found while auditing them.
 
 Where a rule below names a specific file or symbol, that name is the contract:
 the shared GUI stack is kept byte-identical across products apart from the
-product's own namespace, so a fix made in one place is expected to be made in
+product's own namespace and license header, so a fix made in one place is expected to be made in
 all of them.
 
 ## Product and DSP boundaries

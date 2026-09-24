@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
 // Minimal host that loads the built CLAP bundle and drives it the way a DAW
 // would: query the factory, create, activate, push parameter events, process
 // audio, save and reload state, deactivate, destroy.

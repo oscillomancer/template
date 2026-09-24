@@ -2,14 +2,15 @@
 
 This repository is a verified starting point, not an example to rewrite from
 memory. Preserve the infrastructure until the new product has tests proving a
-replacement is better. Read `CONVENTIONS.md`, `CUSTOMIZE.md` and `BUILDING.md`
-before implementation.
+replacement is better. Read `CONVENTIONS.md`, `BUILDING.md` and the product
+identity checklist below before implementation.
 
 ## First actions for a new plugin
 
 1. Establish the product name, vendor, reverse-DNS plugin ID, semantic version,
    permanent AU manufacturer/subtype codes, effect category and supported bus
-   layouts. Apply every rename in `CUSTOMIZE.md` in one focused commit.
+   layouts. Apply every rename in the product identity checklist below in one
+   focused commit.
 2. Describe the DSP signal flow, parameter semantics, latency changes and
    stateful behavior before editing the wrapper or GUI.
 3. Implement DSP only in the SDK-free core. Keep one implementation shared by
@@ -25,14 +26,88 @@ before implementation.
    `CONVENTIONS.md` satisfied.
 7. Run all five ctest tests, the sanitizer preset, the real CLAP host probe and
    the format validators. `host-smoke` needs its compile definitions set for
-   the new product before it means anything -- see `CUSTOMIZE.md`. A preview
-   image proves drawing only. Never describe Linux/Windows host behavior as
-   verified from a macOS build.
+   the new product before it means anything -- see the product identity
+   checklist below. A preview image proves drawing only. Never describe
+   Linux/Windows host behavior as verified from a macOS build.
 8. When a fix belongs to the shared stack rather than the product, make it in
    the template and carry it to every product that has the same file. The
-   shared GUI stack is kept byte-identical apart from the product namespace,
-   and drifting copies are how the same bug gets fixed three times and missed
-   the fourth.
+   shared GUI stack is kept byte-identical apart from the product namespace
+   and license header, and drifting copies are how the same bug gets fixed
+   three times and missed the fourth.
+
+## Product identity checklist
+
+Perform this before substantive DSP work. Search the complete tree (excluding
+build directories) after renaming; no placeholder should survive accidentally.
+
+### Required decisions
+
+- Product display name and lowercase code/namespace name.
+- Reverse-DNS plugin identifier. The vendor is Supple Audio, already set
+  throughout.
+- Project version and product description.
+- Unique AU manufacturer and subtype codes: exactly four ASCII characters.
+  These identify saved sessions; never change them after release.
+- Plugin features/category, bus layouts and whether the product is an effect or
+  instrument.
+- Product license. The template is MIT; Supple Audio products are
+  GPL-3.0-or-later. Replace `LICENSE` with the GPLv3 text, change every
+  `SPDX-License-Identifier: MIT` header to `GPL-3.0-or-later` (keeping
+  `AND ISC` on `pugl_metal.{h,m}`), switch the copyright lines to
+  `Copyright (C) <year> Supple Audio`, and add a License section to the
+  README. The build already stages `LICENSE` beside `NOTICES.txt`.
+
+### Placeholder tokens
+
+Replace identifiers deliberately, respecting case:
+
+- `Starter` — display/type/file-name form.
+- `starter` — namespace, target and symbol form.
+- `STARTER` — CMake option and preprocessor form.
+- `com.example.starter` — CLAP and bundle identifier.
+- `StCo` — AU manufacturer code.
+- `StFx` — AU subtype code.
+
+On macOS the `Starter` form additionally namespaces the Objective-C classes that
+pugl and nanovg_metal define (`STARTER_OBJC_CLASSES` in `plugin/gui/CMakeLists.txt`,
+applied as `-DPuglWrapperView=Starter_PuglWrapperView` and so on). Objective-C has
+one flat, process-wide class namespace, so two products that both keep the
+placeholder prefix will collide in any host that loads them together: the runtime
+warns, keeps whichever loaded first, and every subsequent lookup by name resolves
+to that image. Renaming `Starter` throughout carries this along automatically --
+just do not special-case those lines out.
+
+Also rename `StarterParams.h`, the entry/wrapper source files and the DSP include
+directory. Update the state magic in `starter_clap.cpp` to a new four-byte tag;
+once a product ships, retain its old versions and migration rules.
+
+The fonts are registered under product-prefixed names (`starter-mono`,
+`starter-mono-medium`, `starter-display`, `starter-ui`, and
+`starter-ui-semibold` in `Theme.h`). These follow the `starter` rename
+automatically; keep the names in `Theme.h` aligned with the embedded font
+symbols in `plugin/gui/CMakeLists.txt` and `Editor.cpp`. Inter is used for UI
+labels, Plex Mono for values, and Plex Sans Condensed remains available for
+display type. Check the selected font's glyph coverage before adding symbols.
+
+Two things need a decision rather than a rename:
+
+- **`host-smoke` needs to be told what to drive.** In `CMakeLists.txt`, set
+  `HOST_SMOKE_PLUGIN_ID` to the new CLAP id and `HOST_SMOKE_PLAIN_PARAM` to the
+  display name of a parameter that must never change latency. If the product
+  has a parameter that *does* change latency, name it in
+  `HOST_SMOKE_LATENCY_PARAM` as well; if it does not, leave that undefined and
+  the restart section is skipped rather than faked. The test detects an
+  instrument on its own, from a declared audio-input count of zero.
+- **`Theme.h` is the file a product is supposed to rewrite**, but the token set
+  is a contract with the shared widgets: `ink`, `panel`, `well`, `edge`,
+  `edgeHi`, `dim`, `dust`, `bone`, `accent`, `alert`, and the four knob tones
+  `knobWell`, `knobTop`, `knobBot`, `knobRim`. Give them the new product's
+  values; do not delete any of them, and do not hard-code a colour in
+  `Widgets.h` to avoid adding one. See `CONVENTIONS.md`.
+
+Finally delete the old build directory and configure from scratch. Wrapper and
+AU metadata are generated at configure time, so an incremental build can retain
+stale identity even when source strings have changed.
 
 ## Non-negotiable implementation rules
 

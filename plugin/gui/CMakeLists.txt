@@ -1,7 +1,6 @@
 # Starter GUI: pugl for the embedded window and event plumbing, NanoVG for the
-# vector rendering. Both are permissively licensed (ISC / zlib) and dependency
-# free beyond system libraries, which keeps the licence story for a commercial
-# plugin as simple as the DSP core's.
+# vector rendering. Both are permissively licensed (ISC / zlib), compatible
+# with the template's MIT license, and dependency free beyond system libraries.
 #
 # pugl ships a meson build; rather than drag meson into the toolchain we compile
 # its handful of platform files directly. The file list is small and stable
