@@ -170,3 +170,19 @@ are discovered from the advertised layouts rather than assumed.
 - CLAP/VST3 scanners on Linux, macOS and Windows; `auval` on macOS;
 - automation while playing and stopped;
 - plugin IDs, vendor, version, description, AU codes and license notices.
+
+## Native Linux embedding probe
+
+With an X11/XWayland display available, run:
+
+```sh
+./build-cmake/starter-linux-host-probe \
+  ./build-cmake/starter_assets/Starter.clap /tmp/starter-host.ppm
+```
+
+This product-independent probe creates a real X11 parent, verifies the mapped
+child, captures the embedded pixels, and exercises resize, hide/show, three
+create/destroy cycles and timer cleanup while audio runs on a separate thread.
+It exits nonzero on failed assertions. The existing `--resize`/`--reopen` flags
+on `clap-probe` exercise macOS only; use this probe for Linux.
+`--no-host-timer` is diagnostic: it does not prove fallback repaint liveness.

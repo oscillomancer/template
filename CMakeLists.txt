@@ -85,6 +85,8 @@ endfunction()
 
 if (STARTER_BUILD_PLUGIN)
     include(FetchContent)
+    # Patch validation needs Git even when dependency sources are overridden.
+    find_package(Git REQUIRED)
     set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES ON CACHE BOOL "" FORCE)
     set(CLAP_WRAPPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(clap-wrapper
@@ -172,6 +174,12 @@ if (STARTER_BUILD_PLUGIN)
                 ${CMAKE_CURRENT_SOURCE_DIR}/plugin/src)
             add_test(NAME editor-input COMMAND starter-editor-test)
 
+            if (UNIX AND NOT APPLE)
+                find_package(X11 REQUIRED)
+                find_package(Threads REQUIRED)
+                add_executable(starter-linux-host-probe tools/linux_host_probe.cpp)
+                target_link_libraries(starter-linux-host-probe PRIVATE clap X11::X11 ${CMAKE_DL_LIBS} Threads::Threads)
+            endif()
             add_executable(starter-clap-probe tools/clap_host_probe.cpp)
             target_link_libraries(starter-clap-probe PRIVATE clap)
             target_include_directories(starter-clap-probe PRIVATE
