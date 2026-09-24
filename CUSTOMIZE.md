@@ -40,9 +40,12 @@ directory. Update the state magic in `starter_clap.cpp` to a new four-byte tag;
 once a product ships, retain its old versions and migration rules.
 
 The fonts are registered under product-prefixed names (`starter-mono`,
-`starter-mono-medium`, `starter-display` in `Theme.h`). These follow the
-`starter` rename automatically; do not collapse them back to bare `mono` and
-`display`.
+`starter-mono-medium`, `starter-display`, `starter-ui`, and
+`starter-ui-semibold` in `Theme.h`). These follow the `starter` rename
+automatically; keep the names in `Theme.h` aligned with the embedded font
+symbols in `plugin/gui/CMakeLists.txt` and `Editor.cpp`. Inter is used for UI
+labels, Plex Mono for values, and Plex Sans Condensed remains available for
+display type. Check the selected font's glyph coverage before adding symbols.
 
 Two things need a decision rather than a rename:
 

@@ -60,6 +60,8 @@ class Gui {
     // states -- an open menu, a held control -- can be reviewed offline
     // instead of only ever capturing the panel at rest.
     void previewClick(float x, float y) { editor_.onMouseDown(x, y); }
+    void previewMove(float x, float y) { editor_.onMouseMove(x, y, false); }
+    void previewRepaint() { editor_.markDirty(); }
 
     static void resizeHints(bool& horizontal, bool& vertical, bool& preserveAspect,
                             uint32_t& aw, uint32_t& ah) {

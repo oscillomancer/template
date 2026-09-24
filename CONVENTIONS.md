@@ -223,9 +223,14 @@ values:
   this prevents.
 
 A product adds whatever else it needs beyond that. Fonts are registered under
-product-prefixed names (`<product>-mono`, `-mono-medium`, `-display`), and
-`rgb`/`rgba` are the same two helpers everywhere -- `rgba` keeps alpha as a
-float rather than rounding it through a byte.
+product-prefixed names (`<product>-mono`, `-mono-medium`, `-display`, `-ui`,
+`-ui-semibold`). Inter UI faces draw labels as complete text runs; Plex Mono
+is reserved for numeric data and Plex Sans Condensed remains available for
+display type. The shared widgets use those names from `Theme.h`; do not
+duplicate font selections in a product editor. The Inter glyph subset includes
+Latin-1, common punctuation and the true minus sign; check coverage before
+introducing a new symbol. `rgb`/`rgba` are the same two helpers everywhere --
+`rgba` keeps alpha as a float rather than rounding it through a byte.
 
 Do not re-implement a shared widget locally to get a variant of it. Add the
 variant to the shared widget instead: the pill's `showDot` argument exists

@@ -28,6 +28,7 @@ class Editor {
     bool onMouseDown(float x, float y);
     void onMouseMove(float x, float y, bool fine);
     void onMouseUp();
+    void onPointerLeave();
     void onDoubleClick(float x, float y);
     bool onScroll(float x, float y, float dy);
     void onKey(EditorKey key, bool fineOrReverse);
@@ -51,7 +52,7 @@ class Editor {
     float latestIn_ = -120.0f, latestOut_ = -120.0f;
     float heldIn_ = -120.0f, heldOut_ = -120.0f;
     float holdAgeIn_ = 0.0f, holdAgeOut_ = 0.0f;
-    int dragId_ = -1, focus_ = -1, scrollId_ = -1;
+    int dragId_ = -1, focus_ = -1, scrollId_ = -1, hover_ = -1;
     float dragStartY_ = 0.0f, scrollIdle_ = 0.0f;
     double dragStartNormal_ = 0.0;
     bool fontsReady_ = false;

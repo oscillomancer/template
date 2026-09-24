@@ -12,6 +12,8 @@ source and include the applicable licenses with distributed binaries/source.
   maintained wjakob fork pinned in `plugin/gui/CMakeLists.txt`.
 - IBM Plex fonts — SIL Open Font License 1.1. The complete notice is shipped at
   `plugin/gui/fonts/LICENSE-IBM-Plex.txt`.
+- Inter fonts — SIL Open Font License 1.1, copyright The Inter Project Authors.
+  The complete notice is shipped at `plugin/gui/fonts/LICENSE-Inter.txt`.
 - gulrak/filesystem — MIT, copyright Steffen Schümann; pulled in transitively by
   clap-wrapper.
 - VST3 SDK — MIT, copyright Steinberg Media Technologies GmbH. Note that this

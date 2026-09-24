@@ -37,15 +37,16 @@ constexpr unsigned alert = 0xC25B4E;
 
 // Knob tones. The shared knob widget in Widgets.h requires all four, so every
 // product's palette has to define them -- see CONVENTIONS.md.
-constexpr unsigned knobWell = 0x1B222C;  // the track the value arc runs in
-constexpr unsigned knobTop = 0x232B36;   // body gradient, lit edge
-constexpr unsigned knobBot = 0x141A22;   // body gradient, shadowed edge
-constexpr unsigned knobRim = 0x2E3744;   // the ring around the body
+constexpr unsigned knobWell = 0x121820;  // recessed track
+constexpr unsigned knobTop = 0x35404D;   // top-lit body
+constexpr unsigned knobBot = 0x131A23;   // shadowed body
+constexpr unsigned knobRim = 0x3D4A58;   // bevel around the body
 }
 
 constexpr const char* kFontMono = "starter-mono";
 constexpr const char* kFontMonoMed = "starter-mono-medium";
 constexpr const char* kFontDisplay = "starter-display";
-constexpr float kLabelTrack = 1.6f;
+constexpr const char* kFontUi = "starter-ui";
+constexpr const char* kFontUiSemi = "starter-ui-semibold";
 
 }  // namespace starter::gui

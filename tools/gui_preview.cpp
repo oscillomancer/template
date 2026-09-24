@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <thread>
 #include <vector>
 
@@ -62,11 +63,12 @@ class PreviewHost : public EditorHost {
 struct Capture {
     int w = 0, h = 0;
     std::vector<unsigned char> rgb;
-    bool want = false, got = false;
+    bool want = false, got = false, frameSeen = false;
 };
 
 void capture(void* user) {
     auto* c = static_cast<Capture*>(user);
+    c->frameSeen = true;
     if (!c->want || c->got) return;
     starterViewportSize(&c->w, &c->h);
     if (c->w <= 0 || c->h <= 0) return;
@@ -79,14 +81,37 @@ void capture(void* user) {
 int main(int argc, char** argv) {
     const int frames = argc > 1 ? std::atoi(argv[1]) : 180;
     const char* output = argc > 2 ? argv[2] : "starter-gui.ppm";
+    const int scale = argc > 3 ? std::atoi(argv[3]) : 1;
+    if (scale != 1 && scale != 2) return 4;
     PreviewHost host;
     Gui gui(host, true);
-    if (!gui.create() || !gui.setParent(0) || !gui.show()) return 1;
     Capture cap;
     gui.setFrameCallback(&capture, &cap);
-    host.advance(static_cast<int>(kHistorySeconds * kRate) + 100);
-    for (int i = 0; i < frames; ++i) { host.advance(4); gui.tick(); }
+    gui.setSize(static_cast<uint32_t>(kDesignW * scale),
+                static_cast<uint32_t>(kDesignH * scale));
+    if (!gui.create() || !gui.setParent(0) || !gui.show()) return 1;
+    // Let the X11 view realize before feeding it telemetry. Otherwise the
+    // 256-slot queue fills while the map/expose travels through the server,
+    // and captures contain a timing-dependent slice of the history.
+    for (int i = 0; i < 300 && !cap.frameSeen; ++i) {
+        gui.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!cap.frameSeen) return 2;
+    const int observations = static_cast<int>(kHistorySeconds * kRate) + 100 +
+                             std::max(0, frames) * 4;
+    for (int i = 0; i < observations; i += 4) {
+        host.advance(std::min(4, observations - i));
+        gui.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (argc > 4) {
+        if (std::strcmp(argv[4], "bypass-on") == 0) gui.previewClick(620, 382);
+        else if (std::strcmp(argv[4], "bypass-hover") != 0) return 4;
+        gui.previewMove(620, 382);
+    }
     cap.want = true;
+    gui.previewRepaint();
     // tick() polls with a zero timeout, by design: in a host it must never
     // block the loop it is called from. Here there is no host, and on X11 the
     // map and expose come back from the server rather than being generated

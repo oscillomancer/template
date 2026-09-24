@@ -206,8 +206,8 @@ endif()
 # Embedded fonts
 # ---------------------------------------------------------------------------
 #
-# Subset to the glyphs the panel actually draws (ASCII plus the true minus
-# sign), which takes each face from ~170 kB to ~9 kB.
+# Plex is subset to the panel's glyphs. Inter UI faces include Latin-1,
+# punctuation and the true minus sign; see their OFL notice in fonts/.
 
 set(FONT_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/fonts)
 file(MAKE_DIRECTORY ${FONT_GEN_DIR})
@@ -216,7 +216,9 @@ set(FONT_SOURCES "")
 foreach(font
         "PlexMono-Regular:starter_font_mono"
         "PlexMono-Medium:starter_font_mono_medium"
-        "PlexSansCondensed-SemiBold:starter_font_display")
+        "PlexSansCondensed-SemiBold:starter_font_display"
+        "Inter-Regular:starter_font_ui"
+        "Inter-SemiBold:starter_font_ui_semibold")
     string(REPLACE ":" ";" parts ${font})
     list(GET parts 0 fontFile)
     list(GET parts 1 fontSymbol)
