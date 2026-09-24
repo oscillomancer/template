@@ -5,10 +5,12 @@ therefore cannot be preserved by copying files alone. They come from the useful
 common ground between the products built from this lineage -- Ferric, Plateau
 and Vellum -- including the defects found while auditing them.
 
-Where a rule below names a specific file or symbol, that name is the contract:
-the shared GUI stack is kept byte-identical across products apart from the
-product's own namespace and license header, so a fix made in one place is expected to be made in
-all of them.
+Where a rule below names a specific file or symbol, that name is the contract.
+The code that carries a correctness rule -- `Telemetry.h`'s `Ring` and
+`test/host_contract.h` -- is kept identical across products apart from the
+product's own namespace and license header, so a fix made in one place is
+expected to be made in all of them. Drawing code is product-owned; see "Visual
+identity".
 
 ## Product and DSP boundaries
 
@@ -208,30 +210,33 @@ discipline, accessibility and renderer architecture, while deriving layout,
 telemetry centerpiece, palette and visual metaphor from what the DSP actually
 does. A graph earns its space only when it explains meaningful product state.
 
-`Widgets.h` is shared and identical across products; `Theme.h` is where a
-product differs. That split only works if the widgets can name what they draw
-with, so every `Theme.h` defines the same token set and gives it product
-values:
+`Telemetry.h`'s `Ring` and `test/host_contract.h` are shared code and stay
+identical apart from namespace; a fix to either is made in every product.
+`Widgets.h` is product-owned: it is where a product's look lives, and products
+are expected to differ there. What is shared is the contract around it: every
+`Theme.h` defines the token set below and gives it product values, controls
+honour the interaction rules in "GUI architecture", and the lessons recorded in
+each product's AGENTS.md about text, glyph coverage and hit testing apply
+everywhere.
 
 - `ink`, `panel`, `well`, `edge`, `edgeHi` -- ground, raised surface, recess,
   hairline, lit hairline. `well` is the inside of a recess, not a knob.
 - `dim`, `dust`, `bone` -- text, from least to most emphasis.
 - `accent`, `alert` -- the product's accent, and over/error.
 - `knobWell`, `knobTop`, `knobBot`, `knobRim` -- the knob's track, its body
-  gradient, and its ring. Required because the shared knob needs four tones and
-  must not hard-code them; a knob drawn in another product's greys is the bug
-  this prevents.
+  gradient, and its ring. Required because a knob needs four tones and must
+  not hard-code them; a knob drawn in another product's greys is the bug this
+  prevents.
 
 A product adds whatever else it needs beyond that. Fonts are registered under
 product-prefixed names (`<product>-mono`, `-mono-medium`, `-display`, `-ui`,
 `-ui-semibold`). Inter UI faces draw labels as complete text runs; Plex Mono
 is reserved for numeric data and Plex Sans Condensed remains available for
-display type. The shared widgets use those names from `Theme.h`; do not
+display type. The widgets use those names from `Theme.h`; do not
 duplicate font selections in a product editor. The Inter glyph subset includes
 Latin-1, common punctuation and the true minus sign; check coverage before
 introducing a new symbol. `rgb`/`rgba` are the same two helpers everywhere --
 `rgba` keeps alpha as a float rather than rounding it through a byte.
 
-Do not re-implement a shared widget locally to get a variant of it. Add the
-variant to the shared widget instead: the pill's `showDot` argument exists
-because two products had each grown their own copy of a dotless pill.
+Within a product, do not grow a local copy of a widget to get a variant of it;
+add the variant to that product's `Widgets.h`.
