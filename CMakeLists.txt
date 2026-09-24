@@ -201,7 +201,7 @@ if (STARTER_BUILD_PLUGIN)
         add_executable(starter-host-smoke test/host_smoke.cpp)
         target_link_libraries(starter-host-smoke PRIVATE clap)
         target_compile_definitions(starter-host-smoke PRIVATE
-            HOST_SMOKE_PLUGIN_ID="com.example.starter"
+            HOST_SMOKE_PLUGIN_ID="com.suppleaudio.starter"
             HOST_SMOKE_PLAIN_PARAM="Input Gain")
         starter_target_defaults(starter-host-smoke)
         add_test(NAME host-smoke
@@ -224,13 +224,13 @@ if (STARTER_BUILD_PLUGIN)
         IMPL_TARGET starter-impl
         OUTPUT_NAME "Starter"
         ENTRY_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/plugin/src/starter_entry.cpp"
-        BUNDLE_IDENTIFIER "com.example.starter"
+        BUNDLE_IDENTIFIER "com.suppleaudio.starter"
         BUNDLE_VERSION ${PROJECT_VERSION}
         COPY_AFTER_BUILD FALSE
         PLUGIN_FORMATS ${STARTER_FORMATS}
         ASSET_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/starter_assets
         AUV2_MANUFACTURER_NAME "Supple Audio"
-        AUV2_MANUFACTURER_CODE "StCo"
+        AUV2_MANUFACTURER_CODE "Supl"
         AUV2_SUBTYPE_CODE "StFx"
         AUV2_INSTRUMENT_TYPE "aufx")
 

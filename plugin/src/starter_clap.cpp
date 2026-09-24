@@ -39,7 +39,7 @@ const char* kFeatures[] = {CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
 
 const clap_plugin_descriptor_t kDesc = {
     CLAP_VERSION_INIT,
-    "com.example.starter",
+    "com.suppleaudio.starter",
     "Starter",
     "Supple Audio",
     "",

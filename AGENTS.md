@@ -7,8 +7,8 @@ identity checklist below before implementation.
 
 ## First actions for a new plugin
 
-1. Establish the product name, vendor, reverse-DNS plugin ID, semantic version,
-   permanent AU manufacturer/subtype codes, effect category and supported bus
+1. Establish the product name, reverse-DNS plugin ID, semantic version,
+   permanent AU subtype code, effect category and supported bus
    layouts. Apply every rename in the product identity checklist below in one
    focused commit.
 2. Describe the DSP signal flow, parameter semantics, latency changes and
@@ -43,11 +43,13 @@ build directories) after renaming; no placeholder should survive accidentally.
 ### Required decisions
 
 - Product display name and lowercase code/namespace name.
-- Reverse-DNS plugin identifier. The vendor is Supple Audio, already set
-  throughout.
+- Reverse-DNS plugin identifier, `com.suppleaudio.<product>`. The vendor is
+  Supple Audio, already set throughout.
 - Project version and product description.
-- Unique AU manufacturer and subtype codes: exactly four ASCII characters.
-  These identify saved sessions; never change them after release.
+- A unique AU subtype code: exactly four ASCII characters. The manufacturer
+  code `Supl` is Supple Audio's and is shared by every product, so the subtype
+  alone tells products apart. Both identify saved sessions; never change them
+  after release.
 - Plugin features/category, bus layouts and whether the product is an effect or
   instrument.
 - Product license. The template is MIT; Supple Audio products are
@@ -64,8 +66,8 @@ Replace identifiers deliberately, respecting case:
 - `Starter` — display/type/file-name form.
 - `starter` — namespace, target and symbol form.
 - `STARTER` — CMake option and preprocessor form.
-- `com.example.starter` — CLAP and bundle identifier.
-- `StCo` — AU manufacturer code.
+- `com.suppleaudio.starter` — CLAP and bundle identifier (rename only the
+  last component).
 - `StFx` — AU subtype code.
 
 On macOS the `Starter` form additionally namespaces the Objective-C classes that
