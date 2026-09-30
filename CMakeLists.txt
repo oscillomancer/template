@@ -146,6 +146,37 @@ if (STARTER_BUILD_PLUGIN)
         endif()
     endif()
 
+    # On Linux the wrapper reopens its own module to find its statically linked
+    # CLAP entry, and keeps that handle. The extra reference pins the module
+    # against the host's dlclose, and when the process exits ~Library closes it
+    # from inside the module's own static destructors, unmapping code that is
+    # still running. Separately it looks the entry up with dlsym(_handle) while
+    # _handle is still null, which searches the whole process and can return
+    # another plugin's clap_entry. glibc's NODELETE on the exported GNU unique
+    # symbols used to hide the first fault; the export lists below remove that
+    # cover, so the fault has to be fixed at its source.
+    set(starter_wrapper_self_handle_patch ${CMAKE_CURRENT_SOURCE_DIR}/cmake/clap-wrapper-vst3-self-handle.patch)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} apply --check ${starter_wrapper_self_handle_patch}
+        WORKING_DIRECTORY ${clap-wrapper_SOURCE_DIR}
+        RESULT_VARIABLE wrapper_self_handle_applicable
+        OUTPUT_QUIET ERROR_QUIET)
+    if (wrapper_self_handle_applicable EQUAL 0)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} apply ${starter_wrapper_self_handle_patch}
+            WORKING_DIRECTORY ${clap-wrapper_SOURCE_DIR}
+            COMMAND_ERROR_IS_FATAL ANY)
+    else()
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} apply --reverse --check ${starter_wrapper_self_handle_patch}
+            WORKING_DIRECTORY ${clap-wrapper_SOURCE_DIR}
+            RESULT_VARIABLE wrapper_self_handle_present
+            OUTPUT_QUIET ERROR_QUIET)
+        if (NOT wrapper_self_handle_present EQUAL 0)
+            message(FATAL_ERROR "clap-wrapper VST3 self-handle patch no longer applies")
+        endif()
+    endif()
+
     if (STARTER_BUILD_TOOLS)
         add_test(NAME wrapper-automation
             COMMAND ${CMAKE_COMMAND}
@@ -233,6 +264,48 @@ if (STARTER_BUILD_PLUGIN)
         AUV2_MANUFACTURER_CODE "Supl"
         AUV2_SUBTYPE_CODE "StFx"
         AUV2_INSTRUMENT_TYPE "aufx")
+
+    # Linux modules export their entry points and nothing else. Every other
+    # symbol is visible to each plugin in the host process, and the GNU unique
+    # ones among them (fmt's locale facet id, the VST3 SDK's UpdateHandler
+    # singleton) bind across modules whatever RTLD_LOCAL says: the second
+    # plugin runs on the first one's copies, and glibc pins the first against
+    # dlclose. -fvisibility=hidden cannot do this job -- libstdc++ and pugl
+    # mark their own symbols default -- so the linker gets an explicit list.
+    # macOS binds symbols per image (two-level namespace) and Windows exports
+    # only what is dllexport'd, so neither needs it.
+    if (UNIX AND NOT APPLE)
+        foreach(format clap vst3)
+            if (TARGET starter-plugin_${format})
+                set(starter_exports ${CMAKE_CURRENT_SOURCE_DIR}/cmake/exports-${format}.map)
+                target_link_options(starter-plugin_${format} PRIVATE
+                    "LINKER:--version-script=${starter_exports}")
+                set_property(TARGET starter-plugin_${format} APPEND PROPERTY
+                    LINK_DEPENDS ${starter_exports})
+            endif()
+        endforeach()
+
+        if (STARTER_BUILD_TOOLS AND TARGET starter-plugin_vst3)
+            add_test(NAME wrapper-self-handle COMMAND ${GIT_EXECUTABLE}
+                -C ${clap-wrapper_SOURCE_DIR} apply --reverse --check
+                ${starter_wrapper_self_handle_patch})
+            add_test(NAME exports-vst3
+                COMMAND ${CMAKE_COMMAND}
+                    -DMODULE=$<TARGET_FILE:starter-plugin_vst3>
+                    "-DEXPECTED=GetPluginFactory,ModuleEntry,ModuleExit,clap_entry"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/test/check_plugin_exports.cmake)
+            add_test(NAME exports-clap
+                COMMAND ${CMAKE_COMMAND}
+                    -DMODULE=$<TARGET_FILE:starter-plugin_clap>
+                    "-DEXPECTED=clap_entry"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/test/check_plugin_exports.cmake)
+            add_executable(starter-vst3-unload-probe test/vst3_unload_probe.cpp)
+            target_link_libraries(starter-vst3-unload-probe PRIVATE ${CMAKE_DL_LIBS})
+            starter_target_defaults(starter-vst3-unload-probe)
+            add_test(NAME vst3-unload
+                COMMAND starter-vst3-unload-probe $<TARGET_FILE:starter-plugin_vst3>)
+        endif()
+    endif()
 
     # The license and attribution have to travel with the binary. Files sitting
     # in the repository do nothing for someone who is handed only a bundle, and
