@@ -56,14 +56,24 @@ in real hosts on real hardware, at 1x and on a Retina (2x) display.
 CLAP and VST3, OpenGL entry points resolved at runtime. Configure with
 `cmake --preset release -G Ninja`: the build is single-configuration, one
 directory per preset, and refuses Visual Studio's multi-configuration
-generator (and Xcode's). **Does not compile yet.** CI's first MSVC build
-(framework 1.2.0) stops in `gui/Meter.h` and `gui/Window.cpp`, where
-`windows.h`'s `min`/`max` macros break `std::min`/`std::max`, and in the
-starter's `Processor.h`. Treat it as a port.
+generator (and Xcode's). The C++ runtime is linked statically, so a plugin
+needs no Visual C++ redistributable. The editor needs an OpenGL 2 driver;
+Windows' own fallback (the GDI renderer on a machine without a GPU driver)
+stops at 1.1, and `set_parent` then fails rather than embed a blank view.
+Built and tested by CI on Windows Server 2022 (MSVC 2022, x64) from
+framework 1.3.0: the release and debug presets pass, including
+`win32-embedding`, clap-validator and pluginval, with the editor drawn by
+Mesa's software OpenGL because the runner has no GPU. Open it in real hosts
+on a real Windows machine, at 100% and at 200% display scaling, before
+shipping. The framework also cross-compiles with MinGW-w64, and its tests
+run under Wine, which is a quick check from Linux but proves nothing about
+MSVC or Windows itself.
 
 Outputs land in `build/<preset>/plugins/`: `Name.clap`, `Name.vst3` and, on
 macOS, `Name.component`, with the license and third-party notices inside each
-bundle (or beside the bare `.clap` on Linux and Windows).
+bundle (or beside the bare `.clap` on Linux and Windows). On Windows,
+clap-wrapper puts them one level down, in `plugins/CLAP/Name.clap` and
+`plugins/VST3/Name.vst3`, both single files.
 
 `cmake --build build/release --target product-install` copies every format to
 the user's plugin folders together (`~/.clap` and `~/.vst3` on Linux,
@@ -86,6 +96,7 @@ builds never touch those folders.
 | `exports-clap`, `exports-vst3` (Linux) | The modules export their entry points and nothing else |
 | `vst3-unload` (Linux) | The VST3 unloads cleanly and survives process exit while loaded |
 | `x11-embedding` (Linux) | A real X11 parent: mapped child, non-blank pixels, resize, `set_scale(2)` doubling the editor, hide/show, three create/destroy cycles while audio runs. Skipped without a display |
+| `win32-embedding`, `win32-embedding-no-host-timer` (Windows) | The same against a real Win32 parent HWND, plus the editor window's own size after each resize, an editor sized before `set_parent`, and unloading and reloading the module before opening the editor again. The second runs with the host's timer refused, so the editor's `WM_TIMER` fallback drives it |
 | `auv2-bundle` (macOS) | The AU carries clap-wrapper's AudioComponents plist and a valid signature |
 | configure | No file in an include root (`framework/`, `framework/test`, `product/`) shadows a standard header on a case-insensitive filesystem |
 | `clap-validator` | free-audio's clap-validator, when found or passed as `SUPPLE_CLAP_VALIDATOR` |
@@ -113,6 +124,9 @@ resized, closed and reopened; sample rates 44.1 to 192 kHz; mono and stereo.
   parameter name), `--set`, `--scale`.
 - `x11-probe plugin.clap [capture.ppm]`: the Linux embedding probe, also run
   by ctest.
+- `win32-probe plugin.clap [capture.ppm] [--no-host-timer]`: the Windows
+  embedding probe, also run by ctest; writes the capture at 1x, resized and
+  at `set_scale(2)`.
 - `clap-probe <binary inside .clap> [blocks] [--mono --resize --presize
   --reopen --drop-parent --destroy-hot --no-host-timer]`: a GUI host for
   macOS (window embedding, sizing before and after parenting, AU-style timer
@@ -135,11 +149,16 @@ through what a host would do with it:
   `gui-preview` at 1x and 2x.
 - **Linux**: `ctest` under Xvfb (so `x11-embedding` runs), clap-validator,
   pluginval on the VST3, `gui-preview`.
-- **Windows**: build and `ctest`; pluginval on the VST3. The port is not
-  done: framework 1.2.0 does not compile with MSVC yet.
+- **Windows**: MSVC with Ninja, `ctest` (so `win32-embedding` runs), the
+  install target, clap-validator, pluginval on the VST3 (editor included),
+  `gui-preview`. The runner has no GPU, so CI places Mesa's llvmpipe
+  `opengl32.dll` beside the test executables and pluginval
+  (`.github/scripts/get-mesa-windows.sh`); a DLL beside the executable is
+  loaded before System32's.
 
 Each job uploads the plugins, the probe's window captures and the previews
 as an artifact. A failing step repeats its compiler diagnostics and log tail
 as error annotations. GitHub's macOS runners are 1x virtual machines with a
-paravirtualised GPU: a pass there is evidence about Metal and Cocoa, not a
+paravirtualised GPU, and the Windows runners draw with a software
+renderer: a pass there is evidence about the platform code, not a
 substitute for real hardware.

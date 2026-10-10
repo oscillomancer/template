@@ -317,6 +317,12 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: .github/scripts/step.sh test ctest --preset ${{ matrix.preset }} --timeout 600
 
+      - name: Install into the user plug-in folders
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
+        run: |
+          .github/scripts/step.sh install cmake --build build/release --target product-install
+          ls -la "$LOCALAPPDATA/Programs/Common/CLAP" "$LOCALAPPDATA/Programs/Common/VST3"
+
       - name: pluginval (VST3)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         env:
