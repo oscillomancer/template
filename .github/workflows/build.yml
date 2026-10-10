@@ -253,8 +253,6 @@ jobs:
     name: Windows (${{ matrix.preset }})
     runs-on: windows-2022
     timeout-minutes: 60
-    permissions:
-      contents: write  # TEMPORARY: the ci-results publish step below
     strategy:
       fail-fast: false
       matrix:
@@ -355,21 +353,3 @@ jobs:
           name: windows-plugins
           path: dist/
           if-no-files-found: ignore
-
-      # TEMPORARY, for bringing CI up: logs and captures pushed to a
-      # throwaway branch where they can be read without the web UI.
-      - name: Publish results (temporary)
-        if: always() && matrix.preset == 'release'
-        env:
-          TOKEN: ${{ github.token }}
-        run: |
-          out="$RUNNER_TEMP/results"
-          rm -rf "$out" && mkdir -p "$out"
-          cp -r logs preview "$out/" 2>/dev/null || true
-          mkdir -p "$out/probe" && cp build/release/win32-probe*.ppm "$out/probe/" 2>/dev/null || true
-          cp build/release/Testing/Temporary/LastTest.log "$out/ctest-detail.log" 2>/dev/null || true
-          cd "$out"
-          git init -q -b ci-results-windows
-          git -c user.name=ci -c user.email=ci@users.noreply.github.com add -A
-          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "results for $GITHUB_SHA"
-          git push -qf "https://x-access-token:$TOKEN@github.com/$GITHUB_REPOSITORY" ci-results-windows
