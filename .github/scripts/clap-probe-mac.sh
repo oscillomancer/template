@@ -13,7 +13,7 @@ mkdir -p probe
 run() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 
 failed=0
-for scenario in "plain:" "resize:--resize" "reopen:--reopen" "no-host-timer:--no-host-timer" \
+for scenario in "plain:" "resize:--resize" "presize:--presize" "reopen:--reopen" "no-host-timer:--no-host-timer" \
                 "destroy-hot:--destroy-hot" "drop-parent:--drop-parent" "mono:--mono"; do
     label="${scenario%%:*}"
     flags="${scenario#*:}"
@@ -35,6 +35,11 @@ for scenario in "plain:" "resize:--resize" "reopen:--reopen" "no-host-timer:--no
     fi
     if [ "$label" = resize ]; then
         grep -q "set_size=1" "probe/$label.txt" || problems+=("set_size refused")
+    fi
+    if [ "$label" = presize ]; then
+        grep -q "presize: .* set_size=1" "probe/$label.txt" || problems+=("set_size before set_parent refused")
+        size=$(sed -n 's/^presize: adjust->\([0-9x]*\).*/\1/p' "probe/$label.txt")
+        grep -q "show=1 size=$size" "probe/$label.txt" || problems+=("editor did not open at the pre-parent size $size")
     fi
     if [ ${#problems[@]} -gt 0 ]; then
         echo "::error title=clap-probe $label::$(IFS='; '; echo "${problems[*]}")"

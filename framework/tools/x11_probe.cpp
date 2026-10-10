@@ -204,11 +204,28 @@ int main(int argc, char** argv) {
         check(host.gui->create(host.plugin, CLAP_WINDOW_API_X11, false), "create/reopen editor");
         uint32_t w = 0, h = 0;
         check(host.gui->get_size(host.plugin, &w, &h) && w && h, "editor dimensions");
+        // Hosts may size the editor between create and set_parent, and a
+        // saved editor scale is applied there too. Pugl has no window yet at
+        // that point, so the size must survive realizing rather than be
+        // refused (it was, before framework 1.2.0).
+        uint32_t preW = 0, preH = 0;
+        if (cycle == 1) {
+            preW = 1320;
+            preH = 840;
+            check(host.gui->adjust_size(host.plugin, &preW, &preH) && host.gui->set_size(host.plugin, preW, preH),
+                  "set_size before set_parent is honoured");
+            check(host.gui->get_size(host.plugin, &w, &h) && w == preW && h == preH, "pre-parent size reported");
+        }
         XResizeWindow(display, parent, w, h);
         clap_window_t window{}; window.api = CLAP_WINDOW_API_X11; window.x11 = parent;
         check(host.gui->set_parent(host.plugin, &window), "set actual X11 parent");
         check(host.gui->show(host.plugin), "show editor");
         pump(display, host, 25);
+        if (cycle == 1) {
+            uint32_t realW = 0, realH = 0;
+            check(host.gui->get_size(host.plugin, &realW, &realH) && realW == preW && realH == preH,
+                  "pre-parent size survives realizing");
+        }
         if (companion.plugin) companion.tick();
         check(embedded(display, parent), "mapped child belongs to host parent");
         w = 1320; h = 840;

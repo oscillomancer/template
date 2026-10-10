@@ -11,7 +11,7 @@
 // reading code.
 //
 //   clap-probe <path-to-binary-inside-.clap> [blocks] [--mono] [--resize] [--reopen]
-//              [--drop-parent] [--destroy-hot] [--no-host-timer]
+//              [--drop-parent] [--destroy-hot] [--no-host-timer] [--presize]
 //
 // Its window work is Cocoa-only; elsewhere it exercises everything but the
 // window (x11-probe covers X11 embedding).
@@ -156,6 +156,8 @@ int main(int argc, char** argv) {
     // releases the parent out from under a live editor, which is what a host
     // does when it tears its window down without telling the plugin first.
     bool reopen = false, dropParent = false, destroyHot = false, resize = false;
+    // Sizes the editor between create() and set_parent(), as hosts may.
+    bool presize = false;
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--no-host-timer")) gRefuseTimers = true;
         else if (!std::strcmp(argv[i], "--mono")) channels = 1;
@@ -163,6 +165,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--drop-parent")) dropParent = true;
         else if (!std::strcmp(argv[i], "--destroy-hot")) destroyHot = true;
         else if (!std::strcmp(argv[i], "--resize")) resize = true;
+        else if (!std::strcmp(argv[i], "--presize")) presize = true;
         else blocks = std::atoi(argv[i]);
     }
 #if !defined(__APPLE__)
@@ -251,6 +254,12 @@ int main(int argc, char** argv) {
                     (int)floating, (int)gui->is_api_supported(g.plugin, api, false));
 
         g.guiCreated = gui->create(g.plugin, api, false);
+        if (presize) {
+            uint32_t pw = 1125, ph = 700;
+            gui->adjust_size(g.plugin, &pw, &ph);
+            const bool ok = gui->set_size(g.plugin, pw, ph);
+            std::printf("presize: adjust->%ux%u set_size=%d\n", pw, ph, (int)ok);
+        }
         uint32_t gw = 0, gh = 0;
         gui->get_size(g.plugin, &gw, &gh);
 #if defined(__APPLE__)
