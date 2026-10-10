@@ -33,8 +33,15 @@ function(run_update)
     endif()
 endfunction()
 
+file(READ "${product}/CMakePresets.json" original)
 run_update()
 file(READ "${product}/CMakePresets.json" presets)
+# Exactly the one value changes; formatting and key order are the product's.
+string(REPLACE [=["halt_on_error=1:detect_leaks=1:log_path=/tmp/my-asan;session"]=]
+               [=["halt_on_error=1:log_path=/tmp/my-asan;session"]=] expected "${original}")
+if (NOT presets STREQUAL expected)
+    message(FATAL_ERROR "ASan migration changed more than the one value:\n${presets}")
+endif()
 string(JSON options GET "${presets}" testPresets 0 environment ASAN_OPTIONS)
 string(JSON ubsan GET "${presets}" testPresets 0 environment UBSAN_OPTIONS)
 string(JSON custom GET "${presets}" testPresets 1 environment ASAN_OPTIONS)

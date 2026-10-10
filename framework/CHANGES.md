@@ -7,7 +7,9 @@ anything, after `framework/tools/update_framework.cmake` brings it in.
 ## 1.2.1
 
 - `update_framework.cmake` removes `detect_leaks=1` from an existing
-  product's `asan` test preset too, preserving its other options and presets.
+  product's `asan` test preset too, changing only that value: other options,
+  other presets and the file's formatting are left as they were. Where the
+  value cannot be found exactly once it warns instead, to be edited by hand.
   When updating from 1.1.0, bootstrap with this version's updater as described
   below. A product already updated to 1.2.0 must also copy this updater into
   `framework/tools/` first for this migration, then run the update as usual.

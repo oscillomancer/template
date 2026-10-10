@@ -53,25 +53,29 @@ string(STRIP "${old}" old)
 string(STRIP "${new}" new)
 
 # The sanitizer preset is product-owned, outside framework/. Migrate only
-# the option that macOS rejects, retaining every other preset and option.
+# the option that macOS rejects (1.2.0 removed detect_leaks=1 from the
+# template's asan test preset), retaining every other preset and option.
+# CMake's JSON support finds the value, but writing the document back through
+# it would re-serialize the whole file with its keys sorted, so the edit is
+# made to the file's text instead: the one string literal changes and every
+# other byte, formatting included, stays as the product wrote it.
 function(migrate_asan_preset root)
     set(path "${root}/CMakePresets.json")
     if (NOT EXISTS "${path}")
         return()
     endif()
-    file(READ "${path}" presets)
-    string(JSON count ERROR_VARIABLE error LENGTH "${presets}" testPresets)
+    file(READ "${path}" text)
+    string(JSON count ERROR_VARIABLE error LENGTH "${text}" testPresets)
     if (error OR count EQUAL 0)
         return()
     endif()
     math(EXPR last "${count} - 1")
-    set(changed FALSE)
     foreach(i RANGE 0 ${last})
-        string(JSON name ERROR_VARIABLE error GET "${presets}" testPresets ${i} name)
+        string(JSON name ERROR_VARIABLE error GET "${text}" testPresets ${i} name)
         if (error OR NOT name STREQUAL "asan")
             continue()
         endif()
-        string(JSON before ERROR_VARIABLE error GET "${presets}" testPresets ${i} environment ASAN_OPTIONS)
+        string(JSON before ERROR_VARIABLE error GET "${text}" testPresets ${i} environment ASAN_OPTIONS)
         if (error)
             continue()
         endif()
@@ -80,17 +84,38 @@ function(migrate_asan_preset root)
             string(REGEX REPLACE "(^|:)detect_leaks=1:" "\\1" after "${after}")
             string(REGEX REPLACE "(^|:)detect_leaks=1$" "" after "${after}")
         endwhile()
-        if (NOT after STREQUAL before)
-            string(REPLACE "\\" "\\\\" escaped "${after}")
-            string(REPLACE "\"" "\\\"" escaped "${escaped}")
-            string(JSON presets SET "${presets}" testPresets ${i} environment ASAN_OPTIONS "\"${escaped}\"")
-            set(changed TRUE)
+        if (after STREQUAL before)
+            continue()
         endif()
-    endforeach()
-    if (changed)
-        file(WRITE "${path}" "${presets}\n")
+        # The old value as a JSON string literal, and how often it appears.
+        # Anything but exactly once (another preset with the same options, or
+        # an unusual escape) is left to the product's owner.
+        foreach(var before after)
+            string(REPLACE "\\" "\\\\" literal_${var} "${${var}}")
+            string(REPLACE "\"" "\\\"" literal_${var} "${literal_${var}}")
+            set(literal_${var} "\"${literal_${var}}\"")
+        endforeach()
+        string(REPLACE "${literal_before}" "" without "${text}")
+        string(LENGTH "${text}" full)
+        string(LENGTH "${without}" rest)
+        string(LENGTH "${literal_before}" one)
+        math(EXPR occurrences "(${full} - ${rest}) / ${one}")
+        if (NOT occurrences EQUAL 1)
+            message(WARNING "update_framework: remove detect_leaks=1 from ASAN_OPTIONS in the asan "
+                            "test preset of ${path} by hand; macOS's AddressSanitizer rejects it")
+            return()
+        endif()
+        string(REPLACE "${literal_before}" "${literal_after}" edited "${text}")
+        string(JSON check ERROR_VARIABLE error GET "${edited}" testPresets ${i} environment ASAN_OPTIONS)
+        if (error OR NOT check STREQUAL after)
+            message(WARNING "update_framework: could not edit ${path}; remove detect_leaks=1 from "
+                            "the asan test preset's ASAN_OPTIONS by hand")
+            return()
+        endif()
+        file(WRITE "${path}" "${edited}")
         message(STATUS "Removed macOS-incompatible detect_leaks=1 from the asan test preset")
-    endif()
+        return()
+    endforeach()
 endfunction()
 
 # Copy beside the old framework first and swap only once the copy is
