@@ -5,36 +5,48 @@
     {
       "name": "release",
       "displayName": "Release",
-      "binaryDir": "${sourceDir}/build-cmake",
+      "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
       "name": "debug",
       "displayName": "Debug",
-      "binaryDir": "${sourceDir}/build-debug",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "SUPPLE_WARNINGS_AS_ERRORS": "ON" }
     },
     {
-      "name": "sanitizers",
-      "displayName": "ASan + UBSan",
-      "binaryDir": "${sourceDir}/build-sanitizers",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "STARTER_BUILD_PLUGIN": "OFF",
-        "STARTER_BUILD_GUI": "OFF",
-        "STARTER_BUILD_TOOLS": "ON",
-        "STARTER_SANITIZERS": "ON"
-      }
+      "name": "asan",
+      "displayName": "AddressSanitizer + UBSan",
+      "binaryDir": "${sourceDir}/build/asan",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "SUPPLE_SANITIZE": "address" }
+    },
+    {
+      "name": "tsan",
+      "displayName": "ThreadSanitizer",
+      "binaryDir": "${sourceDir}/build/tsan",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "SUPPLE_SANITIZE": "thread", "SUPPLE_BUILD_GUI": "OFF" }
     }
   ],
   "buildPresets": [
     { "name": "release", "configurePreset": "release" },
     { "name": "debug", "configurePreset": "debug" },
-    { "name": "sanitizers", "configurePreset": "sanitizers" }
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "tsan", "configurePreset": "tsan" }
   ],
   "testPresets": [
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
     { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
-    { "name": "sanitizers", "configurePreset": "sanitizers", "output": { "outputOnFailure": true } }
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": { "outputOnFailure": true },
+      "environment": { "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1", "UBSAN_OPTIONS": "print_stacktrace=1" }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "output": { "outputOnFailure": true },
+      "environment": { "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1" }
+    }
   ]
 }

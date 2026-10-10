@@ -1,0 +1,224 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
+// Controls: the interaction half of every knob, slider, toggle, segmented
+// switch and dropdown. Drawing lives in Widgets.h; this file decides what a
+// press, drag, wheel turn or key does, and what the host is told.
+//
+// The rules, enforced here so no product has to remember them:
+//
+//   - At most one host gesture is open at a time. Anything that starts a new
+//     edit closes the previous one first.
+//   - Dragging: vertical for knobs, along the track for sliders. Shift is
+//     fine adjustment, and pressing or releasing it mid-drag re-anchors
+//     rather than jumping. The gesture opens on the first actual change.
+//   - Wheel and keyboard adjustments are one gesture per burst, closed after
+//     250 ms without input (measured with real time from idle()).
+//   - Double-click resets to the default. Ctrl- or Cmd-click, or Enter on a
+//     focused knob or slider, opens a text field that accepts anything the
+//     parameter's parser does ("1.2k", "-6", "50%").
+//   - Tab and Shift-Tab move focus in the order controls were added; arrows
+//     adjust (Shift: fine), Page Up/Down in tenths, Home/End to the limits,
+//     Backspace/Delete to the default, Enter toggles or opens, Escape backs
+//     out. Space is deliberately unbound: it belongs to the host's transport.
+//   - Losing focus ends every gesture and closes every overlay.
+//
+// Coordinates are design units throughout; Window converts.
+#pragma once
+
+#include <cstdint>
+#include <deque>
+
+#include "core/Param.h"
+#include "gui/EditorHost.h"
+
+namespace supple::gui {
+
+struct Rect {
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+
+    bool contains(float px, float py) const { return px >= x && px < x + w && py >= y && py < y + h; }
+    float right() const { return x + w; }
+    float bottom() const { return y + h; }
+    float cx() const { return x + w * 0.5f; }
+    float cy() const { return y + h * 0.5f; }
+    Rect inset(float d) const { return {x + d, y + d, w - 2.0f * d, h - 2.0f * d}; }
+    Rect inset(float dx, float dy) const { return {x + dx, y + dy, w - 2.0f * dx, h - 2.0f * dy}; }
+};
+
+enum class Widget : uint8_t { Knob, HSlider, VSlider, Toggle, Segmented, Dropdown };
+
+enum class Cursor : uint8_t { Arrow, Hand, Caret, LeftRight, UpDown };
+
+// Modifier bits and key codes. Values match pugl's so Window passes them
+// through untouched; printable keys are their Unicode code points.
+namespace mod {
+inline constexpr uint32_t kShift = 1u << 0;
+inline constexpr uint32_t kCtrl = 1u << 1;
+inline constexpr uint32_t kAlt = 1u << 2;
+inline constexpr uint32_t kSuper = 1u << 3;
+}  // namespace mod
+
+namespace key {
+inline constexpr uint32_t kBackspace = 0x0008u, kTab = 0x0009u, kEnter = 0x000Du, kEscape = 0x001Bu,
+                          kSpace = 0x0020u, kDelete = 0x007Fu, kPageUp = 0xE031u, kPageDown = 0xE032u,
+                          kEnd = 0xE033u, kHome = 0xE034u, kLeft = 0xE035u, kUp = 0xE036u,
+                          kRight = 0xE037u, kDown = 0xE038u, kPadEnter = 0xE070u;
+}  // namespace key
+
+struct Control {
+    uint32_t param = 0;
+    Widget widget = Widget::Knob;
+    Rect bounds;
+    const char* label = nullptr;  // the parameter's short label when absent
+    int variant = 0;              // free for a product's own drawing (e.g. a small knob)
+    bool visible = true;
+    bool enabled = true;
+
+    Control& withLabel(const char* text) { label = text; return *this; }
+    Control& withVariant(int v) { variant = v; return *this; }
+};
+
+// Everything a widget needs to draw one control.
+struct ControlState {
+    const ParamDef* def = nullptr;
+    double value = 0.0;       // host value
+    double normalized = 0.0;  // 0..1
+    double modulated = 0.0;   // 0..1 including host modulation
+    bool hover = false;
+    bool focused = false;
+    bool active = false;      // being dragged or edited right now
+    bool editing = false;     // its text field is open
+    int hoverIndex = -1;      // segment under the pointer
+
+    const char* label(const Control& c) const { return c.label ? c.label : def ? def->displayLabel() : ""; }
+};
+
+class Ui {
+  public:
+    static constexpr double kGestureIdleSeconds = 0.25;
+
+    Ui(EditorHost& host, float designWidth, float designHeight);
+
+    // --- building -----------------------------------------------------------
+    Control& add(uint32_t param, Widget widget, Rect bounds);
+    Control& knob(uint32_t param, Rect r) { return add(param, Widget::Knob, r); }
+    Control& hslider(uint32_t param, Rect r) { return add(param, Widget::HSlider, r); }
+    Control& vslider(uint32_t param, Rect r) { return add(param, Widget::VSlider, r); }
+    Control& toggle(uint32_t param, Rect r) { return add(param, Widget::Toggle, r); }
+    Control& segmented(uint32_t param, Rect r) { return add(param, Widget::Segmented, r); }
+    Control& dropdown(uint32_t param, Rect r) { return add(param, Widget::Dropdown, r); }
+
+    int count() const { return static_cast<int>(controls_.size()); }
+    const Control& control(int i) const { return controls_[static_cast<size_t>(i)]; }
+    Control& control(int i) { return controls_[static_cast<size_t>(i)]; }
+    int find(uint32_t param) const;
+    ControlState state(int i) const;
+
+    // --- input; each returns true when it used the event ---------------------
+    bool pointerDown(float x, float y, int button, uint32_t mods, bool doubleClick);
+    bool pointerMove(float x, float y, uint32_t mods);
+    bool pointerUp(float x, float y, int button, uint32_t mods);
+    void pointerLeave();
+    bool wheel(float x, float y, float dx, float dy, uint32_t mods);
+    bool key(uint32_t code, uint32_t mods);
+    bool text(uint32_t codepoint);
+    void focusLost();
+    void idle(double seconds);
+
+    // --- state for drawing ------------------------------------------------------
+    // Visual state changed since the last call (hover, focus, overlays).
+    bool takeDirty();
+    // Something time-based is in flight, so idle() must keep being called.
+    bool animating() const;
+    Cursor cursor() const;
+    int focus() const { return focus_; }
+    int hover() const { return hover_; }
+    bool dragging() const { return drag_.control >= 0; }
+
+    struct Menu {
+        bool open = false;
+        int control = -1;
+        Rect bounds;
+        int hover = -1;
+        int count = 0;
+        float rowHeight = 24.0f;
+        Rect row(int i) const { return {bounds.x, bounds.y + 4.0f + rowHeight * static_cast<float>(i), bounds.w, rowHeight}; }
+    };
+    struct TextEdit {
+        bool open = false;
+        int control = -1;
+        Rect bounds;
+        char buffer[48] = {};
+        int length = 0;
+        int caret = 0;
+        bool selectAll = true;  // typing replaces the whole field
+        bool caretOn = true;
+        double blink = 0.0;
+        bool rejected = false;  // the last commit did not parse
+    };
+    const Menu& menu() const { return menu_; }
+    const TextEdit& textEdit() const { return text_; }
+
+    // For a product's own interactive drawing -- a graph handle, a node --
+    // that edits the parameter behind control i the way a drag would. Ui
+    // keeps the one-gesture rule: this closes any other gesture, and
+    // endDragEdit() closes this one.
+    void dragEdit(int control, double host);
+    void endDragEdit() { endGesture(); }
+
+    void setFocus(int control);
+    void openMenu(int control);
+    void openTextEdit(int control);
+    // Where a control's text field opens.
+    static Rect valueBox(const Control& c);
+
+  private:
+    struct Drag {
+        int control = -1;
+        float anchorX = 0.0f, anchorY = 0.0f;
+        double anchorNormal = 0.0;
+        double normal = 0.0;
+        bool fine = false;
+    };
+
+    const ParamDef* def(int i) const;
+    double currentValue(int i) const;
+    int controlAt(float x, float y) const;
+    int segmentAt(int i, float x) const;
+    bool adjustable(int i) const;
+    bool textEditable(int i) const;
+
+    void beginGesture(int i, bool timed);
+    void endGesture();
+    void send(int i, double host);
+    void oneShot(int i, double host);
+    void timedEdit(int i, double host);
+    void step(int i, double normalDelta, int steps);
+
+    void closeMenu();
+    void commitText();
+    void cancelText();
+    bool textKey(uint32_t code, uint32_t mods);
+    bool menuKey(uint32_t code);
+    void moveFocus(int direction);
+
+    EditorHost& host_;
+    float designW_, designH_;
+    std::deque<Control> controls_;  // stable references across add()
+    Drag drag_;
+    Menu menu_;
+    TextEdit text_;
+    int gesture_ = -1;
+    bool gestureTimed_ = false;
+    double gestureIdle_ = 0.0;
+    double wheelAccumulator_ = 0.0;
+    int wheelControl_ = -1;
+    int focus_ = -1;
+    int hover_ = -1;
+    int hoverSegment_ = -1;
+    float pointerX_ = -1.0f, pointerY_ = -1.0f;
+    bool dirty_ = true;
+};
+
+}  // namespace supple::gui

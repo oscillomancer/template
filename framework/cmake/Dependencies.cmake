@@ -1,0 +1,229 @@
+# Third-party sources, fetched at configure time and pinned to exact commits:
+# a branch name would let two checkouts of the same source build different
+# plugins. Revalidate every format before moving any of these, and regenerate
+# NOTICES.txt when one moves.
+#
+# Vendored code builds with warnings off and hidden visibility. It is not
+# ours to keep clean, and burying our own warnings under it is how ours get
+# ignored.
+
+include(FetchContent)
+
+function(supple_vendored target)
+    set_target_properties(${target} PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden
+        OBJC_VISIBILITY_PRESET hidden OBJCXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+    if (MSVC)
+        target_compile_options(${target} PRIVATE /W0)
+    else()
+        target_compile_options(${target} PRIVATE -w)
+    endif()
+    supple_sanitize(${target})
+endfunction()
+
+# Applies a patch to a fetched checkout, idempotently: a reconfigure finds it
+# already applied and moves on; a dependency that moved so the patch no longer
+# applies stops the configure rather than building unpatched. Each patch is
+# also a test (patch-<name>), so a dependency bump cannot drop one quietly.
+function(supple_apply_patch source_dir patch)
+    get_filename_component(name "${patch}" NAME_WE)
+    execute_process(COMMAND ${GIT_EXECUTABLE} apply --check "${patch}"
+        WORKING_DIRECTORY "${source_dir}" RESULT_VARIABLE applicable OUTPUT_QUIET ERROR_QUIET)
+    if (applicable EQUAL 0)
+        execute_process(COMMAND ${GIT_EXECUTABLE} apply "${patch}"
+            WORKING_DIRECTORY "${source_dir}" COMMAND_ERROR_IS_FATAL ANY)
+        message(STATUS "Applied ${name}")
+    else()
+        execute_process(COMMAND ${GIT_EXECUTABLE} apply --reverse --check "${patch}"
+            WORKING_DIRECTORY "${source_dir}" RESULT_VARIABLE present OUTPUT_QUIET ERROR_QUIET)
+        if (NOT present EQUAL 0)
+            message(FATAL_ERROR "${name} no longer applies to ${source_dir}")
+        endif()
+    endif()
+    set_property(GLOBAL APPEND PROPERTY SUPPLE_PATCHES "${name}|${source_dir}|${patch}")
+endfunction()
+
+# --- clap-wrapper: CLAP SDK, VST3 and AUv2 --------------------------------------------
+
+if (SUPPLE_BUILD_PLUGIN)
+    # Patch validation needs Git even when dependency sources are overridden.
+    find_package(Git REQUIRED)
+    set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES ON CACHE BOOL "" FORCE)
+    set(CLAP_WRAPPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(clap-wrapper
+        GIT_REPOSITORY https://github.com/free-audio/clap-wrapper.git
+        GIT_TAG 1cca996e96f29ab2be7ae9f8cfe532bbc92e1dd6  # v0.16.0
+        GIT_SHALLOW OFF)
+    FetchContent_MakeAvailable(clap-wrapper)
+
+    # clap-wrapper 0.16.0 keeps only the last VST3 automation point in each
+    # parameter queue, so a host's sample-accurate automation arrives once
+    # per block.
+    supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-all-points.patch)
+    # register_timer() clamps every request to 30 ms, capping a VST3 editor
+    # at 33 fps however fast it asked to run.
+    supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-timer-floor.patch)
+    # On Linux the wrapper reopened its own module and kept the handle,
+    # pinning it against the host's dlclose and then unmapping it from inside
+    # its own static destructors at exit; and it looked up clap_entry with a
+    # null handle, which searches the whole process and can find another
+    # plugin's.
+    supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-self-handle.patch)
+endif()
+
+# --- pugl, NanoVG, nanovg_metal ------------------------------------------------------------
+
+if (SUPPLE_BUILD_GUI)
+    FetchContent_Declare(pugl
+        GIT_REPOSITORY https://github.com/lv2/pugl.git
+        GIT_TAG b7637149ebe53124e5be90559e02a0185bbcbd73
+        GIT_SHALLOW OFF)
+    FetchContent_Declare(nanovg
+        GIT_REPOSITORY https://github.com/memononen/nanovg.git
+        GIT_TAG ce3bf745eb2d2dbc14a50bf2446783f691ac4353
+        GIT_SHALLOW OFF)
+    FetchContent_MakeAvailable(pugl nanovg)
+    if (SUPPLE_METAL)
+        # wjakob's fork rather than ollix/MetalNanoVG (untouched since 2022):
+        # it adds an explicit command queue and target texture, and sizes the
+        # stencil buffer from the render target, which NVG_STENCIL_STROKES
+        # needs. Shaders ship precompiled, so there is no .metal step to own.
+        FetchContent_Declare(nanovg_metal
+            GIT_REPOSITORY https://github.com/wjakob/nanovg_metal.git
+            GIT_TAG 1e4243990741f5b0da73bc0f25c85ae0e31b8766
+            GIT_SHALLOW OFF)
+        FetchContent_MakeAvailable(nanovg_metal)
+    endif()
+
+    # Objective-C has one flat, process-wide class namespace, and pugl and
+    # nanovg_metal are vendored by many plugins, this framework's products
+    # included. Two images defining the same class make the runtime keep the
+    # first and resolve every later lookup by name to it -- fine while the
+    # copies are identical, reading at the wrong offsets once one moves. The
+    # class names are ordinary identifiers, so the preprocessor gives each
+    # product its own: starter_PuglWrapperView and so on. auval reported the
+    # collision the moment two products from this lineage were installed.
+    set(SUPPLE_OBJC_CLASSES
+        PuglWindow PuglWindowDelegate PuglWrapperView
+        PuglStubView PuglOpenGLView PuglMetalView PuglCairoView PuglVulkanView
+        MNVGbuffers MNVGcontext MNVGtexture)
+
+    function(supple_objc_prefix target)
+        if (APPLE)
+            foreach(cls ${SUPPLE_OBJC_CLASSES})
+                target_compile_definitions(${target} PRIVATE "${cls}=${PRODUCT_CODE}_${cls}")
+            endforeach()
+        endif()
+    endfunction()
+
+    # pugl ships a meson build; its source list is small and stable (see
+    # pugl/meson.build), so the platform files are compiled directly.
+    function(supple_pugl name metal)
+        set(src ${pugl_SOURCE_DIR}/src/common.c ${pugl_SOURCE_DIR}/src/internal.c)
+        if (APPLE)
+            list(APPEND src ${pugl_SOURCE_DIR}/src/mac.m)
+            if (metal)
+                # pugl has no Metal backend, and no upstream work towards one.
+                list(APPEND src ${SUPPLE_FRAMEWORK}/gui/pugl_metal.m)
+            else()
+                list(APPEND src ${pugl_SOURCE_DIR}/src/mac_gl.m)
+            endif()
+        elseif (WIN32)
+            list(APPEND src ${pugl_SOURCE_DIR}/src/win.c ${pugl_SOURCE_DIR}/src/win_gl.c)
+        else()
+            list(APPEND src ${pugl_SOURCE_DIR}/src/x11.c ${pugl_SOURCE_DIR}/src/x11_gl.c)
+        endif()
+        add_library(${name} STATIC ${src})
+        target_include_directories(${name} SYSTEM PUBLIC ${pugl_SOURCE_DIR}/include)
+        set_target_properties(${name} PROPERTIES C_STANDARD 99)
+        target_compile_definitions(${name} PUBLIC PUGL_STATIC)  # no dllimport on Windows
+        supple_vendored(${name})
+        supple_objc_prefix(${name})
+        if (APPLE)
+            # pugl manages its own retain/release: ARC must stay off, and the
+            # Metal backend, built from pugl's internals, follows it.
+            set_source_files_properties(${pugl_SOURCE_DIR}/src/mac.m ${pugl_SOURCE_DIR}/src/mac_gl.m
+                ${SUPPLE_FRAMEWORK}/gui/pugl_metal.m PROPERTIES COMPILE_OPTIONS "-fno-objc-arc")
+            target_link_libraries(${name} PUBLIC "-framework Cocoa" "-framework AppKit"
+                "-framework Foundation" "-framework CoreVideo")
+            if (metal)
+                target_include_directories(${name} PRIVATE ${pugl_SOURCE_DIR}/src ${SUPPLE_FRAMEWORK}/gui)
+                target_link_libraries(${name} PUBLIC "-framework Metal" "-framework QuartzCore")
+            else()
+                target_compile_definitions(${name} PUBLIC GL_SILENCE_DEPRECATION)
+                target_link_libraries(${name} PUBLIC "-framework OpenGL")
+            endif()
+        elseif (WIN32)
+            target_link_libraries(${name} PUBLIC dwmapi gdi32 shell32 shlwapi user32 opengl32)
+        else()
+            find_package(X11 REQUIRED)
+            find_package(OpenGL REQUIRED)
+            target_compile_definitions(${name} PRIVATE _POSIX_C_SOURCE=200809L)
+            target_link_libraries(${name} PUBLIC X11::X11 OpenGL::GL)
+            # Optional X extensions, probed as pugl's own build does. The
+            # USE_* defines must be present either way.
+            foreach(ext Xcursor Xrandr Xext)
+                if (X11_${ext}_FOUND)
+                    target_link_libraries(${name} PUBLIC X11::${ext})
+                endif()
+            endforeach()
+            target_compile_definitions(${name} PRIVATE
+                USE_XCURSOR=$<BOOL:${X11_Xcursor_FOUND}>
+                USE_XRANDR=$<BOOL:${X11_Xrandr_FOUND}>
+                USE_XSYNC=$<BOOL:${X11_Xext_FOUND}>)
+        endif()
+    endfunction()
+
+    supple_pugl(supple-pugl ${SUPPLE_METAL})
+    if (SUPPLE_METAL)
+        supple_pugl(supple-pugl-gl OFF)  # the offline preview reads GL framebuffers
+    endif()
+
+    add_library(supple-nanovg STATIC ${nanovg_SOURCE_DIR}/src/nanovg.c)
+    target_include_directories(supple-nanovg SYSTEM PUBLIC ${nanovg_SOURCE_DIR}/src)
+    set_target_properties(supple-nanovg PROPERTIES C_STANDARD 99)
+    supple_vendored(supple-nanovg)
+
+    if (SUPPLE_METAL)
+        add_library(supple-nanovg-mtl STATIC ${nanovg_metal_SOURCE_DIR}/src/nanovg_mtl.m)
+        target_include_directories(supple-nanovg-mtl SYSTEM PUBLIC ${nanovg_metal_SOURCE_DIR}/src)
+        target_link_libraries(supple-nanovg-mtl PUBLIC supple-nanovg "-framework Metal" "-framework QuartzCore")
+        supple_vendored(supple-nanovg-mtl)
+        supple_objc_prefix(supple-nanovg-mtl)
+        # nanovg_mtl.m REQUIRES ARC -- the opposite of pugl. It has no retain,
+        # release or dealloc anywhere, passes ownership through NanoVG's void*
+        # with __bridge_retained/__bridge_transfer, and assigns autoreleased
+        # objects straight to strong ivars. Built without ARC it compiles
+        # cleanly and then frees those ivars at the next autorelease pool
+        # drain: a use-after-free mid-render. CMake does not enable ARC itself.
+        set_source_files_properties(${nanovg_metal_SOURCE_DIR}/src/nanovg_mtl.m
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    endif()
+
+    # Fonts, compiled in: a plugin has nowhere reliable to load a file from.
+    # One library, so no generated source belongs to two targets (which races
+    # under Make and is an error under Xcode).
+    set(font_dir ${SUPPLE_FRAMEWORK}/gui/fonts)
+    set(font_out ${CMAKE_BINARY_DIR}/generated/fonts)
+    set(font_sources "")
+    foreach(spec
+            "Inter-Regular:supple_font_inter_regular"
+            "Inter-SemiBold:supple_font_inter_semibold"
+            "PlexMono-Regular:supple_font_plex_mono_regular"
+            "PlexMono-Medium:supple_font_plex_mono_medium"
+            "PlexSansCondensed-SemiBold:supple_font_plex_sans_condensed_semibold")
+        string(REPLACE ":" ";" parts "${spec}")
+        list(GET parts 0 file)
+        list(GET parts 1 symbol)
+        add_custom_command(OUTPUT ${font_out}/${file}.c
+            COMMAND ${CMAKE_COMMAND} -DINPUT=${font_dir}/${file}.ttf -DOUTPUT=${font_out}/${file}.c
+                    -DSYMBOL=${symbol} -P ${SUPPLE_FRAMEWORK}/cmake/Bin2c.cmake
+            DEPENDS ${font_dir}/${file}.ttf ${SUPPLE_FRAMEWORK}/cmake/Bin2c.cmake
+            COMMENT "Embedding ${file}.ttf" VERBATIM)
+        list(APPEND font_sources ${font_out}/${file}.c)
+    endforeach()
+    add_library(supple-fonts STATIC ${font_sources})
+    supple_vendored(supple-fonts)
+endif()

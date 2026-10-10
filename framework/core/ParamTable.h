@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Supple Audio
+//
+// Binds the framework to the product's parameter table (product/Params.h) and
+// checks that table at compile time. A duplicated ID, a default outside its
+// range or a log taper that starts at zero is a build error, not a session
+// that misbehaves in a host months later.
+//
+// Parameter IDs are session ABI and need not be dense: a product may reserve
+// ranges (globals 0..63, band b at 64 + 32 * b, ...). Storage everywhere is by
+// table index; indexOf() maps an ID to it in constant time.
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+
+#include "core/Param.h"
+#include "Params.h"
+
+namespace supple::params {
+
+inline constexpr size_t kCount = std::size(product::kParams);
+static_assert(kCount > 0, "product::kParams is empty");
+
+inline constexpr const ParamDef& at(size_t index) { return product::kParams[index]; }
+
+namespace detail {
+
+constexpr uint32_t idLimit() {
+    uint32_t limit = 0;
+    for (const auto& p : product::kParams)
+        if (p.id + 1 > limit) limit = p.id + 1;
+    return limit;
+}
+
+constexpr bool sameString(const char* a, const char* b) {
+    while (*a && *a == *b) {
+        ++a;
+        ++b;
+    }
+    return *a == *b;
+}
+
+constexpr bool idsUnique() {
+    for (size_t i = 0; i < kCount; ++i)
+        for (size_t j = i + 1; j < kCount; ++j)
+            if (at(i).id == at(j).id) return false;
+    return true;
+}
+
+constexpr bool namesUnique() {
+    for (size_t i = 0; i < kCount; ++i) {
+        if (!at(i).name || !at(i).name[0]) return false;
+        for (size_t j = i + 1; j < kCount; ++j)
+            if (sameString(at(i).name, at(j).name)) return false;
+    }
+    return true;
+}
+
+constexpr bool rangesValid() {
+    for (const auto& p : product::kParams) {
+        if (!(p.max > p.min) || p.def < p.min || p.def > p.max) return false;
+        if (p.taper == Taper::Log && p.min <= 0.0) return false;
+        if (p.taper == Taper::Power && p.curve <= 0.0) return false;
+    }
+    return true;
+}
+
+constexpr bool labelsValid() {
+    for (const auto& p : product::kParams) {
+        // The factories set labels and labelCount together. (Testing the
+        // pointer for null is not a constant expression under some
+        // sanitizers, so the count stands in for it.)
+        if (p.kind == ParamKind::Choice && p.labelCount != static_cast<int>(p.max - p.min) + 1) return false;
+        if (p.kind == ParamKind::Toggle && (p.min != 0.0 || p.max != 1.0)) return false;
+        if (p.stepped() && p.def != static_cast<double>(static_cast<long long>(p.def))) return false;
+    }
+    return true;
+}
+
+constexpr int bypassCount() {
+    int n = 0;
+    for (const auto& p : product::kParams)
+        if (p.is(pflag::kBypass)) ++n;
+    return n;
+}
+
+constexpr bool bypassValid() {
+    for (const auto& p : product::kParams)
+        if (p.is(pflag::kBypass) && p.kind != ParamKind::Toggle) return false;
+    return bypassCount() <= 1;
+}
+
+}  // namespace detail
+
+static_assert(detail::idsUnique(), "two parameters share an ID");
+static_assert(detail::namesUnique(), "parameter names must be present and unique");
+static_assert(detail::rangesValid(),
+              "a parameter has max <= min, a default outside its range, a log taper with "
+              "min <= 0, or a power taper with curve <= 0");
+static_assert(detail::labelsValid(),
+              "a choice's label count does not match its range, a toggle is not 0..1, or a "
+              "stepped default is not a whole number");
+static_assert(detail::bypassValid(), "at most one bypass parameter, and it must be a toggle");
+
+inline constexpr uint32_t kIdLimit = detail::idLimit();
+static_assert(kIdLimit <= 65536, "parameter IDs above 65535: use a denser ID scheme");
+
+namespace detail {
+constexpr std::array<int32_t, kIdLimit> buildIndex() {
+    std::array<int32_t, kIdLimit> index{};
+    for (auto& slot : index) slot = -1;
+    for (size_t i = 0; i < kCount; ++i) index[at(i).id] = static_cast<int32_t>(i);
+    return index;
+}
+constexpr int findBypass() {
+    for (size_t i = 0; i < kCount; ++i)
+        if (at(i).is(pflag::kBypass)) return static_cast<int>(i);
+    return -1;
+}
+constexpr bool anyFlag(uint32_t flag) {
+    for (const auto& p : product::kParams)
+        if (p.is(flag)) return true;
+    return false;
+}
+}  // namespace detail
+
+inline constexpr std::array<int32_t, kIdLimit> kIndexOfId = detail::buildIndex();
+
+// Table index of the parameter with this ID, or -1.
+inline constexpr int indexOf(uint32_t id) { return id < kIdLimit ? kIndexOfId[id] : -1; }
+
+inline constexpr const ParamDef* find(uint32_t id) {
+    const int i = indexOf(id);
+    return i >= 0 ? &product::kParams[i] : nullptr;
+}
+
+// Table index of the bypass parameter, or -1 when the product has none.
+inline constexpr int kBypassIndex = detail::findBypass();
+inline constexpr bool kAnyRestart = detail::anyFlag(pflag::kRestart);
+
+}  // namespace supple::params
