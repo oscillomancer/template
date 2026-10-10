@@ -57,7 +57,9 @@ jobs:
 
       - name: Product identity
         id: product
-        run: .github/scripts/product-info.sh >> "$GITHUB_OUTPUT"
+        run: |
+          .github/scripts/step.sh product-info bash -c '.github/scripts/product-info.sh > "$RUNNER_TEMP/product.env"'
+          cat "$RUNNER_TEMP/product.env" >> "$GITHUB_OUTPUT"
 
       - name: Tools
         run: |
@@ -201,7 +203,9 @@ jobs:
 
       - name: Product identity
         id: product
-        run: .github/scripts/product-info.sh >> "$GITHUB_OUTPUT"
+        run: |
+          .github/scripts/step.sh product-info bash -c '.github/scripts/product-info.sh > "$RUNNER_TEMP/product.env"'
+          cat "$RUNNER_TEMP/product.env" >> "$GITHUB_OUTPUT"
 
       - name: Packages
         run: |
@@ -284,7 +288,9 @@ jobs:
 
       - name: Product identity
         id: product
-        run: .github/scripts/product-info.sh >> "$GITHUB_OUTPUT"
+        run: |
+          .github/scripts/step.sh product-info bash -c '.github/scripts/product-info.sh > "$RUNNER_TEMP/product.env"'
+          cat "$RUNNER_TEMP/product.env" >> "$GITHUB_OUTPUT"
 
       # Puts cl.exe, link.exe and the Windows SDK on PATH for Ninja.
       - uses: ilammy/msvc-dev-cmd@v1
