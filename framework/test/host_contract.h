@@ -280,7 +280,7 @@ Render render(const clap_plugin_factory_t* factory, const char* id, const char* 
             note.header.size = sizeof(note);
             note.header.time = 7;
             note.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            note.header.type = (b == 1 || b == 13) ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF;
+            note.header.type = static_cast<uint16_t>((b == 1 || b == 13) ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF);
             note.note_id = b < 13 ? 1 : 2;
             note.port_index = 0;
             note.channel = 0;

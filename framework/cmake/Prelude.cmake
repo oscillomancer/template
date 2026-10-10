@@ -46,6 +46,14 @@ if (NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET OR CMAKE_OSX_DEPLOYMENT_TARGET STREQ
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version" FORCE)
 endif()
 
+# Windows: link the C++ runtime statically into every binary, so a plugin
+# needs no Visual C++ redistributable on the user's machine. clap-wrapper
+# builds its own libraries this way unless told otherwise, and one binary
+# cannot mix the two (LNK2038, "mismatch detected for 'RuntimeLibrary'").
+if (NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # A bare `cmake -B build` sets no build type on single-config generators and
 # silently produces an unoptimised plugin.
 get_property(_supple_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)

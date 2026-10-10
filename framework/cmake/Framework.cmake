@@ -74,7 +74,9 @@ function(supple_defaults target)
         target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     endif()
     if (MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+        # C4324: a struct padded to honour alignas -- the cache-line spacing
+        # in Ring is that padding on purpose.
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /wd4324)
         if (SUPPLE_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
         endif()
