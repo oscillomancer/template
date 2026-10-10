@@ -83,6 +83,7 @@ jobs:
             ${CLAP_VALIDATOR:+-DSUPPLE_CLAP_VALIDATOR="$CLAP_VALIDATOR"}
 
       - name: Build
+        id: build
         run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
@@ -91,31 +92,37 @@ jobs:
       # Everything below exercises the release build as a host would see it.
 
       - name: Install into the user plug-in folders
-        if: matrix.preset == 'release'
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
           cmake --build build/release --target product-install
           ls -la ~/Library/Audio/Plug-Ins/CLAP ~/Library/Audio/Plug-Ins/VST3 ~/Library/Audio/Plug-Ins/Components
 
       - name: Bundle signatures and architecture
-        if: matrix.preset == 'release'
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
           name='${{ steps.product.outputs.name }}'
           for b in "$name.clap" "$name.vst3" "$name.component"; do
+            bin="build/release/plugins/$b/Contents/MacOS/$name"
             echo "== $b"
-            codesign --verify --deep --strict --verbose=2 "build/release/plugins/$b"
-            lipo -info "build/release/plugins/$b/Contents/MacOS/$name"
-            otool -l "build/release/plugins/$b/Contents/MacOS/$name" | grep -A3 LC_BUILD_VERSION | grep -E "minos|platform"
+            lipo -info "$bin"
+            otool -l "$bin" | grep -A4 LC_BUILD_VERSION | grep -E "minos|sdk" || true
+            codesign -dv "build/release/plugins/$b" 2>&1 | grep -E "Signature|flags|Sealed" || true
           done
+          # Only the AU is signed as a bundle (macOS refuses to register an
+          # AU otherwise); the CLAP and VST3 carry the linker's ad-hoc
+          # signature on their binaries, as Ferric's do.
+          .github/scripts/step.sh codesign-au codesign --verify --deep --strict --verbose=2 \
+            "build/release/plugins/$name.component"
           plutil -p "build/release/plugins/$name.component/Contents/Info.plist"
 
       - name: auval
-        if: matrix.preset == 'release'
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
           auval -a | grep -i '${{ steps.product.outputs.au_manufacturer }}' || true
           .github/scripts/step.sh auval auval -strict -v ${{ steps.product.outputs.au_type }} '${{ steps.product.outputs.au_subtype }}' '${{ steps.product.outputs.au_manufacturer }}'
 
       - name: pluginval (VST3 and AU)
-        if: matrix.preset == 'release'
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -131,11 +138,11 @@ jobs:
       # GPU is paravirtualised. A pass here is evidence, not proof -- the
       # editor still has to be opened on real hardware.
       - name: clap-probe (editor in a Cocoa host window)
-        if: matrix.preset == 'release'
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: .github/scripts/clap-probe-mac.sh '${{ steps.product.outputs.name }}'
 
       - name: gui-preview (OpenGL, 1x and 2x)
-        if: matrix.preset == 'release'
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
           mkdir -p preview
           .github/scripts/step.sh preview-1x ./build/release/gui-preview preview/editor-1x.png --scale 1
@@ -202,13 +209,14 @@ jobs:
             ${CLAP_VALIDATOR:+-DSUPPLE_CLAP_VALIDATOR="$CLAP_VALIDATOR"}
 
       - name: Build
+        id: build
         run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }}
 
       - name: Test (under Xvfb, so x11-embedding runs)
         run: .github/scripts/step.sh test xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset ${{ matrix.preset }} --timeout 600
 
       - name: pluginval (VST3)
-        if: matrix.preset == 'release'
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -218,7 +226,7 @@ jobs:
             --validate "build/release/plugins/${{ steps.product.outputs.name }}.vst3"
 
       - name: gui-preview (1x and 2x)
-        if: matrix.preset == 'release'
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
           mkdir -p preview
           .github/scripts/step.sh preview-1x xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview preview/editor-1x.png --scale 1
@@ -282,13 +290,14 @@ jobs:
             ${CLAP_VALIDATOR:+-DSUPPLE_CLAP_VALIDATOR="$CLAP_VALIDATOR"}
 
       - name: Build
+        id: build
         run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
         run: .github/scripts/step.sh test ctest --preset ${{ matrix.preset }} --timeout 600
 
       - name: pluginval (VST3)
-        if: matrix.preset == 'release'
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
