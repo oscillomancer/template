@@ -67,8 +67,21 @@ function(supple_defaults target)
         C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden
         OBJC_VISIBILITY_PRESET hidden OBJCXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON)
+    if (WIN32)
+        # <windows.h> arrives through pugl's and GL's headers as well as our
+        # own; without these it defines min and max as macros, which turns
+        # every std::min and std::max after it into a syntax error.
+        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        # The CRT deprecates fopen, strcpy and friends in favour of its own
+        # _s variants (C4996); the framework uses the portable ones.
+        target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
     if (MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+        # C4324: a struct padded to honour alignas -- the cache-line spacing
+        # in Ring is that padding on purpose. C4127: a condition on a
+        # compile-time constant (a product's kInstrument, kAnyRestart), which
+        # is how the framework writes product-dependent code.
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /wd4324 /wd4127)
         if (SUPPLE_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
         endif()

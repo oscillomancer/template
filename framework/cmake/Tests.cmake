@@ -110,6 +110,23 @@ if (SUPPLE_BUILD_PLUGIN)
         endif()
     endif()
 
+    if (WIN32 AND SUPPLE_BUILD_GUI)
+        # A real Win32 parent: embedding, pixels, resize, set_scale(2),
+        # hide/show, three create/destroy cycles while audio runs. Needs an
+        # OpenGL 2 driver; see the note at the top of win32_probe.cpp.
+        add_executable(win32-probe ${SUPPLE_FRAMEWORK}/tools/win32_probe.cpp)
+        target_link_libraries(win32-probe PRIVATE clap user32 gdi32 Threads::Threads)
+        supple_defaults(win32-probe)
+        add_test(NAME win32-embedding
+            COMMAND win32-probe $<TARGET_FILE:product-plugin_clap> ${CMAKE_BINARY_DIR}/win32-probe.ppm)
+        # A host without clap.timer-support: the editor's own WM_TIMER
+        # fallback must carry it through the same lifecycle.
+        add_test(NAME win32-embedding-no-host-timer
+            COMMAND win32-probe $<TARGET_FILE:product-plugin_clap> ${CMAKE_BINARY_DIR}/win32-probe-no-timer.ppm
+                    --no-host-timer)
+        set_tests_properties(win32-embedding win32-embedding-no-host-timer PROPERTIES RUN_SERIAL TRUE)
+    endif()
+
     if (APPLE AND TARGET product-plugin_auv2)
         add_test(NAME auv2-bundle
             COMMAND ${CMAKE_COMMAND} -DBUNDLE=${SUPPLE_ASSETS}/${PRODUCT_NAME}.component

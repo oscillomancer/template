@@ -193,10 +193,12 @@ and must not overlap.
 - `product/test` measures every claim the product makes.
 - The editor has been looked at with `gui-preview` at 1x and 2x, with menus
   and text fields open, and opened in a real host. It resizes, reopens and
-  survives teardown (`x11-probe` on Linux, `clap-probe` on macOS).
+  survives teardown (`x11-probe` on Linux, `clap-probe` on macOS,
+  `win32-probe` on Windows).
 - Every format was built from the same commit; `auval` passes on macOS.
-  Without a Mac, the CI workflow (`docs/BUILDING.md`) builds and validates
-  macOS; say plainly that it ran on a virtual machine.
+  Without a Mac or a Windows machine, the CI workflow (`docs/BUILDING.md`)
+  builds and validates those platforms; say plainly that it ran on a
+  virtual machine.
 - The root `AGENTS.md` and `README.md` describe what the code does now.
 - Whatever was not verified on a platform is said plainly.
 

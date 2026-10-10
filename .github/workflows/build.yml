@@ -82,7 +82,7 @@ jobs:
 
       - name: Build
         id: build
-        run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }}
+        run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }} -- -k 0
 
       - name: Test
         run: .github/scripts/step.sh test ctest --preset ${{ matrix.preset }} --timeout 600
@@ -210,7 +210,7 @@ jobs:
 
       - name: Build
         id: build
-        run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }}
+        run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }} -- -k 0
 
       - name: Test (under Xvfb, so x11-embedding runs)
         run: .github/scripts/step.sh test xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset ${{ matrix.preset }} --timeout 600
@@ -293,10 +293,33 @@ jobs:
 
       - name: Build
         id: build
-        run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }}
+        run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }} -- -k 0
+
+      # The runner's desktop is 1024x768, smaller than an editor resized to
+      # 1320x840, which would put the probe's capture partly off screen.
+      - name: Display resolution
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+
+      # The runner has no GPU driver; see get-mesa-windows.sh. Placed beside
+      # the build's executables, so win32-embedding and gui-preview draw.
+      - name: Software OpenGL
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/get-mesa-windows.sh build/${{ matrix.preset }}
 
       - name: Test
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: .github/scripts/step.sh test ctest --preset ${{ matrix.preset }} --timeout 600
+
+      - name: Install into the user plug-in folders
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
+        run: |
+          .github/scripts/step.sh install cmake --build build/release --target product-install
+          ls -la "$LOCALAPPDATA/Programs/Common/CLAP" "$LOCALAPPDATA/Programs/Common/VST3"
 
       - name: pluginval (VST3)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
@@ -304,14 +327,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PLUGINVAL="$(.github/scripts/get-pluginval.sh windows)"
+          .github/scripts/get-mesa-windows.sh "$(dirname "$PLUGINVAL")"
           .github/scripts/step.sh pluginval "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
-            --validate "build/release/plugins/${{ steps.product.outputs.name }}.vst3"
+            --validate "build/release/plugins/VST3/${{ steps.product.outputs.name }}.vst3"
+
+      - name: gui-preview (1x and 2x)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
+        run: |
+          mkdir -p preview
+          .github/scripts/step.sh preview-1x ./build/release/gui-preview preview/editor-1x.png --scale 1
+          .github/scripts/step.sh preview-2x ./build/release/gui-preview preview/editor-2x.png --scale 2
 
       - name: Package
         if: always() && matrix.preset == 'release'
         run: |
-          mkdir -p dist
+          mkdir -p dist/probe
           cp -r build/release/plugins/. dist/ 2>/dev/null || true
+          cp preview/*.png dist/ 2>/dev/null || true
+          cp build/release/win32-probe*.ppm dist/probe/ 2>/dev/null || true
+          cp -r logs dist/ 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always() && matrix.preset == 'release'

@@ -203,8 +203,8 @@ struct Plugin
             ev.header.size = sizeof(ev);
             ev.header.time = 0;
             ev.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            ev.header.type = kind == EditBridge::Kind::Begin ? CLAP_EVENT_PARAM_GESTURE_BEGIN
-                                                             : CLAP_EVENT_PARAM_GESTURE_END;
+            ev.header.type = static_cast<uint16_t>(kind == EditBridge::Kind::Begin ? CLAP_EVENT_PARAM_GESTURE_BEGIN
+                                                                                  : CLAP_EVENT_PARAM_GESTURE_END);
             ev.param_id = id;
             return out->try_push(out, &ev.header);
         });

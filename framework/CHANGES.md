@@ -4,6 +4,29 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.3.0
+
+The first Windows build: MSVC 2022, x64, built and tested by CI. Nothing
+changes on macOS or Linux, and nothing breaks a product's sessions, IDs or
+sound. After updating: delete `build/`, run every preset.
+
+- **Windows builds and passes every test,** editor embedding included.
+  What it took: `NOMINMAX` and `WIN32_LEAN_AND_MEAN` on every framework
+  target (`<windows.h>` arrives through pugl's GL header, and its `min` and
+  `max` macros broke `std::min` and `std::max`); the GL 1.2-1.4 enums
+  NanoVG uses, which Windows' GL headers lack; the static C++ runtime for
+  every binary, matching clap-wrapper (one binary cannot mix the two, and a
+  plugin then needs no VC++ redistributable); `_CRT_SECURE_NO_WARNINGS`;
+  and MSVC's C4127 and C4324 turned off as noise.
+- **Product code must build cleanly with MSVC `/W4`** in the debug preset,
+  where warnings are errors. The usual catch is an implicit narrowing GCC
+  and Clang accept silently, such as a ternary of CLAP event enums assigned
+  to `header.type` (`static_cast<uint16_t>` it).
+- New test `win32-embedding` (and `-no-host-timer`): `win32-probe`, the
+  Windows counterpart of `x11-probe`, against a real parent HWND, including
+  unloading and reloading the module. It needs an OpenGL 2 driver.
+- On Windows the built plugins are in `plugins/CLAP/` and `plugins/VST3/`.
+
 ## 1.2.1
 
 - `update_framework.cmake` removes `detect_leaks=1` from an existing

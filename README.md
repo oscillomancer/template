@@ -59,7 +59,9 @@ and REAPER loading the CLAP. macOS (Metal, AUv2) is built and tested by CI
 (see [BUILDING.md](framework/docs/BUILDING.md#continuous-integration)):
 every test, `auval`, pluginval, clap-validator, and the editor opening in a
 Cocoa window, on a 1x virtual machine; open it in real hosts on real
-hardware before shipping. Windows does not compile yet.
+hardware before shipping. Windows (MSVC, OpenGL) is built and tested by CI
+the same way, editor embedding included, on a runner without a GPU; open it
+in real hosts on a real Windows machine before shipping.
 
 ## License
 
