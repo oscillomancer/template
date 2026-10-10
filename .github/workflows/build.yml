@@ -78,15 +78,15 @@ jobs:
 
       - name: Configure
         run: |
-          cmake --preset ${{ matrix.preset }} -G Ninja \
+          .github/scripts/step.sh configure cmake --preset ${{ matrix.preset }} -G Ninja \
             -DFETCHCONTENT_BASE_DIR="$FETCH_DIR" \
             ${CLAP_VALIDATOR:+-DSUPPLE_CLAP_VALIDATOR="$CLAP_VALIDATOR"}
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }}
+        run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
-        run: ctest --preset ${{ matrix.preset }} --timeout 600
+        run: .github/scripts/step.sh test ctest --preset ${{ matrix.preset }} --timeout 600
 
       # Everything below exercises the release build as a host would see it.
 
@@ -112,7 +112,7 @@ jobs:
         if: matrix.preset == 'release'
         run: |
           auval -a | grep -i '${{ steps.product.outputs.au_manufacturer }}' || true
-          auval -strict -v ${{ steps.product.outputs.au_type }} '${{ steps.product.outputs.au_subtype }}' '${{ steps.product.outputs.au_manufacturer }}'
+          .github/scripts/step.sh auval auval -strict -v ${{ steps.product.outputs.au_type }} '${{ steps.product.outputs.au_subtype }}' '${{ steps.product.outputs.au_manufacturer }}'
 
       - name: pluginval (VST3 and AU)
         if: matrix.preset == 'release'
@@ -121,9 +121,9 @@ jobs:
         run: |
           PLUGINVAL="$(.github/scripts/get-pluginval.sh macos)"
           name='${{ steps.product.outputs.name }}'
-          "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
+          .github/scripts/step.sh pluginval-vst3 "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
             --validate "$HOME/Library/Audio/Plug-Ins/VST3/$name.vst3"
-          "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
+          .github/scripts/step.sh pluginval-au "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
             --validate "$HOME/Library/Audio/Plug-Ins/Components/$name.component"
 
       # A real Cocoa window hosting the editor through the CLAP. GitHub's
@@ -138,8 +138,8 @@ jobs:
         if: matrix.preset == 'release'
         run: |
           mkdir -p preview
-          ./build/release/gui-preview preview/editor-1x.png --scale 1
-          ./build/release/gui-preview preview/editor-2x.png --scale 2
+          .github/scripts/step.sh preview-1x ./build/release/gui-preview preview/editor-1x.png --scale 1
+          .github/scripts/step.sh preview-2x ./build/release/gui-preview preview/editor-2x.png --scale 2
 
       - name: Package
         if: always() && matrix.preset == 'release'
@@ -149,7 +149,8 @@ jobs:
           for b in "$name.clap" "$name.vst3" "$name.component"; do
             [ -d "build/release/plugins/$b" ] && ditto -c -k --keepParent "build/release/plugins/$b" "dist/$b.zip"
           done
-          cp preview/*.png probe/*.png dist/ 2>/dev/null || true
+          cp preview/*.png probe/*.png probe/*.txt dist/ 2>/dev/null || true
+          cp -r logs dist/ 2>/dev/null || true
           ls -la dist
 
       - uses: actions/upload-artifact@v4
@@ -196,15 +197,15 @@ jobs:
 
       - name: Configure
         run: |
-          cmake --preset ${{ matrix.preset }} -G Ninja \
+          .github/scripts/step.sh configure cmake --preset ${{ matrix.preset }} -G Ninja \
             -DFETCHCONTENT_BASE_DIR="$FETCH_DIR" \
             ${CLAP_VALIDATOR:+-DSUPPLE_CLAP_VALIDATOR="$CLAP_VALIDATOR"}
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }}
+        run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }}
 
       - name: Test (under Xvfb, so x11-embedding runs)
-        run: xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset ${{ matrix.preset }} --timeout 600
+        run: .github/scripts/step.sh test xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset ${{ matrix.preset }} --timeout 600
 
       - name: pluginval (VST3)
         if: matrix.preset == 'release'
@@ -212,7 +213,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PLUGINVAL="$(.github/scripts/get-pluginval.sh linux)"
-          xvfb-run -a -s "-screen 0 1920x1080x24" "$PLUGINVAL" --strictness-level 8 \
+          .github/scripts/step.sh pluginval xvfb-run -a -s "-screen 0 1920x1080x24" "$PLUGINVAL" --strictness-level 8 \
             --validate-in-process --timeout-ms 300000 \
             --validate "build/release/plugins/${{ steps.product.outputs.name }}.vst3"
 
@@ -220,8 +221,8 @@ jobs:
         if: matrix.preset == 'release'
         run: |
           mkdir -p preview
-          xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview preview/editor-1x.png --scale 1
-          xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview preview/editor-2x.png --scale 2
+          .github/scripts/step.sh preview-1x xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview preview/editor-1x.png --scale 1
+          .github/scripts/step.sh preview-2x xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview preview/editor-2x.png --scale 2
 
       - name: Package
         if: always() && matrix.preset == 'release'
@@ -229,6 +230,7 @@ jobs:
           mkdir -p dist
           cp -r build/release/plugins/. dist/ 2>/dev/null || true
           cp preview/*.png dist/ 2>/dev/null || true
+          cp -r logs dist/ 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always() && matrix.preset == 'release'
@@ -274,16 +276,16 @@ jobs:
 
       - name: Configure
         run: |
-          cmake --preset ${{ matrix.preset }} -G Ninja \
+          .github/scripts/step.sh configure cmake --preset ${{ matrix.preset }} -G Ninja \
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl \
             -DFETCHCONTENT_BASE_DIR="$FETCH_DIR" \
             ${CLAP_VALIDATOR:+-DSUPPLE_CLAP_VALIDATOR="$CLAP_VALIDATOR"}
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }}
+        run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
-        run: ctest --preset ${{ matrix.preset }} --timeout 600
+        run: .github/scripts/step.sh test ctest --preset ${{ matrix.preset }} --timeout 600
 
       - name: pluginval (VST3)
         if: matrix.preset == 'release'
@@ -291,7 +293,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PLUGINVAL="$(.github/scripts/get-pluginval.sh windows)"
-          "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
+          .github/scripts/step.sh pluginval "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
             --validate "build/release/plugins/${{ steps.product.outputs.name }}.vst3"
 
       - name: Package
