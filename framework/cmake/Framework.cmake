@@ -67,6 +67,12 @@ function(supple_defaults target)
         C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden
         OBJC_VISIBILITY_PRESET hidden OBJCXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON)
+    if (WIN32)
+        # <windows.h> arrives through pugl's and GL's headers as well as our
+        # own; without these it defines min and max as macros, which turns
+        # every std::min and std::max after it into a syntax error.
+        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
     if (MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
         if (SUPPLE_WARNINGS_AS_ERRORS)

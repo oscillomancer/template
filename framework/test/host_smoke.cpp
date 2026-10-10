@@ -26,8 +26,12 @@
 // portable spelling. dlopen is POSIX; MSVC ships no <dlfcn.h> at all, so the
 // three calls below are the whole of the difference.
 #if defined(_WIN32)
-#  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
 #  include <windows.h>
 namespace {
 using LibHandle = HMODULE;
