@@ -110,7 +110,12 @@ if (SUPPLE_BUILD_PLUGIN)
         supple_defaults(win32-probe)
         add_test(NAME win32-embedding
             COMMAND win32-probe $<TARGET_FILE:product-plugin_clap> ${CMAKE_BINARY_DIR}/win32-probe.ppm)
-        set_tests_properties(win32-embedding PROPERTIES RUN_SERIAL TRUE)
+        # A host without clap.timer-support: the editor's own WM_TIMER
+        # fallback must carry it through the same lifecycle.
+        add_test(NAME win32-embedding-no-host-timer
+            COMMAND win32-probe $<TARGET_FILE:product-plugin_clap> ${CMAKE_BINARY_DIR}/win32-probe-no-timer.ppm
+                    --no-host-timer)
+        set_tests_properties(win32-embedding win32-embedding-no-host-timer PROPERTIES RUN_SERIAL TRUE)
     endif()
 
     if (APPLE AND TARGET product-plugin_auv2)

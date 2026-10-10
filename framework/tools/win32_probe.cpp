@@ -8,6 +8,8 @@
 //
 //   win32-probe plugin.clap [capture.ppm] [--no-host-timer]
 //
+// Last, it unloads the module, reloads it and opens the editor once more.
+//
 // The editor renders through OpenGL 2. A machine whose only OpenGL is
 // Windows' built-in GDI 1.1 renderer (a server or VM without a GPU driver)
 // cannot draw it, and set_parent fails here as it would in a host; CI puts
@@ -106,16 +108,33 @@ struct Host {
     }
 };
 
+// Bounded, as a host's loop is: with the editor's own WM_TIMER driving it
+// (no host timer) and a software renderer slower than the timer's period,
+// a WM_TIMER is always pending again by the time the queue empties, and
+// "until the queue is empty" never comes.
+void drain() {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(30);
+    MSG msg;
+    while (std::chrono::steady_clock::now() < until && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
 // A host's message loop: the plugin's window procedure, and pugl's
 // WM_TIMER fallback, run from here.
 void pump(Host& host, int count) {
     for (int i = 0; i < count; ++i) {
-        MSG msg;
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+        drain();
         host.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
+// The same loop with no plugin left to tick.
+void pumpMessages(int count) {
+    for (int i = 0; i < count; ++i) {
+        drain();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
@@ -406,6 +425,45 @@ int main(int argc, char** argv) {
     host.plugin->destroy(host.plugin);
     entry->deinit();
     FreeLibrary(lib);
+
+    // Hosts unload plugins (a rescan, closing a project) and load them
+    // again. Anything of ours left behind -- a window class whose procedure
+    // was in the unloaded image, a timer still posting to it -- crashes the
+    // message pump below rather than failing quietly.
+    pumpMessages(10);
+    lib = LoadLibraryA(argv[1]);
+    check(lib != nullptr, "reloads after FreeLibrary");
+    if (lib) {
+        entry = reinterpret_cast<const clap_plugin_entry_t*>(GetProcAddress(lib, "clap_entry"));
+        check(entry && entry->init(argv[1]), "entry initialises again");
+        factory = static_cast<const clap_plugin_factory_t*>(entry->get_factory(CLAP_PLUGIN_FACTORY_ID));
+        // The first module's descriptor went with it: ask the new one.
+        const auto* desc2 = factory->get_plugin_descriptor(factory, 0);
+        Host again;
+        again.refuseTimer = host.refuseTimer;
+        again.plugin = factory->create_plugin(factory, &again.host, desc2->id);
+        check(again.plugin && again.plugin->init(again.plugin), "plugin initialises again");
+        again.gui = static_cast<const clap_plugin_gui_t*>(again.plugin->get_extension(again.plugin, CLAP_EXT_GUI));
+        again.timer = static_cast<const clap_plugin_timer_support_t*>(
+            again.plugin->get_extension(again.plugin, CLAP_EXT_TIMER_SUPPORT));
+        uint32_t w = 0, h = 0;
+        check(again.gui->create(again.plugin, CLAP_WINDOW_API_WIN32, false) && again.gui->get_size(again.plugin, &w, &h),
+              "editor opens after a reload");
+        HWND parent = makeParent(w, h);
+        clap_window_t window{};
+        window.api = CLAP_WINDOW_API_WIN32;
+        window.win32 = parent;
+        check(again.gui->set_parent(again.plugin, &window) && again.gui->show(again.plugin), "editor embeds after a reload");
+        pump(again, 15);
+        check(embedded(parent), "reloaded editor is visible");
+        again.gui->destroy(again.plugin);
+        DestroyWindow(parent);
+        again.plugin->destroy(again.plugin);
+        entry->deinit();
+        FreeLibrary(lib);
+        pumpMessages(10);
+        check(true, "message loop survives the second unload");
+    }
     std::printf("%d failures\n", failures);
     return failures ? 1 : 0;
 }
