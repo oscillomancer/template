@@ -27,6 +27,20 @@ sound. After updating: delete `build/`, run every preset.
   unloading and reloading the module. It needs an OpenGL 2 driver.
 - On Windows the built plugins are in `plugins/CLAP/` and `plugins/VST3/`.
 
+## 1.2.1
+
+- `update_framework.cmake` removes `detect_leaks=1` from an existing
+  product's `asan` test preset too, changing only that value: other options,
+  other presets and the file's formatting are left as they were. Where the
+  value cannot be found exactly once it warns instead, to be edited by hand.
+  When updating from 1.1.0, bootstrap with this version's updater as described
+  below. A product already updated to 1.2.0 must also copy this updater into
+  `framework/tools/` first for this migration, then run the update as usual.
+- The macOS probe now queries `get_size` after parenting and processing
+  events, and checks the native Cocoa child view's dimensions in points.
+  CI rejects a wrong realized or resized editor, rather than comparing the
+  cached size read before parenting. No plugin runtime behavior changes.
+
 ## 1.2.0
 
 The first build and run on macOS since the rebuild, by the new CI workflow

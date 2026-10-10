@@ -14,6 +14,15 @@ endfunction()
 
 # --- SDK-free -----------------------------------------------------------------------------
 
+add_test(NAME framework-update
+    COMMAND ${CMAKE_COMMAND} -DFRAMEWORK=${SUPPLE_FRAMEWORK}
+        -DWORK=${CMAKE_BINARY_DIR}/framework-update-test
+        -P ${SUPPLE_FRAMEWORK}/test/update_framework_test.cmake)
+if (UNIX AND EXISTS "${SUPPLE_ROOT}/.github/scripts/clap-probe-mac.sh")
+    add_test(NAME ci-probe-checker COMMAND bash ${SUPPLE_FRAMEWORK}/test/ci_probe_test.sh
+        ${SUPPLE_ROOT}/.github/scripts/clap-probe-mac.sh)
+endif()
+
 supple_test(core-tests SOURCES ${SUPPLE_FRAMEWORK}/test/core_test.cpp LINK product-core)
 if (product_test_sources)
     supple_test(processor-tests SOURCES ${product_test_sources} LINK product-core)

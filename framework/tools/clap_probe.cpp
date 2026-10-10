@@ -143,6 +143,25 @@ bool CLAP_ABI outPush(const clap_output_events_t*, const clap_event_header_t*) {
     return true;
 }
 
+#if defined(__APPLE__)
+// Query after parenting and pumping the host loop. A cached pre-parent size
+// cannot prove what Pugl realized; the native child must agree in points too.
+bool checkEditorSize(const clap_plugin_gui_t* gui, NSWindow* win,
+                     uint32_t expectedW, uint32_t expectedH, const char* label) {
+    uint32_t w = 0, h = 0;
+    const bool reported = gui->get_size(g.plugin, &w, &h);
+    NSArray<NSView*>* children = [[win contentView] subviews];
+    const NSRect frame = [children count] == 1 ? [[children objectAtIndex:0] frame] : NSZeroRect;
+    const bool matches = reported && w == expectedW && h == expectedH && [children count] == 1 &&
+                         std::fabs(frame.size.width - expectedW) < 0.5 &&
+                         std::fabs(frame.size.height - expectedH) < 0.5;
+    std::printf("%s: get_size=%d size=%ux%u native=%.1fx%.1f expected=%ux%u matches=%d\n",
+                label, (int)reported, w, h, (double)frame.size.width, (double)frame.size.height,
+                expectedW, expectedH, (int)matches);
+    return matches;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -246,6 +265,7 @@ int main(int argc, char** argv) {
     };
     // The editor's size in host units (points), as last reported.
     uint32_t editorW = 900, editorH = 560;
+    bool sizesMatch = true;
 #else
     void* parent = nullptr;
 #endif
@@ -263,11 +283,15 @@ int main(int argc, char** argv) {
             gui->adjust_size(g.plugin, &pw, &ph);
             const bool ok = gui->set_size(g.plugin, pw, ph);
             std::printf("presize: adjust->%ux%u set_size=%d\n", pw, ph, (int)ok);
+#if defined(__APPLE__)
+            editorW = pw;
+            editorH = ph;
+#endif
         }
         uint32_t gw = 0, gh = 0;
         gui->get_size(g.plugin, &gw, &gh);
 #if defined(__APPLE__)
-        if (gw > 0 && gh > 0) {
+        if (!presize && gw > 0 && gh > 0) {
             editorW = gw;
             editorH = gh;
         }
@@ -296,6 +320,13 @@ int main(int argc, char** argv) {
                                         inMode:NSDefaultRunLoopMode
                                        dequeue:YES]);)
             [NSApp sendEvent:e];
+    }
+
+    if (gui && g.guiShown) {
+        // The timer dispatches pending Pugl configure events before asking
+        // for the CLAP size; native Cocoa dimensions are read independently.
+        if (timer && g.timerId != CLAP_INVALID_ID) timer->on_timer(g.plugin, g.timerId);
+        sizesMatch = checkEditorSize(gui, win, editorW, editorH, "realized") && sizesMatch;
     }
 
     if (gui && reopen) {
@@ -358,6 +389,8 @@ int main(int argc, char** argv) {
                     [NSApp sendEvent:e];
             }
         }
+        if (timer && g.timerId != CLAP_INVALID_ID) timer->on_timer(g.plugin, g.timerId);
+        sizesMatch = checkEditorSize(gui, win, rw, rh, "resized") && sizesMatch;
     }
 
     if (gui && dropParent) {
@@ -473,5 +506,9 @@ int main(int argc, char** argv) {
     g.plugin->deactivate(g.plugin);
     g.plugin->destroy(g.plugin);
     entry->deinit();
+#if defined(__APPLE__)
+    return sizesMatch ? 0 : 1;
+#else
     return 0;
+#endif
 }
