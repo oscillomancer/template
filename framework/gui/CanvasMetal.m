@@ -12,7 +12,7 @@
 // original has not been touched since 2022, while the fork carries the three
 // changes this integration actually depends on -- an explicit command queue,
 // an explicit target texture, and a stencil buffer sized from the render
-// target (which is what NVG_STENCIL_STROKES needs to behave).
+// target (which its fills need).
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -33,13 +33,29 @@
 // rather than passed in: their values and their meanings are the renderer's,
 // and the caller has no business knowing either.
 //
+// No NVG_STENCIL_STROKES, unlike the GL backend, because nanovg_metal's
+// version of it is broken. Stencil strokes draw each stroke twice: a first
+// pass meant to touch only fully covered pixels, marking them in the
+// stencil, then the antialiased pass everywhere the stencil is still clear.
+// The first pass relies on the fragment shader *discarding* partially
+// covered pixels; GL's shader does (`discard`), but nanovg_mtl_shaders.metal
+// returns transparent black instead, which still increments the stencil. So
+// every partially covered pixel is marked by an invisible draw and then
+// skipped by the visible one: every stroke loses its antialiased edge, and a
+// one-unit line that lands between pixels -- most of them, at any
+// non-integer editor scale -- vanishes entirely. Seen in CI captures at
+// 1.25x and 1.56x, where GL draws the same grid lines. The shaders ship
+// precompiled, so fixing them means owning a Metal compile step; dropping
+// the flag costs only the double-blended joins of translucent multi-segment
+// strokes, which the framework's widgets do not draw.
+//
 // NVG_TRIPLE_BUFFER matters. Without a buffering flag nanovg_mtl allocates one
 // buffer set and a semaphore of one, so renderViewport blocks until the GPU has
 // finished the previous frame -- on the main thread, which in a plugin is the
 // host's UI thread. Three lets the CPU run ahead instead.
 NVGcontext* canvasCreate(void* nativeContext)
 {
-    const int flags = NVG_ANTIALIAS | NVG_STENCIL_STROKES | NVG_TRIPLE_BUFFER;
+    const int flags = NVG_ANTIALIAS | NVG_TRIPLE_BUFFER;
 
     CAMetalLayer* layer = (__bridge CAMetalLayer*)nativeContext;
     if (!layer) {
