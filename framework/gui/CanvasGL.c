@@ -39,6 +39,17 @@ typedef ptrdiff_t GLintptr;
 #    define GL_UNPACK_SKIP_PIXELS 0x0CF4
 #    define GL_UNPACK_SKIP_ROWS  0x0CF3
 #  endif
+// GL 1.2 to 1.4 enums NanoVG's GL2 backend uses, also absent from the SDK.
+#  ifndef GL_CLAMP_TO_EDGE
+#    define GL_CLAMP_TO_EDGE     0x812F
+#  endif
+#  ifndef GL_GENERATE_MIPMAP
+#    define GL_GENERATE_MIPMAP   0x8191
+#  endif
+#  ifndef GL_INCR_WRAP
+#    define GL_INCR_WRAP         0x8507
+#    define GL_DECR_WRAP         0x8508
+#  endif
 
 // name, return type, parameter list -- one row per entry point NanoVG's GL2
 // backend calls above GL 1.1.
@@ -101,10 +112,13 @@ static PROC suppleResolveGL(const char* name)
     return p;
 }
 
+// Through void (*)(void), the conventional generic function pointer: GCC's
+// -Wcast-function-type accepts a cast from it, where a cast from PROC itself
+// warns for every entry point.
 int canvasLoad(void)
 {
 #  define X(name, ret, params)                                                 \
-    supple_##name = (supple_pfn_##name)suppleResolveGL(#name);                \
+    supple_##name = (supple_pfn_##name)(void (*)(void))suppleResolveGL(#name); \
     if (!supple_##name) return 0;
     SUPPLE_GL_PROCS
 #  undef X
