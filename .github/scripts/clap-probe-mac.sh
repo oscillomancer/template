@@ -30,16 +30,18 @@ for scenario in "plain:" "resize:--resize" "presize:--presize" "reopen:--reopen"
     [ $status -eq 0 ] || problems+=("exit status $status")
     grep -q "gui: create=1 parent=1 show=1" "probe/$label.txt" || problems+=("editor did not open")
     grep -q "audio path is live" "probe/$label.txt" || problems+=("audio path silent")
+    grep -q "^realized: .* matches=1$" "probe/$label.txt" || problems+=("realized editor size mismatch")
     if [ "$label" = reopen ]; then
         grep -q "reopen: create=1 parent=1 show=1" "probe/$label.txt" || problems+=("editor did not reopen")
     fi
     if [ "$label" = resize ]; then
         grep -q "set_size=1" "probe/$label.txt" || problems+=("set_size refused")
+        grep -q "^resized: .* matches=1$" "probe/$label.txt" || problems+=("native editor did not resize")
     fi
     if [ "$label" = presize ]; then
         grep -q "presize: .* set_size=1" "probe/$label.txt" || problems+=("set_size before set_parent refused")
         size=$(sed -n 's/^presize: adjust->\([0-9x]*\).*/\1/p' "probe/$label.txt")
-        grep -q "show=1 size=$size" "probe/$label.txt" || problems+=("editor did not open at the pre-parent size $size")
+        grep -q "^realized: get_size=1 size=$size .* expected=$size matches=1$" "probe/$label.txt" || problems+=("editor did not open at the pre-parent size $size")
     fi
     if [ ${#problems[@]} -gt 0 ]; then
         echo "::error title=clap-probe $label::$(IFS='; '; echo "${problems[*]}")"

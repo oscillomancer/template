@@ -4,6 +4,18 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.2.1
+
+- `update_framework.cmake` removes `detect_leaks=1` from an existing
+  product's `asan` test preset too, preserving its other options and presets.
+  When updating from 1.1.0, bootstrap with this version's updater as described
+  below. A product already updated to 1.2.0 must also copy this updater into
+  `framework/tools/` first for this migration, then run the update as usual.
+- The macOS probe now queries `get_size` after parenting and processing
+  events, and checks the native Cocoa child view's dimensions in points.
+  CI rejects a wrong realized or resized editor, rather than comparing the
+  cached size read before parenting. No plugin runtime behavior changes.
+
 ## 1.2.0
 
 The first build and run on macOS since the rebuild, by the new CI workflow

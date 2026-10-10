@@ -131,7 +131,9 @@ through what a host would do with it:
 - **macOS**: `product-install`, the AU's signature and plist, `auval
   -strict`, pluginval (strictness 8, VST3 and AU, editor included),
   clap-validator, `clap-probe` in each scenario above (failing if the
-  editor does not open, resize or reopen, or the audio goes silent), and
+  editor does not open, resize or reopen, or the audio goes silent; both
+  CLAP-reported and native Cocoa dimensions are checked after parenting
+  and resizing), and
   `gui-preview` at 1x and 2x.
 - **Linux**: `ctest` under Xvfb (so `x11-embedding` runs), clap-validator,
   pluginval on the VST3, `gui-preview`.
