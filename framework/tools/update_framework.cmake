@@ -10,18 +10,22 @@
 # Afterwards: read framework/CHANGES.md for anything a product must do,
 # delete the build directories, and run every preset's tests.
 
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.27)
 
 if (NOT FROM)
     message(FATAL_ERROR "update_framework: -DFROM=<path to the template> is required")
 endif()
-get_filename_component(from "${FROM}/framework" ABSOLUTE)
-get_filename_component(here "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+# Real paths: a FROM reached through a symlink must still be recognised as
+# this very framework, or the copy below would delete its own source.
+get_filename_component(from "${FROM}/framework" REALPATH)
+get_filename_component(here "${CMAKE_CURRENT_LIST_DIR}/.." REALPATH)
 if (NOT EXISTS "${from}/VERSION")
     message(FATAL_ERROR "update_framework: ${from} is not a framework directory")
 endif()
-if (from STREQUAL here)
-    message(FATAL_ERROR "update_framework: this is the template's own framework")
+string(FIND "${from}/" "${here}/" from_in_here)
+string(FIND "${here}/" "${from}/" here_in_from)
+if (from_in_here EQUAL 0 OR here_in_from EQUAL 0)
+    message(FATAL_ERROR "update_framework: ${from} and ${here} are the same framework or nested")
 endif()
 if (NOT EXISTS "${here}/../product/product.cmake")
     message(FATAL_ERROR "update_framework: run this from a product built on the framework")
@@ -32,8 +36,20 @@ file(READ "${from}/VERSION" new)
 string(STRIP "${old}" old)
 string(STRIP "${new}" new)
 
+# Copy beside the old framework first and swap only once the copy is
+# complete, so a failed or interrupted copy leaves the product as it was.
 get_filename_component(root "${here}/.." ABSOLUTE)
-file(REMOVE_RECURSE "${here}")
-file(COPY "${from}" DESTINATION "${root}")
+set(staging "${root}/.framework-update")
+set(previous "${root}/.framework-previous")
+file(REMOVE_RECURSE "${staging}" "${previous}")
+file(MAKE_DIRECTORY "${staging}")
+file(COPY "${from}/" DESTINATION "${staging}")
+if (NOT EXISTS "${staging}/VERSION" OR NOT EXISTS "${staging}/cmake/Framework.cmake")
+    file(REMOVE_RECURSE "${staging}")
+    message(FATAL_ERROR "update_framework: the copy is incomplete; framework/ is unchanged")
+endif()
+file(RENAME "${here}" "${previous}")
+file(RENAME "${staging}" "${here}")
+file(REMOVE_RECURSE "${previous}")
 message(STATUS "framework ${old} -> ${new}")
 message(STATUS "Read framework/CHANGES.md, delete build/, and run every preset's tests.")

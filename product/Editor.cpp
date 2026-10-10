@@ -89,19 +89,19 @@ float Editor::yOf(double db) const {
 double Editor::responseDb(double hz) const {
     Response r;
     r.sampleRate = host().sampleRate() > 0.0 ? host().sampleRate() : 48000.0;
-    const double low = plain(kLowCut), high = plain(kHighCut);
+    const double low = effective(kLowCut), high = effective(kHighCut);
     r.low2.setCoefficients(low, Processor::kQ2, r.sampleRate);
     r.low4a.setCoefficients(low, Processor::kQ4a, r.sampleRate);
     r.low4b.setCoefficients(low, Processor::kQ4b, r.sampleRate);
     r.high2.setCoefficients(high, Processor::kQ2, r.sampleRate);
     r.high4a.setCoefficients(high, Processor::kQ4a, r.sampleRate);
     r.high4b.setCoefficients(high, Processor::kQ4b, r.sampleRate);
-    r.input = dsp::dbToGain(plain(kInputGain));
-    r.output = dsp::dbToGain(plain(kOutputGain));
-    r.mix = plain(kMix);
-    r.low = plain(kLowCutOn) > 0.5 ? 1.0 : 0.0;
-    r.high = plain(kHighCutOn) > 0.5 ? 1.0 : 0.0;
-    r.steep = plain(kSlope) > 0.5 ? 1.0 : 0.0;
+    r.input = dsp::dbToGain(effective(kInputGain));
+    r.output = dsp::dbToGain(effective(kOutputGain));
+    r.mix = effective(kMix);
+    r.low = effective(kLowCutOn) > 0.5 ? 1.0 : 0.0;
+    r.high = effective(kHighCutOn) > 0.5 ? 1.0 : 0.0;
+    r.steep = effective(kSlope) > 0.5 ? 1.0 : 0.0;
     return r.db(hz);
 }
 
@@ -304,6 +304,12 @@ bool Editor::onPointerUp(float, float, int button, uint32_t) {
     ui().endDragEdit();
     dragging_ = -1;
     return true;
+}
+
+void Editor::onCancel() {
+    if (dragging_ >= 0) ui().endDragEdit();
+    dragging_ = -1;
+    hovering_ = -1;
 }
 
 }  // namespace product

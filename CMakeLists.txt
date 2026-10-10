@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.27)
 
 # Everything product-specific lives in product/product.cmake; everything else
 # in framework/cmake. This file only has to exist because project() must be

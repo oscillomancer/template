@@ -64,8 +64,9 @@ editor's size travels in its own chunk.
 ## Latency, restart, bypass, tail
 
 CLAP allows latency to change only across an activation. A processor whose
-latency follows a parameter marks that parameter `restartOnChange()` and
-reports `maxLatencySamples()`. The framework keeps reporting the activated
+latency follows a parameter marks that parameter `restartOnChange()`,
+reports `maxLatencySamples()`, and builds the new topology only in
+`prepare()`, so its real delay never runs ahead of what the host compensates. The framework keeps reporting the activated
 latency, asks the host to restart once per activation (from the main thread),
 and reports the new value from `activate()`. A host that never restarts still
 gets correctly aligned bypass and dry paths, because those follow the
@@ -77,7 +78,8 @@ seamless. The dry delay runs even when not bypassed, so engaging bypass finds
 the right history waiting.
 
 `tailSamples()` goes to the CLAP tail extension, so hosts know how long a
-reverb or release rings after input stops.
+reverb or release rings after input stops; when it changes while active, the
+host is told.
 
 ## Editor to host
 
@@ -106,12 +108,15 @@ mid-drag, cannot nest gestures.
 - **Scaling**: one transform from design units to the view. Host size =
   design × user scale × platform scale. Win32 and X11 sizes are physical
   pixels, so `set_scale()` is honoured there; Cocoa is logical, so it is
-  refused. A platform-scale change scales the current size by the ratio, so
+  refused. Pugl itself works in backing pixels everywhere, macOS included,
+  so `Window` converts host points to pixels at its boundary and draws in
+  pixels with a ratio of 1. The previous template passed Cocoa points to
+  pugl as pixels, which on a 2x screen made a quarter-size view. A platform-scale change scales the current size by the ratio, so
   2x and back lands on the same pixels. A host that ignores the aspect hint
   gets a letterboxed panel, not a stretched one.
 - **Drags survive the pointer leaving the window**: every platform delivers
   motion and the release to the view that took the press. Focus loss ends
-  everything.
+  everything, a product's own drags included (`onCancel()`).
 - **Keyboard**: Tab order is control order; arrows, Page Up/Down, Home/End,
   Backspace (default), Enter (toggle, open, or type a value), Escape. Focus is
   taken only by a press that landed on a control. Space is never bound: once a
@@ -145,15 +150,17 @@ Many plugins share one host process, several of them built on this framework.
   GNU unique symbols bind across modules whatever `RTLD_LOCAL` says.
   `exports-*` tests enforce it.
 - Objective-C classes share one flat process-wide namespace, so pugl's and
-  nanovg_metal's classes are renamed per product at compile time
-  (`<code>_PuglWrapperView`). auval caught the collision when two products of
-  this lineage were installed together.
+  nanovg_metal's classes are renamed per product at compile time, from the
+  plugin ID (`com_suppleaudio_name_PuglWrapperView`), which is unique where
+  display names need not be. auval caught the collision when two products
+  of this lineage were installed together.
 
 ## Dependencies
 
 Pinned to commits, never branches. Three small patches to clap-wrapper, each a
 test so a dependency bump cannot drop one silently: keep every VST3 automation
-point in a block, not just the last; lower the VST3 timer floor from 30 ms
+point in a block, not just the last (the wrapper reserves room for 8192 events
+a block; denser automation than that grows its vector on the audio thread); lower the VST3 timer floor from 30 ms
 (33 fps) to 8 ms; take the Linux self-handle with `RTLD_NOLOAD` and look up
 `clap_entry` in our own image, not the whole process. pugl and the Metal
 backend are non-ARC; `nanovg_mtl.m` requires ARC. Vendored code builds with

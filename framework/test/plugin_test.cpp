@@ -28,7 +28,7 @@ namespace {
 
 struct Host {
     clap_host_t clap{};
-    std::atomic<int> callbacks{0}, restarts{0}, flushRequests{0}, latencyChanges{0}, rescans{0};
+    std::atomic<int> callbacks{0}, restarts{0}, flushRequests{0}, latencyChanges{0}, rescans{0}, tailChanges{0};
     std::atomic<bool> callbackPending{false};
     std::atomic<std::thread::id> mainThread{std::this_thread::get_id()};
     std::atomic<bool> requestFlushOffMain{false};
@@ -59,7 +59,9 @@ struct Host {
             }};
         static const clap_host_latency_t latency{[](const clap_host_t* h) { self(h).latencyChanges++; }};
         if (!std::strcmp(id, CLAP_EXT_PARAMS)) return &params;
+        static const clap_host_tail_t tail{[](const clap_host_t* h) { self(h).tailChanges++; }};
         if (!std::strcmp(id, CLAP_EXT_LATENCY)) return &latency;
+        if (!std::strcmp(id, CLAP_EXT_TAIL)) return &tail;
         return nullptr;
     }
 };
@@ -127,6 +129,7 @@ struct InEvents {
 struct OutEvents {
     std::map<clap_id, int> depth;
     std::map<clap_id, double> lastValue;
+    std::vector<clap_event_note_t> noteEnds;
     bool nested = false, strayEnd = false;
     double refuse = 0.0;
     std::mt19937 rng{3};
@@ -144,6 +147,8 @@ struct OutEvents {
         } else if (h->type == CLAP_EVENT_PARAM_VALUE) {
             const auto* v = reinterpret_cast<const clap_event_param_value_t*>(h);
             lastValue[v->param_id] = v->value;
+        } else if (h->type == CLAP_EVENT_NOTE_END) {
+            noteEnds.push_back(*reinterpret_cast<const clap_event_note_t*>(h));
         }
         return true;
     }
@@ -210,6 +215,33 @@ bool loadState(Instance& i, const std::vector<uint8_t>& bytes) {
                       }};
     return i.state->load(i.plugin, &is);
 }
+
+}  // namespace
+
+namespace {
+
+struct NoteList {
+    std::vector<clap_event_note_t> notes;
+    clap_input_events_t list{this, [](const clap_input_events_t* l) {
+                                 return static_cast<uint32_t>(static_cast<const NoteList*>(l->ctx)->notes.size());
+                             },
+                             [](const clap_input_events_t* l, uint32_t i) -> const clap_event_header_t* {
+                                 return &static_cast<const NoteList*>(l->ctx)->notes[i].header;
+                             }};
+    void add(uint16_t type, uint32_t time, int key, int channel, int id) {
+        clap_event_note_t e{};
+        e.header.size = sizeof(e);
+        e.header.time = time;
+        e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        e.header.type = type;
+        e.note_id = id;
+        e.port_index = 0;
+        e.channel = static_cast<int16_t>(channel);
+        e.key = static_cast<int16_t>(key);
+        e.velocity = 0.8;
+        notes.push_back(e);
+    }
+};
 
 }  // namespace
 
@@ -460,6 +492,58 @@ TEST(a_restart_parameter_asks_once_from_the_main_thread) {
     audio.run(i.plugin, &again.list, &out.list);
     i.pumpMain();
     CHECK(i.host.restarts == 2);  // a fresh activation may ask again
+}
+
+TEST(the_output_constant_hint_is_cleared) {
+    // A host may reuse a buffer descriptor and read sample 0 for a channel
+    // whose bit is still set.
+    Instance i;
+    i.activate();
+    Audio a(i.channels());
+    a.out.constant_mask = ~0ull;
+    CHECK(a.run(i.plugin, noEvents(), nullptr) == CLAP_PROCESS_CONTINUE);
+    CHECK(a.out.constant_mask == 0);
+}
+
+TEST(a_tail_that_changes_while_active_is_announced) {
+    Instance i;
+    i.activate();
+    const auto* tail = static_cast<const clap_plugin_tail_t*>(i.plugin->get_extension(i.plugin, CLAP_EXT_TAIL));
+    CHECK(tail != nullptr);
+    if (!tail) return;
+    const uint32_t before = tail->get(i.plugin);
+    InEvents in;
+    for (size_t k = 0; k < params::kCount; ++k)
+        if (!params::at(k).is(pflag::kBypass)) in.add(0, params::at(k).id, fromNormalized(params::at(k), 0.9));
+    Audio a(i.channels());
+    OutEvents out;
+    a.run(i.plugin, &in.list, &out.list);
+    if (tail->get(i.plugin) == before) return;  // this product's tail is fixed
+    CHECK(i.host.tailChanges.load() >= 1);
+}
+
+TEST(an_instrument_ends_every_note_it_was_given) {
+    if (!product::info::kInstrument) return;
+    Instance i;
+    i.activate();
+    Audio a(i.channels());
+    OutEvents out;
+    NoteList start;
+    start.add(CLAP_EVENT_NOTE_ON, 10, 60, 3, 77);
+    start.add(CLAP_EVENT_NOTE_ON, 20, 64, 0, 78);
+    a.run(i.plugin, &start.list, &out.list);
+    NoteList stop;
+    stop.add(CLAP_EVENT_NOTE_OFF, 0, 60, 3, 77);
+    stop.add(CLAP_EVENT_NOTE_CHOKE, 5, -1, -1, 78);
+    a.run(i.plugin, &stop.list, &out.list);
+    for (int k = 0; k < 2000 && out.noteEnds.size() < 2; ++k) a.run(i.plugin, noEvents(), &out.list);
+    CHECK_MSG(out.noteEnds.size() == 2, "%zu NOTE_END events", out.noteEnds.size());
+    bool saw77 = false, saw78 = false;
+    for (const auto& e : out.noteEnds) {
+        saw77 |= e.note_id == 77 && e.key == 60 && e.channel == 3 && e.port_index == 0;
+        saw78 |= e.note_id == 78 && e.key == 64 && e.channel == 0;
+    }
+    CHECK(saw77 && saw78);
 }
 
 SUPPLE_TEST_MAIN

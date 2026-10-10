@@ -103,17 +103,23 @@ if (SUPPLE_BUILD_GUI)
     # first and resolve every later lookup by name to it -- fine while the
     # copies are identical, reading at the wrong offsets once one moves. The
     # class names are ordinary identifiers, so the preprocessor gives each
-    # product its own: starter_PuglWrapperView and so on. auval reported the
-    # collision the moment two products from this lineage were installed.
+    # product its own, from its plugin ID -- unique by definition, where two
+    # display names may not be: com_suppleaudio_starter_PuglWrapperView and
+    # so on. auval reported the collision the moment two products from this
+    # lineage were installed.
     set(SUPPLE_OBJC_CLASSES
         PuglWindow PuglWindowDelegate PuglWrapperView
         PuglStubView PuglOpenGLView PuglMetalView PuglCairoView PuglVulkanView
         MNVGbuffers MNVGcontext MNVGtexture)
 
+    string(REGEX REPLACE "[^A-Za-z0-9]" "_" SUPPLE_OBJC_PREFIX "${PRODUCT_ID}")
+    if (SUPPLE_OBJC_PREFIX MATCHES "^[0-9]")
+        set(SUPPLE_OBJC_PREFIX "_${SUPPLE_OBJC_PREFIX}")
+    endif()
     function(supple_objc_prefix target)
         if (APPLE)
             foreach(cls ${SUPPLE_OBJC_CLASSES})
-                target_compile_definitions(${target} PRIVATE "${cls}=${PRODUCT_CODE}_${cls}")
+                target_compile_definitions(${target} PRIVATE "${cls}=${SUPPLE_OBJC_PREFIX}_${cls}")
             endforeach()
         endif()
     endfunction()

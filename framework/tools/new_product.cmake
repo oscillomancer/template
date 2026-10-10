@@ -14,7 +14,7 @@
 # The result builds and passes every test as it stands. Then: describe the
 # product in product/, starting with Params.h and Processor.h.
 
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.27)
 
 get_filename_component(template "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 
@@ -35,15 +35,18 @@ endif()
 if (NOT LICENSE MATCHES "^(GPL-3.0-or-later|MIT)$")
     message(FATAL_ERROR "new_product: LICENSE must be GPL-3.0-or-later or MIT")
 endif()
-if (NAME MATCHES "[\"\\\\]" OR DESCRIPTION MATCHES "[\"\\\\]")
-    message(FATAL_ERROR "new_product: NAME and DESCRIPTION may not contain quotes or backslashes")
-endif()
+# These land inside quoted CMake strings and C++ string literals: nothing
+# that either would interpret.
+foreach(text NAME DESCRIPTION)
+    if ("${${text}}" MATCHES "[\"\\\\$;@\n\r]")
+        message(FATAL_ERROR "new_product: ${text} may not contain quotes, backslashes, $, ;, @ or line breaks")
+    endif()
+endforeach()
 if (NOT ID MATCHES "^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$")
     message(FATAL_ERROR "new_product: ID must be reverse-DNS, e.g. com.suppleaudio.product")
 endif()
-string(LENGTH "${CODE}" code_length)
-if (NOT code_length EQUAL 4 OR NOT CODE MATCHES "^[!-~]+$")
-    message(FATAL_ERROR "new_product: CODE must be exactly four printable ASCII characters")
+if (NOT CODE MATCHES "^[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]$")
+    message(FATAL_ERROR "new_product: CODE must be exactly four letters or digits")
 endif()
 if (CODE STREQUAL "StFx" OR CODE STREQUAL "ToNe")
     message(FATAL_ERROR "new_product: ${CODE} belongs to the template's own examples; choose a new code")

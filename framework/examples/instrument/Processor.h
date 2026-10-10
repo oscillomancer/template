@@ -5,6 +5,9 @@
 // instrument is easy to see. Replace it with the real thing; keep the shape.
 //
 //   - notes arrive through note(), at their exact sample, between blocks;
+//   - a release or choke matches CLAP's note address, where -1 is a wildcard;
+//   - every voice that ends reports noteEnded() with the address it started
+//     with, so the host can retire the note;
 //   - voices are fixed storage sized in the class, so nothing allocates;
 //   - the envelope is per sample, so output does not depend on block splits;
 //   - tailSamples() tells the host how long sound continues after input stops;
@@ -41,7 +44,10 @@ class Processor : public supple::ProcessorBase<Processor> {
     }
 
     void reset() {
-        for (Voice& v : voices_) v = Voice{};
+        for (Voice& v : voices_) {
+            if (v.stage != Stage::Off) noteEnded(v.address);
+            v = Voice{};
+        }
     }
 
     void update(const supple::ParamValues& v) {
@@ -56,9 +62,9 @@ class Processor : public supple::ProcessorBase<Processor> {
         using Type = supple::NoteEvent::Type;
         if (e.type == Type::On) {
             Voice& v = allocate();
+            if (v.stage != Stage::Off) noteEnded(v.address);  // stolen
             v = Voice{};
-            v.key = e.key;
-            v.noteId = e.noteId;
+            v.address = e;
             v.velocity = e.velocity;
             v.increment = 440.0 * std::pow(2.0, (e.key - 69) / 12.0) / sampleRate_;
             v.stage = Stage::Attack;
@@ -66,10 +72,13 @@ class Processor : public supple::ProcessorBase<Processor> {
             return;
         }
         for (Voice& v : voices_) {
-            if (v.stage == Stage::Off || v.key != e.key || (e.noteId >= 0 && v.noteId >= 0 && v.noteId != e.noteId))
-                continue;
-            if (e.type == Type::Choke) v.stage = Stage::Off;
-            else if (v.stage != Stage::Release) v.stage = Stage::Release;
+            if (v.stage == Stage::Off || !matches(e, v.address)) continue;
+            if (e.type == Type::Choke) {
+                v.stage = Stage::Off;
+                noteEnded(v.address);
+            } else if (v.stage != Stage::Release) {
+                v.stage = Stage::Release;
+            }
         }
     }
 
@@ -84,6 +93,7 @@ class Processor : public supple::ProcessorBase<Processor> {
                 } else if (v.stage == Stage::Release && (v.envelope -= releaseStep_) <= 0.0) {
                     v.envelope = 0.0;
                     v.stage = Stage::Off;
+                    noteEnded(v.address, i);
                     continue;
                 }
                 const double phase = v.phase;
@@ -101,18 +111,24 @@ class Processor : public supple::ProcessorBase<Processor> {
 
     void captureTelemetry(Telemetry& t) const {
         for (int k = 0; k < kVoices; ++k)
-            t.keys[k] = voices_[k].stage == Stage::Off ? int16_t{-1} : voices_[k].key;
+            t.keys[k] = voices_[k].stage == Stage::Off ? int16_t{-1} : voices_[k].address.key;
     }
 
   private:
     enum class Stage : uint8_t { Off, Attack, Sustain, Release };
     struct Voice {
         Stage stage = Stage::Off;
-        int16_t key = -1;
-        int32_t noteId = -1;
+        supple::NoteEvent address{};  // as the note arrived
         double velocity = 0.0, phase = 0.0, increment = 0.0, envelope = 0.0;
         uint64_t age = 0;
     };
+
+    // CLAP note addressing: each field the event names must match; -1 names
+    // none. A MIDI note-off has no note ID and matches by key and channel.
+    static bool matches(const supple::NoteEvent& e, const supple::NoteEvent& v) {
+        return (e.noteId < 0 || e.noteId == v.noteId) && (e.key < 0 || e.key == v.key) &&
+               (e.channel < 0 || e.channel == v.channel) && (e.port < 0 || e.port == v.port);
+    }
 
     // A free voice, else the one released longest ago, else the oldest.
     Voice& allocate() {

@@ -54,7 +54,8 @@ inline bool read(const std::string& path, Audio& out, std::string& err) {
         const uint32_t sz = rd32(ch + 4);
         const long here = std::ftell(f);
         if (!std::memcmp(ch, "fmt ", 4)) {
-            std::vector<uint8_t> fmt(sz < 16 ? 16 : sz, 0);
+            if (sz < 16 || sz > 1024) { std::fclose(f); err = "malformed fmt chunk"; return false; }
+            std::vector<uint8_t> fmt(sz, 0);
             if (std::fread(fmt.data(), 1, sz, f) != sz) break;
             fmtTag = rd16(fmt.data());
             chans  = rd16(fmt.data() + 2);
@@ -71,8 +72,12 @@ inline bool read(const std::string& path, Audio& out, std::string& err) {
     }
 
     if (!haveFmt || !dataPos || chans <= 0) { std::fclose(f); err = "missing fmt/data"; return false; }
+    // Only what the decoder below handles: 16/24/32-bit PCM, 32/64-bit float.
+    const bool pcm = fmtTag == 1 && (bits == 16 || bits == 24 || bits == 32);
+    const bool flt = fmtTag == 3 && (bits == 32 || bits == 64);
+    if (!pcm && !flt) { std::fclose(f); err = "unsupported sample format"; return false; }
+    if (chans > 64 || rate <= 0) { std::fclose(f); err = "unsupported channel count or rate"; return false; }
     const int bytes = bits / 8;
-    if (bytes < 2 || bytes > 8) { std::fclose(f); err = "unsupported bit depth"; return false; }
 
     const size_t frames = dataLen / (size_t)(bytes * chans);
     out.sampleRate = rate;

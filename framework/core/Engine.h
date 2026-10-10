@@ -19,8 +19,11 @@
 //   - bypass, crossfaded and delayed by the processor's current latency.
 //   - telemetry, at a fixed rate whatever the event density, only while an
 //     editor is open.
-//   - a non-finite output guard: a NaN or infinity never reaches the host.
-//     The block is silenced and the processor reset instead.
+//   - a non-finite output guard: a NaN or infinity never reaches the host,
+//     whether the processor made it, the host fed it in (bypass passes the
+//     input), or a finite double overflowed a float buffer. The block is
+//     silenced and the processor and dry history reset instead.
+//   - note ends an instrument reports (NoteEnds), for the host to collect.
 #pragma once
 
 #include <algorithm>
@@ -90,12 +93,16 @@ class ParamStore {
     std::atomic<bool> any_{false};
 };
 
-class Engine {
+// Generic over the processor so framework tests can drive probes through
+// the real engine; everything else uses the product's, as `Engine`.
+template <class P>
+class BasicEngine {
   public:
-    using Processor = product::Processor;
+    using Processor = P;
 
-    Engine() {
+    BasicEngine() {
         for (auto& m : modulation_) m.store(0.0, std::memory_order_relaxed);
+        processor_.bindNoteEnds(&noteEnds_);
     }
 
     ParamStore& store() { return store_; }
@@ -133,6 +140,7 @@ class Engine {
         activeLatency_ = std::max(0, processor_.latencySamples());
         latency_.store(activeLatency_, std::memory_order_relaxed);
         tail_.store(processor_.tailSamples(), std::memory_order_relaxed);
+        tailChanged_ = false;
         const int maxLatency = std::max(activeLatency_, processor_.maxLatencySamples());
         bypassDelay_.resize(static_cast<size_t>(channelsOut_));
         for (auto& d : bypassDelay_) d.prepare(maxLatency);
@@ -168,6 +176,15 @@ class Engine {
     // Current modulation offset, for an editor to draw. Host units.
     double modulation(size_t index) const { return modulation_[index].load(std::memory_order_relaxed); }
     uint32_t safetyResets() const { return safetyResets_.load(std::memory_order_relaxed); }
+    // Audio thread: true once after tailSamples() changed while active, for
+    // the caller to tell the host.
+    bool takeTailChange() {
+        const bool changed = tailChanged_;
+        tailChanged_ = false;
+        return changed;
+    }
+    // Notes the processor finished during the last process() or flush().
+    const NoteEnds& noteEnds() const { return noteEnds_; }
 
     // --- audio thread ----------------------------------------------------------
 
@@ -182,6 +199,8 @@ class Engine {
     // Parameter events with no audio (CLAP params.flush). Valid active or not.
     template <class Source>
     void flush(Source& events) {
+        noteEnds_.clear();
+        noteEnds_.setOffset(0);
         syncStore();
         EngineEvent e;
         while (events.next(e)) apply(e);
@@ -191,6 +210,7 @@ class Engine {
     template <class T, class Source>
     void process(const T* const* in, T* const* out, int frames, Source& events,
                  const Transport* transport = nullptr) {
+        noteEnds_.clear();
         if (!active_ || frames <= 0 || !out) return;
         ScopedFlushDenormals noDenormals;
         syncStore();
@@ -207,6 +227,7 @@ class Engine {
         int frame = 0;
         while (frame < frames) {
             while (pending && static_cast<int>(e.time) <= frame) {
+                noteEnds_.setOffset(static_cast<uint32_t>(frame));
                 apply(e);
                 pending = events.next(e);
             }
@@ -225,6 +246,7 @@ class Engine {
             frame = end;
         }
         // Events stamped past the end of the block are kept, not dropped.
+        noteEnds_.setOffset(static_cast<uint32_t>(frames - 1));
         while (pending) {
             apply(e);
             pending = events.next(e);
@@ -291,7 +313,11 @@ class Engine {
             const int latency = std::max(0, processor_.latencySamples());
             dryLatency_ = std::min(latency, delayCapacity_);
             if (latency != activeLatency_) restartWanted_.store(true, std::memory_order_release);
-            tail_.store(processor_.tailSamples(), std::memory_order_relaxed);
+            const uint32_t tail = processor_.tailSamples();
+            if (tail != tail_.load(std::memory_order_relaxed)) {
+                tail_.store(tail, std::memory_order_relaxed);
+                tailChanged_ = true;
+            }
         }
         values_.clearChanges();
     }
@@ -323,7 +349,14 @@ class Engine {
         block.channels = channelsOut_;
         block.frames = n;
         block.metering = metering;
-        block.transport = transport;
+        if (transport) {
+            // Where this split starts, not where the host block did.
+            transport_ = *transport;
+            if (transport_.playing && transport_.hasTempo && transport_.hasBeats)
+                transport_.beats += offset / sampleRate_ * transport_.tempo / 60.0;
+            block.transport = &transport_;
+        }
+        noteEnds_.setOffset(static_cast<uint32_t>(offset));
         processor_.process(block);
 
         // x * 0 is 0 for every finite x and NaN otherwise: one branch per block.
@@ -340,6 +373,23 @@ class Engine {
         }
 
         writeOutput(in, out, offset, n, inputs);
+
+        // Again on what the host receives: the dry path carries the host's
+        // own input, and a finite double can overflow a float.
+        probe = 0.0;
+        for (int c = 0; c < channelsOut_; ++c) {
+            if (!out[c]) continue;
+            const T* d = out[c] + offset;
+            for (int i = 0; i < n; ++i) probe += static_cast<double>(d[i]) * 0.0;
+        }
+        if (!(probe == 0.0)) {
+            for (int c = 0; c < channelsOut_; ++c)
+                if (out[c]) std::fill(out[c] + offset, out[c] + offset + n, T(0));
+            for (auto& d : bypassDelay_) d.clear();
+            processor_.reset();
+            reinitialize();
+            safetyResets_.fetch_add(1, std::memory_order_relaxed);
+        }
 
         if (metering) {
             for (int c = 0; c < std::min(channelsOut_, kMeterChannels); ++c)
@@ -421,6 +471,9 @@ class Engine {
     int delayCapacity_ = 0;
     std::atomic<int> latency_{0};
     std::atomic<uint32_t> tail_{0};
+    bool tailChanged_ = false;
+    Transport transport_;
+    NoteEnds noteEnds_;
     std::atomic<bool> restartWanted_{false};
     std::atomic<uint32_t> safetyResets_{0};
     std::vector<dsp::DelayLine> bypassDelay_;
@@ -434,5 +487,7 @@ class Engine {
     double outputPeak_[kMeterChannels]{};
     TelemetryRing telemetry_;
 };
+
+using Engine = BasicEngine<product::Processor>;
 
 }  // namespace supple

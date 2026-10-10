@@ -14,8 +14,10 @@ Supple Audio product, plus a starter product in `product/` that exercises it.
   `framework/VERSION` and `framework/CHANGES.md` updated. Then bring the
   change into each product with `framework/tools/update_framework.cmake`.
 - **Changing the starter product?** It exists to show patterns, not to ship.
-  Keep it small, bit-transparent at its defaults, and using every control
-  kind, so `ui-tests` and the preview keep covering them.
+  Keep it small and bit-transparent at its defaults. It uses knobs, toggles,
+  a segmented control and a custom drag; `ui-tests` covers the other kinds
+  (sliders, dropdown) on a synthetic layout, but the preview shows only what
+  the starter uses.
 
 ## The starter product
 

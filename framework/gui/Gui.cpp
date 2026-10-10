@@ -54,8 +54,9 @@ bool Gui::setSize(uint32_t w, uint32_t h) {
     // letterboxes. The user scale follows whichever axis is limiting.
     const double sx = static_cast<double>(w) / (editor_->width() * platformScale_);
     const double sy = static_cast<double>(h) / (editor_->height() * platformScale_);
+    if (!window_.setSize(w, h)) return false;
     userScale_ = std::clamp(std::min(sx, sy), kMinScale, kMaxScale);
-    return window_.setSize(w, h);
+    return true;
 }
 
 void Gui::setPlatformScale(double scale) {
@@ -69,6 +70,12 @@ void Gui::setPlatformScale(double scale) {
     platformScale_ = next;
     applyLimits();
     window_.setSize(w, h);
+}
+
+void Gui::sizeAt(double scale, uint32_t& w, uint32_t& h) const {
+    const double s = std::isfinite(scale) && scale > 0.0 ? std::clamp(scale, kMinScale, kMaxScale) : userScale_;
+    w = hostW(s);
+    h = hostH(s);
 }
 
 void Gui::setUserScale(double scale) {

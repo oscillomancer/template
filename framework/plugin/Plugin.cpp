@@ -137,6 +137,7 @@ struct Plugin
     const clap_host_latency_t* hostLatency = nullptr;
     const clap_host_timer_support_t* hostTimer = nullptr;
     const clap_host_gui_t* hostGui = nullptr;
+    const clap_host_tail_t* hostTail = nullptr;
 
     Engine engine;
     EditBridge edits;
@@ -214,10 +215,29 @@ struct Plugin
         }
     }
 
-    void afterAudioWork() {
+    // After the engine ran (audio thread, or main thread while inactive).
+    // `frames` is the block length, 0 for a flush.
+    void afterAudioWork(const clap_output_events_t* out, uint32_t frames) {
         if (engine.takeRestartRequest()) {
             restartWanted.store(true, std::memory_order_release);
             requestCallback();
+        }
+        // Only ever set while active, so this is the audio thread, as the
+        // tail extension requires.
+        if (engine.takeTailChange() && hostTail && hostTail->changed) hostTail->changed(host);
+        const NoteEnds& ends = engine.noteEnds();
+        for (int i = 0; out && i < ends.count(); ++i) {
+            const NoteEvent& n = ends[i].note;
+            clap_event_note_t e{};
+            e.header.size = sizeof(e);
+            e.header.time = frames ? std::min(ends[i].time, frames - 1) : 0;
+            e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+            e.header.type = CLAP_EVENT_NOTE_END;
+            e.note_id = n.noteId;
+            e.port_index = n.port;
+            e.channel = n.channel;
+            e.key = n.key;
+            if (!out->try_push(out, &e.header)) break;  // a full queue loses the rest
         }
     }
 
@@ -428,7 +448,7 @@ void CLAP_ABI paramsFlush(const clap_plugin_t* p, const clap_input_events_t* in,
     ClapEvents events(in);
     s->engine.flush(events);
     s->drainEdits(out);
-    s->afterAudioWork();
+    s->afterAudioWork(out, 0);
 }
 
 const clap_plugin_params_t kParams = {paramsCount, paramsInfo, paramsValue, paramsValueToText, paramsTextToValue,
@@ -487,10 +507,17 @@ bool CLAP_ABI stateLoad(const clap_plugin_t* p, const clap_istream_t* stream) {
         s->editorScale = snapshot.editorScale;
 #if SUPPLE_WITH_GUI
         if (s->editor) {
-            s->editor->setUserScale(snapshot.editorScale);
-            uint32_t w = 0, h = 0;
-            s->editor->size(w, h);
-            if (s->hostGui && s->hostGui->request_resize) s->hostGui->request_resize(s->host, w, h);
+            // The host decides: ask first, and resize only if it agrees. A
+            // refusal keeps the open editor as it is, and that is what saves.
+            uint32_t w = 0, h = 0, cw = 0, ch = 0;
+            s->editor->sizeAt(snapshot.editorScale, w, h);
+            s->editor->size(cw, ch);
+            if (w != cw || h != ch) {
+                if (s->hostGui && s->hostGui->request_resize && s->hostGui->request_resize(s->host, w, h))
+                    s->editor->setUserScale(snapshot.editorScale);
+                else
+                    s->editorScale = s->editor->userScale();
+            }
         }
 #endif
     }
@@ -656,6 +683,7 @@ bool CLAP_ABI pluginInit(const clap_plugin_t* p) {
     s->hostLatency = s->hostExtension<const clap_host_latency_t>(CLAP_EXT_LATENCY);
     s->hostTimer = s->hostExtension<const clap_host_timer_support_t>(CLAP_EXT_TIMER_SUPPORT);
     s->hostGui = s->hostExtension<const clap_host_gui_t>(CLAP_EXT_GUI);
+    s->hostTail = s->hostExtension<const clap_host_tail_t>(CLAP_EXT_TAIL);
     return true;
 }
 
@@ -721,10 +749,13 @@ clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_pr
     if (process->audio_outputs_count < 1 || (!info::kInstrument && process->audio_inputs_count < 1)) {
         s->engine.flush(events);
     } else {
-        const clap_audio_buffer_t& out = process->audio_outputs[0];
+        clap_audio_buffer_t& out = process->audio_outputs[0];
         // Bus widths are fixed by the selected configuration and activate();
         // a mismatch is a host contract violation, not a cue to reallocate.
         if (static_cast<int>(out.channel_count) < channels) return CLAP_PROCESS_ERROR;
+        // Every sample is written, and nothing establishes that they are
+        // equal: a stale hint would have the host read sample 0 throughout.
+        out.constant_mask = 0;
         if (info::kInstrument) {
             if (out.data32) s->engine.process<float>(nullptr, out.data32, frames, events, t);
             else if (out.data64) s->engine.process<double>(nullptr, out.data64, frames, events, t);
@@ -739,7 +770,7 @@ clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_pr
                 return CLAP_PROCESS_ERROR;  // mixed precision, which the ports forbid
         }
     }
-    s->afterAudioWork();
+    s->afterAudioWork(process->out_events, process->frames_count);
     return CLAP_PROCESS_CONTINUE;
 }
 

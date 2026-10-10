@@ -102,4 +102,75 @@ TEST(the_ninth_note_steals_rather_than_stalls) {
     CHECK(test::peak(out) < 8.0);
 }
 
+namespace {
+
+NoteEvent addressed(NoteEvent::Type type, int key, int channel, int id) {
+    NoteEvent n;
+    n.type = type;
+    n.key = static_cast<int16_t>(key);
+    n.channel = static_cast<int16_t>(channel);
+    n.noteId = id;
+    return n;
+}
+
+// Plays the notes in 256-frame blocks and returns every note end reported,
+// with its absolute frame.
+std::vector<NoteAt> ends(const std::vector<NoteAt>& notes, int frames) {
+    auto engine = std::make_unique<Engine>();
+    engine->activate(48000.0, 256, 0, 2);
+    std::vector<NoteAt> out;
+    std::vector<double> l(256), r(256);
+    double* p[] = {l.data(), r.data()};
+    size_t next = 0;
+    for (int frame = 0; frame < frames; frame += 256) {
+        Source s{&notes, &next, frame, frame + 256};
+        engine->process<double>(nullptr, p, 256, s, nullptr);
+        const NoteEnds& e = engine->noteEnds();
+        for (int i = 0; i < e.count(); ++i) {
+            CHECK(i == 0 || e[i - 1].time <= e[i].time);
+            out.push_back({frame + static_cast<int>(e[i].time), e[i].note});
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(every_note_ends_once_with_the_address_it_started_with) {
+    // Nine notes on eight voices (one is stolen), one released by ID alone,
+    // then a choke of everything with every field a wildcard.
+    using T = NoteEvent::Type;
+    std::vector<NoteAt> n;
+    for (int k = 0; k < 9; ++k) n.push_back({100 * k, addressed(T::On, 60 + k, k % 2, 1000 + k)});
+    n.push_back({2000, addressed(T::Off, -1, -1, 1003)});
+    n.push_back({48000, addressed(T::Choke, -1, -1, -1)});
+    const std::vector<NoteAt> got = ends(n, 49152);
+    CHECK_MSG(got.size() == 9, "%zu note ends for 9 notes", got.size());
+    std::vector<int> count(9, 0);
+    for (const NoteAt& e : got) {
+        const int k = e.note.noteId - 1000;
+        CHECK(k >= 0 && k < 9);
+        if (k < 0 || k >= 9) continue;
+        ++count[static_cast<size_t>(k)];
+        CHECK(e.note.key == 60 + k && e.note.channel == k % 2);
+    }
+    for (int k = 0; k < 9; ++k) CHECK_MSG(count[static_cast<size_t>(k)] == 1, "note %d ended %d times", k, count[static_cast<size_t>(k)]);
+    // The steal ends note 0 when note 8 starts; ID 1003 ends after its
+    // release, before the choke; the choke ends the rest at its frame.
+    for (const NoteAt& e : got) {
+        if (e.note.noteId == 1000) CHECK(e.frame == 800);
+        if (e.note.noteId == 1003) CHECK(e.frame > 2000 && e.frame < 48000);
+    }
+}
+
+TEST(a_release_on_one_channel_leaves_the_same_key_on_another) {
+    using T = NoteEvent::Type;
+    const std::vector<NoteAt> n = {{0, addressed(T::On, 60, 0, -1)},
+                                   {0, addressed(T::On, 60, 1, -1)},
+                                   {1000, addressed(T::Off, 60, 1, -1)}};
+    const std::vector<NoteAt> got = ends(n, 48000);
+    CHECK(got.size() == 1);
+    CHECK(got.size() == 1 && got[0].note.channel == 1);
+}
+
 SUPPLE_TEST_MAIN

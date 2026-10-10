@@ -56,8 +56,10 @@ Window::Window(EditorBase& editor, const char* className, bool standalone)
     : editor_(editor),
       className_(className),
       standalone_(standalone),
-      width_(static_cast<uint32_t>(std::lround(editor.width()))),
-      height_(static_cast<uint32_t>(std::lround(editor.height()))) {}
+      hostW_(static_cast<uint32_t>(std::lround(editor.width()))),
+      hostH_(static_cast<uint32_t>(std::lround(editor.height()))),
+      width_(hostW_),
+      height_(hostH_) {}
 
 Window::~Window() { destroy(); }
 
@@ -74,6 +76,8 @@ bool Window::create() {
     }
     puglSetHandle(view_, this);
     puglSetEventFunc(view_, eventThunk);
+    width_ = toPixels(hostW_);
+    height_ = toPixels(hostH_);
 
 #if SUPPLE_METAL
     // Metal manages its own drawable, depth and stencil; nanovg_mtl sizes
@@ -128,20 +132,44 @@ bool Window::embed(uintptr_t parent) {
     if (!view_ && !create()) return false;
     if (realized_) return true;
     if (parent) puglSetParent(view_, static_cast<PuglNativeView>(parent));
-    return puglRealize(view_) == PUGL_SUCCESS;
+    if (puglRealize(view_) == PUGL_SUCCESS && realized_) return true;
+    // No view, or one without a renderer or fonts: a blank editor is not a
+    // success. Tear it down so a later attempt starts clean.
+    destroy();
+    return false;
 }
 
 bool Window::show() { return view_ && puglShow(view_, PUGL_SHOW_PASSIVE) == PUGL_SUCCESS; }
 
 bool Window::hide() { return view_ && puglHide(view_) == PUGL_SUCCESS; }
 
+double Window::pixelsPerUnit() const {
+#if defined(__APPLE__)
+    // Before realizing, pugl answers for the main screen, and converts with
+    // that same factor, so the size it creates is still the one asked for.
+    return view_ ? std::max(0.5, puglGetScaleFactor(view_)) : 1.0;
+#else
+    return 1.0;
+#endif
+}
+
+uint32_t Window::toPixels(uint32_t hostUnits) const {
+    return static_cast<uint32_t>(std::lround(hostUnits * pixelsPerUnit()));
+}
+
 bool Window::setSize(uint32_t w, uint32_t h) {
-    width_ = std::max(1u, w);
-    height_ = std::max(1u, h);
+    // PuglSpan is 16 bits: a larger size would wrap, not clip.
+    constexpr uint32_t kMaxSpan = 0xFFFF;
+    if (w == 0 || h == 0 || toPixels(w) > kMaxSpan || toPixels(h) > kMaxSpan) return false;
+    if (view_ && puglSetSizeHint(view_, PUGL_CURRENT_SIZE, static_cast<PuglSpan>(toPixels(w)),
+                                 static_cast<PuglSpan>(toPixels(h))) != PUGL_SUCCESS)
+        return false;
+    hostW_ = w;
+    hostH_ = h;
+    width_ = toPixels(w);
+    height_ = toPixels(h);
     editor_.markDirty();
-    if (!view_) return true;
-    return puglSetSizeHint(view_, PUGL_CURRENT_SIZE, static_cast<PuglSpan>(width_),
-                           static_cast<PuglSpan>(height_)) == PUGL_SUCCESS;
+    return true;
 }
 
 void Window::setSizeLimits(uint32_t minW, uint32_t minH, uint32_t maxW, uint32_t maxH) {
@@ -150,8 +178,15 @@ void Window::setSizeLimits(uint32_t minW, uint32_t minH, uint32_t maxW, uint32_t
     maxW_ = maxW;
     maxH_ = maxH;
     if (!view_) return;
-    puglSetSizeHint(view_, PUGL_MIN_SIZE, static_cast<PuglSpan>(minW), static_cast<PuglSpan>(minH));
-    puglSetSizeHint(view_, PUGL_MAX_SIZE, static_cast<PuglSpan>(maxW), static_cast<PuglSpan>(maxH));
+#if defined(__APPLE__)
+    // This pugl turns the limits into layout constraints without converting
+    // pixels to points, which on a 2x screen would double them. Embedded,
+    // the host enforces limits through adjust_size; the preview is fixed.
+#else
+    const auto span = [](uint32_t v) { return static_cast<PuglSpan>(std::min<uint32_t>(v, 0xFFFF)); };
+    puglSetSizeHint(view_, PUGL_MIN_SIZE, span(minW), span(minH));
+    puglSetSizeHint(view_, PUGL_MAX_SIZE, span(maxW), span(maxH));
+#endif
 }
 
 // NSTimer on macOS and SetTimer on Windows, both driven by the run loop the
@@ -233,11 +268,15 @@ void Window::handleEvent(const void* eventPointer) {
 
         case PUGL_UPDATE: frame(); break;
 
-        case PUGL_CONFIGURE:
-            width_ = e->configure.width;
-            height_ = e->configure.height;
+        case PUGL_CONFIGURE: {
+            width_ = std::max<uint32_t>(1, e->configure.width);
+            height_ = std::max<uint32_t>(1, e->configure.height);
+            const double ppu = pixelsPerUnit();
+            hostW_ = static_cast<uint32_t>(std::lround(width_ / ppu));
+            hostH_ = static_cast<uint32_t>(std::lround(height_ / ppu));
             editor_.markDirty();
             break;
+        }
 
         case PUGL_EXPOSE: draw(); break;
 
@@ -301,18 +340,13 @@ void Window::syncCursor() {
 
 void Window::draw() {
     if (!vg_) return;
-    // macOS reports logical points and hands back a backing store that is
-    // backingScaleFactor times larger; X11 and Windows report pixels.
-#if defined(__APPLE__)
-    const float ratio = static_cast<float>(puglGetScaleFactor(view_));
-#else
-    const float ratio = 1.0f;
-#endif
-    canvasViewport(static_cast<int>(static_cast<float>(width_) * ratio),
-                   static_cast<int>(static_cast<float>(height_) * ratio));
+    // Pugl's sizes are backing pixels on every platform, the drawable's
+    // too, so the frame is laid out in pixels with a ratio of 1; the backing
+    // scale is already in width_ and height_, and in fit().
+    canvasViewport(static_cast<int>(width_), static_cast<int>(height_));
     const NVGcolor bg = rgb(editor_.background());
     canvasClear(vg_, bg.r, bg.g, bg.b);
-    nvgBeginFrame(vg_, static_cast<float>(width_), static_cast<float>(height_), ratio);
+    nvgBeginFrame(vg_, static_cast<float>(width_), static_cast<float>(height_), 1.0f);
     // One transform from design units to the view; nothing in the editor
     // ever thinks about pixels, DPI or host scaling.
     const Fit f = fit();

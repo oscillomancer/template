@@ -24,11 +24,19 @@ bool EditorBase::attach(NVGcontext* vg) {
     return attached_;
 }
 
-void EditorBase::detach() { attached_ = false; }
+void EditorBase::detach() {
+    focusLost();
+    attached_ = false;
+}
 
 double EditorBase::plain(uint32_t id) const {
     const ParamDef* p = params::find(id);
     return p ? toPlain(*p, host_.value(id)) : 0.0;
+}
+
+double EditorBase::effective(uint32_t id) const {
+    const ParamDef* p = params::find(id);
+    return p ? toPlain(*p, sanitizeHost(*p, host_.value(id) + host_.modulation(id))) : 0.0;
 }
 
 void EditorBase::idle(double seconds) {
@@ -131,6 +139,10 @@ bool EditorBase::key(uint32_t code, uint32_t mods) { return ui_.key(code, mods);
 
 bool EditorBase::text(uint32_t codepoint) { return ui_.text(codepoint); }
 
-void EditorBase::focusLost() { ui_.focusLost(); }
+void EditorBase::focusLost() {
+    onCancel();
+    ui_.focusLost();
+    dirty_ = true;
+}
 
 }  // namespace supple::gui

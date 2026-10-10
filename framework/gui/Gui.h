@@ -44,6 +44,8 @@ class Gui {
     double platformScale() const { return platformScale_; }
     double userScale() const { return userScale_; }
     void setUserScale(double scale);
+    // The host size setUserScale(scale) would ask for, without asking.
+    void sizeAt(double userScale, uint32_t& w, uint32_t& h) const;
     void aspect(uint32_t& w, uint32_t& h) const;
 
     void tick() { window_.tick(); }

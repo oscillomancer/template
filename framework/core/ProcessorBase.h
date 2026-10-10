@@ -43,7 +43,9 @@ struct ProcessSetup {
     int channels = 2;        // main bus width, fixed until the next prepare
 };
 
-// Host transport at the start of the current host block, when it sent one.
+// Host transport at the start of the current Block, when the host sent one.
+// The framework advances `beats` to each split's first sample while playing
+// with a tempo; `barStart` and the rest are as the host block began.
 struct Transport {
     bool playing = false;
     bool hasTempo = false;
@@ -77,6 +79,46 @@ struct NoteEvent {
     double velocity = 1.0; // 0..1
 };
 
+// Notes an instrument has finished with, collected during one host block and
+// sent to the host as CLAP NOTE_END events after it. Hosts use them for their
+// own voice bookkeeping: the VST3 wrapper keeps every note it ever started
+// until one arrives, growing a list on the audio thread. Report a note when
+// its voice falls silent, is choked or is stolen, with the address it arrived
+// with. Bounded; beyond kCapacity in one block the rest are counted, not sent.
+class NoteEnds {
+  public:
+    static constexpr int kCapacity = 256;
+    struct Entry {
+        uint32_t time;  // frame within the host block
+        NoteEvent note;
+    };
+
+    void clear() { count_ = 0; }
+    // Kept in time order, as host event lists must be.
+    void push(const NoteEvent& note, uint32_t time) {
+        if (count_ == kCapacity) {
+            ++dropped_;
+            return;
+        }
+        int i = count_++;
+        for (; i > 0 && entries_[i - 1].time > time; --i) entries_[i] = entries_[i - 1];
+        entries_[i] = Entry{time, note};
+    }
+    int count() const { return count_; }
+    const Entry& operator[](int i) const { return entries_[i]; }
+    uint32_t dropped() const { return dropped_; }
+
+    // The engine sets where the processor's frame 0 falls in the host block.
+    void setOffset(uint32_t offset) { offset_ = offset; }
+    uint32_t offset() const { return offset_; }
+
+  private:
+    Entry entries_[kCapacity];
+    int count_ = 0;
+    uint32_t offset_ = 0;
+    uint32_t dropped_ = 0;
+};
+
 struct NoTelemetry {};
 
 template <class Derived>
@@ -106,6 +148,14 @@ class ProcessorBase {
 
     void reset() {}
     void note(const NoteEvent&) {}
+
+    // An instrument calls this when a voice ends: `frame` is within the
+    // current Block in process(), and 0 inside note(). See NoteEnds.
+    void noteEnded(const NoteEvent& address, int frame = 0) {
+        if (noteEnds_) noteEnds_->push(address, noteEnds_->offset() + static_cast<uint32_t>(frame < 0 ? 0 : frame));
+    }
+    // The engine's; a processor never calls it.
+    void bindNoteEnds(NoteEnds* sink) { noteEnds_ = sink; }
     template <class T>
     void captureTelemetry(T&) {}
 
@@ -120,6 +170,9 @@ class ProcessorBase {
         (void)set;
         return false;
     }
+
+  private:
+    NoteEnds* noteEnds_ = nullptr;
 };
 
 }  // namespace supple

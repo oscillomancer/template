@@ -96,8 +96,10 @@ supple::choice(kQuality, "Quality", kQualityLabels, 1).restartOnChange(),
   bool. `v.changed(id)` says what moved; `v.initial()` says snap, don't glide.
 - A parameter that changes latency or topology is `.restartOnChange()`. The
   framework asks the host to restart (once, from the main thread) and the
-  processor rebuilds in `prepare()`. Set `PRODUCT_SMOKE_LATENCY_PARAM` so
-  host-smoke checks the protocol.
+  processor rebuilds in `prepare()`. `update()` still sees the new value at
+  once: ignore it there and keep running the topology `prepare()` built, so
+  the real delay always matches the latency the host was told. Set
+  `PRODUCT_SMOKE_LATENCY_PARAM` so host-smoke checks the protocol.
 
 ## DSP
 
@@ -119,7 +121,13 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 - Report `latencySamples()`, `maxLatencySamples()` (if latency follows a
   parameter) and `tailSamples()`.
 - Instruments implement `note(const NoteEvent&)`; notes arrive at their
-  exact sample.
+  exact sample. Match releases and chokes on the whole address, where -1 is
+  a wildcard, and call `noteEnded(address, frame)` whenever a voice ends
+  (released to silence, choked, stolen, reset): hosts retire notes on it,
+  and the VST3 wrapper otherwise keeps every note forever. The instrument
+  example does all of this.
+- `block.transport` is the host's transport at the first sample of that
+  split, so tempo-synced phase can be computed per block.
 - Editor data: declare `struct Telemetry` and `captureTelemetry`, and only
   accumulate it while `block.metering` is true. Input and output peak meters
   are measured by the framework already.
@@ -146,7 +154,10 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 - Custom interactive drawing (a graph handle, an EQ node): override
   `onPointerDown/Move/Up` and edit through `ui().dragEdit(control, value)`
   and `ui().endDragEdit()`, never `host().beginEdit` directly. `Ui` owns the
-  one-gesture-at-a-time rule.
+  one-gesture-at-a-time rule. Override `onCancel()` to drop the drag: focus
+  loss and teardown call it, and the release may never arrive.
+- Draw what is heard from `effective(id)` (the value plus host
+  modulation); `plain(id)` is the control's own position.
 - Restyle a control by overriding `drawControl` for its `variant`.
 - Animation: `animate(seconds)` plus `markDirty()`. Never count frames.
 - Telemetry: `onTelemetry(frame)`, then `markDirty()` only if what is shown

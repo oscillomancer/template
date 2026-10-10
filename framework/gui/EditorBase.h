@@ -65,6 +65,9 @@ class EditorBase {
         (void)x, (void)y, (void)button, (void)mods;
         return false;
     }
+    // Focus was lost or the view is going away: drop any interaction the
+    // pointer hooks started, as Ui drops its own. The release may never come.
+    virtual void onCancel() {}
 
     // --- for Window -----------------------------------------------------------
 
@@ -97,6 +100,9 @@ class EditorBase {
 
     // A parameter's plain value, for drawing.
     double plain(uint32_t id) const;
+    // The plain value the DSP is using: the base value plus any host
+    // modulation. Draw what is heard (a response curve) from this.
+    double effective(uint32_t id) const;
 
     void drawControls(NVGcontext* vg);
     // One control. Override to restyle some controls (by variant, say) and

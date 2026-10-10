@@ -22,6 +22,7 @@ class Editor : public supple::gui::EditorBase {
     bool onPointerDown(float x, float y, int button, uint32_t mods, bool doubleClick) override;
     bool onPointerMove(float x, float y, uint32_t mods) override;
     bool onPointerUp(float x, float y, int button, uint32_t mods) override;
+    void onCancel() override;
 
     supple::gui::Cursor cursor() const override;
 

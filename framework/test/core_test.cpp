@@ -372,6 +372,92 @@ TEST(non_finite_output_never_reaches_the_host) {
     CHECK(engine->safetyResets() >= 1);
 }
 
+TEST(non_finite_input_never_passes_through_bypass_or_overflows_a_float) {
+    if (product::info::kInstrument) return;
+    // Bypassed, the output is the host's own input: NaN in, silence out.
+    if (params::kBypassIndex >= 0) {
+        test::Signal in = test::noise(2, 2048, 9);
+        in[0][700] = NAN;
+        auto engine = std::make_unique<Engine>();
+        test::RenderOptions o;
+        o.blocks = {128};
+        o.initial = {{params::at(static_cast<size_t>(params::kBypassIndex)).id, 1.0}};
+        CHECK(test::allFinite(test::render(in, o, engine.get())));
+    }
+    // A finite double beyond FLT_MAX becomes infinity in a float buffer.
+    auto engine = std::make_unique<Engine>();
+    engine->activate(48000.0, 256, 2, 2);
+    std::vector<float> l(256, 3.0e38f), r(256, -3.0e38f);
+    const float* in[] = {l.data(), r.data()};
+    std::vector<float> ol(256), orr(256);
+    float* out[] = {ol.data(), orr.data()};
+    struct All {
+        size_t k = 0;
+        bool next(EngineEvent& e) {
+            while (k < params::kCount && params::at(k).is(pflag::kBypass)) ++k;
+            if (k == params::kCount) return false;
+            e = EngineEvent{};
+            e.index = static_cast<int>(k);
+            e.value = fromNormalized(params::at(k), 1.0);
+            ++k;
+            return true;
+        }
+    } loud;
+    engine->process<float>(in, out, 256, loud, nullptr);
+    for (int i = 0; i < 256; ++i) CHECK(std::isfinite(ol[static_cast<size_t>(i)]) && std::isfinite(orr[static_cast<size_t>(i)]));
+}
+
+namespace {
+
+// Records what each split of a host block is told about the transport.
+class TransportProbe : public ProcessorBase<TransportProbe> {
+  public:
+    void prepare(const ProcessSetup&, const ParamValues&) {}
+    void update(const ParamValues&) {}
+    void process(Block& b) {
+        if (count < 16) seen[count++] = {b.frames, b.transport ? b.transport->beats : -1.0};
+    }
+    struct Split {
+        int frames;
+        double beats;
+    } seen[16]{};
+    int count = 0;
+};
+
+}  // namespace
+
+TEST(each_split_sees_the_transport_where_it_starts) {
+    auto engine = std::make_unique<BasicEngine<TransportProbe>>();
+    engine->activate(48000.0, 512, 2, 2);
+    struct Two {
+        int k = 0;
+        bool next(EngineEvent& e) {
+            if (k == 2) return false;
+            e = EngineEvent{};
+            e.index = 0;
+            e.time = k == 0 ? 100u : 300u;
+            e.value = hostDefault(params::at(0));
+            ++k;
+            return true;
+        }
+    } splits;
+    Transport t;
+    t.playing = t.hasTempo = t.hasBeats = true;
+    t.tempo = 120.0;
+    t.beats = 4.0;
+    std::vector<double> l(480), r(480);
+    double* io[] = {l.data(), r.data()};
+    engine->process<double>(io, io, 480, splits, &t);
+    const auto& p = engine->processor();
+    CHECK(p.count == 3);
+    int offset = 0;
+    for (int i = 0; i < p.count; ++i) {
+        // Two beats a second at 120 BPM.
+        CHECK_NEAR(p.seen[i].beats, 4.0 + offset / 48000.0 * 2.0, 1e-12);
+        offset += p.seen[i].frames;
+    }
+}
+
 TEST(reset_preserves_parameters_and_clears_history) {
     // After reset, the engine behaves as a fresh one with the same values.
     test::RenderOptions o;
@@ -505,6 +591,53 @@ TEST(edit_bridge_always_delivers_balanced_gestures_and_the_final_value) {
         CHECK(!log.unbalancedEnd);
         for (const auto& [i, d] : log.depth) CHECK_MSG(d == 0, "parameter %zu left %d gestures open", i, d);
     }
+}
+
+TEST(edit_bridge_makes_progress_when_the_host_takes_one_event_per_drain) {
+    // A host whose output queue holds a single event. Every gesture must
+    // still complete, in order, with nothing repeated forever.
+    EditBridge bridge;
+    HostLog log;
+    std::vector<std::pair<EditBridge::Kind, size_t>> seen;
+    auto drainOne = [&] {
+        bool room = true;
+        return bridge.drain([&](EditBridge::Kind k, size_t i) {
+            if (!room) return false;
+            room = false;
+            seen.push_back({k, i});
+            return log.emit(k, i);
+        });
+    };
+    const size_t n = std::min<size_t>(params::kCount, 3);
+    for (size_t i = 0; i < n; ++i) {
+        bridge.begin(i);
+        bridge.value(i);
+        bridge.end(i);
+    }
+    int drains = 0;
+    while (bridge.pending() && drains < 100) {
+        drainOne();
+        ++drains;
+    }
+    CHECK(!bridge.pending());
+    CHECK_MSG(drains == static_cast<int>(3 * n), "%d drains for %zu complete gestures", drains, n);
+    CHECK(!log.nested && !log.unbalancedEnd);
+    for (size_t i = 0; i < n; ++i) {
+        CHECK(log.values[i] == 1);
+        CHECK(log.depth[i] == 0);
+    }
+    // A value that arrives while END is owed is delivered before it.
+    seen.clear();
+    bridge.begin(0);
+    bridge.value(0);
+    drainOne();  // BEGIN
+    drainOne();  // VALUE
+    bridge.value(0);
+    bridge.end(0);
+    for (int k = 0; k < 20 && bridge.pending(); ++k) drainOne();
+    CHECK(!bridge.pending());
+    CHECK(seen.size() == 4);
+    CHECK(seen.size() == 4 && seen[2].first == EditBridge::Kind::Value && seen[3].first == EditBridge::Kind::End);
 }
 
 TEST(edit_bridge_is_safe_across_threads) {

@@ -6,9 +6,11 @@
 // loop or a thread -- the host drives everything through tick() or, where a
 // host offers no timer, through a view-owned fallback timer.
 //
-// Sizes are in the host's units: logical points on macOS, physical pixels on
-// X11 and Windows. The editor always draws in its own design units and this
-// class applies the one transform between them.
+// Two units meet here. The host's: logical points on macOS (CLAP's Cocoa
+// sizes), physical pixels on X11 and Windows. Pugl's: backing pixels on every
+// platform, for sizes, configure events and the pointer alike. The public
+// API speaks host units; inside, everything is pugl pixels, and the editor
+// draws in its own design units through the one transform in draw().
 #pragma once
 
 #include <chrono>
@@ -41,8 +43,10 @@ class Window {
     bool show();
     bool hide();
 
-    uint32_t width() const { return width_; }
-    uint32_t height() const { return height_; }
+    // In host units.
+    uint32_t width() const { return hostW_; }
+    uint32_t height() const { return hostH_; }
+    // False, changing nothing, for a size the view cannot take.
     bool setSize(uint32_t w, uint32_t h);
     // Bounds the user may resize to, in host units.
     void setSizeLimits(uint32_t minW, uint32_t minH, uint32_t maxW, uint32_t maxH);
@@ -79,7 +83,11 @@ class Window {
     PuglWorldImpl* world_ = nullptr;
     PuglViewImpl* view_ = nullptr;
     NVGcontext* vg_ = nullptr;
-    uint32_t width_, height_;
+    // Pugl pixels per host unit: the backing scale on macOS, 1 elsewhere.
+    double pixelsPerUnit() const;
+    uint32_t toPixels(uint32_t hostUnits) const;
+    uint32_t hostW_, hostH_;   // host units
+    uint32_t width_, height_;  // pugl pixels
     uint32_t minW_ = 0, minH_ = 0, maxW_ = 0, maxH_ = 0;
     bool realized_ = false;
     bool fallbackTimer_ = false;

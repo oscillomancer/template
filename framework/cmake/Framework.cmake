@@ -9,6 +9,17 @@ file(READ ${SUPPLE_FRAMEWORK}/VERSION SUPPLE_FRAMEWORK_VERSION)
 string(STRIP "${SUPPLE_FRAMEWORK_VERSION}" SUPPLE_FRAMEWORK_VERSION)
 message(STATUS "${PRODUCT_NAME} ${PRODUCT_VERSION} on framework ${SUPPLE_FRAMEWORK_VERSION}")
 
+# Bundle staging, AU preparation, install rules and tests all name
+# plugins/<Name>.<ext>; a multi-config generator (Visual Studio, Xcode, Ninja
+# Multi-Config) adds a per-configuration directory under that and, with
+# clap-wrapper, shares some bundles between configurations. One build
+# directory per configuration, which the presets already give.
+get_property(supple_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if (supple_multi_config)
+    message(FATAL_ERROR "${CMAKE_GENERATOR} is a multi-configuration generator; use Ninja or Makefiles "
+                        "(on Windows, from a Visual Studio developer prompt: cmake --preset release -G Ninja)")
+endif()
+
 option(SUPPLE_BUILD_PLUGIN "Build the CLAP, VST3 and AUv2 plugins" ON)
 option(SUPPLE_BUILD_GUI "Build the editor" ON)
 option(SUPPLE_BUILD_TESTS "Build the tests, tools and probes" ON)
@@ -210,7 +221,10 @@ if (SUPPLE_BUILD_PLUGIN)
     set(notices ${SUPPLE_GENERATED}/NOTICES.txt)
     file(READ ${SUPPLE_FRAMEWORK}/NOTICES.txt notices_text)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SUPPLE_FRAMEWORK}/NOTICES.txt)
-    if (EXISTS ${SUPPLE_PRODUCT}/NOTICES.txt)
+    # The glob, rechecked at every build, notices the file being created or
+    # deleted; the configure dependency notices an edit.
+    file(GLOB product_notices_file CONFIGURE_DEPENDS ${SUPPLE_PRODUCT}/NOTICES.txt)
+    if (product_notices_file)
         file(READ ${SUPPLE_PRODUCT}/NOTICES.txt product_notices)
         string(APPEND notices_text "\n\n${product_notices}")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SUPPLE_PRODUCT}/NOTICES.txt)
@@ -244,6 +258,17 @@ if (SUPPLE_BUILD_PLUGIN)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${notices}" "${SUPPLE_ASSETS}/${PRODUCT_NAME}-NOTICES.txt"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${license}" "${SUPPLE_ASSETS}/${PRODUCT_NAME}-LICENSE.txt"
             VERBATIM)
+        # The Linux VST3 is a directory bundle, copied and installed whole:
+        # its notices go inside it, not only beside it.
+        if (NOT WIN32 AND TARGET product-plugin_vst3)
+            set(resources "${SUPPLE_ASSETS}/${PRODUCT_NAME}.vst3/Contents/Resources")
+            add_dependencies(product-notices product-plugin_vst3)
+            add_custom_command(TARGET product-notices POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${resources}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${notices}" "${resources}/NOTICES.txt"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${license}" "${resources}/LICENSE.txt"
+                VERBATIM)
+        endif()
     endif()
 
     if (APPLE AND TARGET product-plugin_auv2)

@@ -80,6 +80,20 @@ constexpr bool labelsValid() {
     return true;
 }
 
+// Labels are text the host shows, parses back and stores nowhere: they must
+// fit ValueText::number with its terminator, or the text would not round-trip.
+constexpr bool labelLengthsValid() {
+    for (const auto& p : product::kParams) {
+        if (p.kind != ParamKind::Choice && p.kind != ParamKind::Toggle) continue;
+        for (int i = 0; i < p.labelCount; ++i) {
+            int n = 0;
+            while (p.labels[i][n] != '\0') ++n;
+            if (n == 0 || n > 31) return false;
+        }
+    }
+    return true;
+}
+
 constexpr int bypassCount() {
     int n = 0;
     for (const auto& p : product::kParams)
@@ -103,6 +117,7 @@ static_assert(detail::rangesValid(),
 static_assert(detail::labelsValid(),
               "a choice's label count does not match its range, a toggle is not 0..1, or a "
               "stepped default is not a whole number");
+static_assert(detail::labelLengthsValid(), "a choice or toggle label is empty or longer than 31 bytes");
 static_assert(detail::bypassValid(), "at most one bypass parameter, and it must be a toggle");
 
 inline constexpr uint32_t kIdLimit = detail::idLimit();
