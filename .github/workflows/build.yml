@@ -51,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: ${{ fromJSON(inputs.sanitizers && '["release","debug","asan"]' || '["release","debug"]') }}
+        preset: ${{ fromJSON((inputs.sanitizers || github.event_name == 'push') && '["release","debug","asan"]' || '["release","debug"]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -268,7 +268,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   windows:
-    if: ${{ inputs.platforms == 'windows' || inputs.platforms == 'all' }}
+    if: ${{ contains(fromJSON('["windows","all",""]'), inputs.platforms || '') }}
     name: Windows (${{ matrix.preset }})
     runs-on: windows-2022
     timeout-minutes: 60
