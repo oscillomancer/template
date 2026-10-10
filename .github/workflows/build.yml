@@ -9,10 +9,6 @@
 name: Build and test
 
 on:
-  # TEMPORARY while bringing CI up on the ci branch: workflow_dispatch only
-  # works once the file is on the default branch. Removed before merging.
-  push:
-    branches: [ci]
   workflow_dispatch:
     inputs:
       platforms:
@@ -42,16 +38,14 @@ env:
 jobs:
   # ---------------------------------------------------------------------------
   macos:
-    if: ${{ contains(fromJSON('["macos","all",""]'), inputs.platforms || '') }}
+    if: ${{ inputs.platforms == 'macos' || inputs.platforms == 'all' }}
     name: macOS (${{ matrix.preset }})
     runs-on: macos-15
-    permissions:
-      contents: write  # TEMPORARY: the ci-results publish step below
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        preset: ${{ fromJSON((inputs.sanitizers || github.event_name == 'push') && '["release","debug","asan"]' || '["release","debug"]') }}
+        preset: ${{ fromJSON(inputs.sanitizers && '["release","debug","asan"]' || '["release","debug"]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -171,26 +165,9 @@ jobs:
           path: dist/
           if-no-files-found: ignore
 
-      # TEMPORARY, for bringing CI up: logs, probe output and captures pushed
-      # to a throwaway branch where they can be read without the web UI.
-      - name: Publish results (temporary)
-        if: always() && matrix.preset == 'release' && github.event_name == 'push'
-        env:
-          TOKEN: ${{ github.token }}
-        run: |
-          out="$RUNNER_TEMP/results"
-          rm -rf "$out" && mkdir -p "$out"
-          cp -r logs preview probe "$out/" 2>/dev/null || true
-          cp build/release/Testing/Temporary/LastTest.log "$out/logs/ctest-detail.log" 2>/dev/null || true
-          cd "$out"
-          git init -q -b ci-results-macos
-          git -c user.name=ci -c user.email=ci@users.noreply.github.com add -A
-          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "results for $GITHUB_SHA"
-          git push -qf "https://x-access-token:$TOKEN@github.com/$GITHUB_REPOSITORY" ci-results-macos
-
   # ---------------------------------------------------------------------------
   linux:
-    if: ${{ contains(fromJSON('["linux","all",""]'), inputs.platforms || '') }}
+    if: ${{ inputs.platforms == 'linux' || inputs.platforms == 'all' }}
     name: Linux (${{ matrix.preset }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -272,7 +249,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   windows:
-    if: ${{ contains(fromJSON('["windows","all",""]'), inputs.platforms || '') }}
+    if: ${{ inputs.platforms == 'windows' || inputs.platforms == 'all' }}
     name: Windows (${{ matrix.preset }})
     runs-on: windows-2022
     timeout-minutes: 60
