@@ -268,9 +268,9 @@ int main(int argc, char** argv) {
     const int h = static_cast<int>(std::lround(editor.height() * fit));
     const int x0 = (capture.w - w) / 2, y0 = (capture.h - h) / 2;
     std::vector<unsigned char> panel(static_cast<size_t>(w) * static_cast<size_t>(h) * 3);
-    for (int y = 0; y < h; ++y)
-        std::memcpy(panel.data() + static_cast<size_t>(y) * static_cast<size_t>(w) * 3,
-                    capture.rgb.data() + (static_cast<size_t>(y0 + y) * static_cast<size_t>(capture.w) + static_cast<size_t>(x0)) * 3,
+    for (int row = 0; row < h; ++row)
+        std::memcpy(panel.data() + static_cast<size_t>(row) * static_cast<size_t>(w) * 3,
+                    capture.rgb.data() + (static_cast<size_t>(y0 + row) * static_cast<size_t>(capture.w) + static_cast<size_t>(x0)) * 3,
                     static_cast<size_t>(w) * 3);
     if (!writePng(output, w, h, panel)) return 4;
     std::printf("wrote %s (%dx%d)\n", output, w, h);

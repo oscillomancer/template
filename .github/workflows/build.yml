@@ -297,6 +297,14 @@ jobs:
         id: build
         run: .github/scripts/step.sh build cmake --build --preset ${{ matrix.preset }} -- -k 0
 
+      # The runner's desktop is 1024x768, smaller than an editor resized to
+      # 1320x840, which would put the probe's capture partly off screen.
+      - name: Display resolution
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+
       # The runner has no GPU driver; see get-mesa-windows.sh. Placed beside
       # the build's executables, so win32-embedding and gui-preview draw.
       - name: Software OpenGL

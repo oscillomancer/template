@@ -72,6 +72,9 @@ function(supple_defaults target)
         # own; without these it defines min and max as macros, which turns
         # every std::min and std::max after it into a syntax error.
         target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        # The CRT deprecates fopen, strcpy and friends in favour of its own
+        # _s variants (C4996); the framework uses the portable ones.
+        target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
     if (MSVC)
         # C4324: a struct padded to honour alignas -- the cache-line spacing
