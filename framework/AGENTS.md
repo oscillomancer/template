@@ -195,6 +195,8 @@ and must not overlap.
   and text fields open, and opened in a real host. It resizes, reopens and
   survives teardown (`x11-probe` on Linux, `clap-probe` on macOS).
 - Every format was built from the same commit; `auval` passes on macOS.
+  Without a Mac, the CI workflow (`docs/BUILDING.md`) builds and validates
+  macOS; say plainly that it ran on a virtual machine.
 - The root `AGENTS.md` and `README.md` describe what the code does now.
 - Whatever was not verified on a platform is said plainly.
 

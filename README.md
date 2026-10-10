@@ -55,9 +55,11 @@ control and every pattern the framework expects; replace it.
 
 Built and tested on Linux (X11/OpenGL): every test in the release, debug,
 AddressSanitizer and ThreadSanitizer presets, clap-validator, X11 embedding,
-and REAPER loading the CLAP. macOS (Metal, AUv2) and Windows have not been
-built since the framework's 1.0.0 rebuild; build and test there before shipping
-for them.
+and REAPER loading the CLAP. macOS (Metal, AUv2) is built and tested by CI
+(see [BUILDING.md](framework/docs/BUILDING.md#continuous-integration)):
+every test, `auval`, pluginval, clap-validator, and the editor opening in a
+Cocoa window, on a 1x virtual machine; open it in real hosts on real
+hardware before shipping. Windows does not compile yet.
 
 ## License
 

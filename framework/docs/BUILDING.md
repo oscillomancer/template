@@ -44,17 +44,22 @@ sudo apt install build-essential cmake git ninja-build libx11-dev libxcursor-dev
 rendered with Metal (`-DSUPPLE_METAL=OFF` builds the OpenGL path instead).
 Deployment target 11.0, the first release that runs arm64. The AU is
 ad-hoc signed after its real `Info.plist` is staged; `auv2-bundle` checks
-both. **Not built or run for the framework's 1.0.0 rebuild**: the Metal
-backend and Cocoa probe are carried over from the previous template, where
-they were verified, but the code around them is new. Build and test it on a
-Mac before shipping a macOS product.
+both. The CLAP and VST3 carry the linker's ad-hoc signature only.
+Built and tested by CI on macOS 15 (arm64, Xcode 16) from framework 1.2.0:
+the release, debug and asan presets pass, `auval`, pluginval and
+clap-validator pass, and `clap-probe` opens the Metal editor in a Cocoa
+window in every scenario below. The runner is a virtual machine at 1x with
+a paravirtualised GPU, so that is not a substitute for opening the editor
+in real hosts on real hardware, at 1x and on a Retina (2x) display.
 
 **Windows** (Visual Studio developer prompt with CMake 3.27+, Ninja and Git).
 CLAP and VST3, OpenGL entry points resolved at runtime. Configure with
 `cmake --preset release -G Ninja`: the build is single-configuration, one
 directory per preset, and refuses Visual Studio's multi-configuration
-generator (and Xcode's). **Never compiled.** Treat the first Windows build
-as a port.
+generator (and Xcode's). **Does not compile yet.** CI's first MSVC build
+(framework 1.2.0) stops in `gui/Meter.h` and `gui/Window.cpp`, where
+`windows.h`'s `min`/`max` macros break `std::min`/`std::max`, and in the
+starter's `Processor.h`. Treat it as a port.
 
 Outputs land in `build/<preset>/plugins/`: `Name.clap`, `Name.vst3` and, on
 macOS, `Name.component`, with the license and third-party notices inside each
@@ -82,6 +87,7 @@ builds never touch those folders.
 | `vst3-unload` (Linux) | The VST3 unloads cleanly and survives process exit while loaded |
 | `x11-embedding` (Linux) | A real X11 parent: mapped child, non-blank pixels, resize, `set_scale(2)` doubling the editor, hide/show, three create/destroy cycles while audio runs. Skipped without a display |
 | `auv2-bundle` (macOS) | The AU carries clap-wrapper's AudioComponents plist and a valid signature |
+| configure | No file in an include root (`framework/`, `framework/test`, `product/`) shadows a standard header on a case-insensitive filesystem |
 | `clap-validator` | free-audio's clap-validator, when found or passed as `SUPPLE_CLAP_VALIDATOR` |
 
 clap-validator: `cargo install --git https://github.com/free-audio/clap-validator`.
@@ -107,7 +113,33 @@ resized, closed and reopened; sample rates 44.1 to 192 kHz; mono and stereo.
   parameter name), `--set`, `--scale`.
 - `x11-probe plugin.clap [capture.ppm]`: the Linux embedding probe, also run
   by ctest.
-- `clap-probe <binary inside .clap> [blocks] [--mono --resize --reopen
-  --drop-parent --destroy-hot --no-host-timer]`: a GUI host for macOS
-  (window embedding, AU-style timer refusal, hot teardown); elsewhere it
+- `clap-probe <binary inside .clap> [blocks] [--mono --resize --presize
+  --reopen --drop-parent --destroy-hot --no-host-timer]`: a GUI host for
+  macOS (window embedding, sizing before and after parenting, AU-style timer
+  refusal, hot teardown) that writes `probe-window.png`; elsewhere it
   exercises everything but the window.
+
+## Continuous integration
+
+`.github/workflows/build.yml` runs on demand only: the repository's Actions
+tab, "Build and test", "Run workflow", or
+`gh workflow run build.yml -f platforms=macos` (`linux`, `windows`, `all`;
+`-f sanitizers=true` adds asan, and tsan on Linux). Each platform builds the
+release and debug presets and runs `ctest`. The release build then goes
+through what a host would do with it:
+
+- **macOS**: `product-install`, the AU's signature and plist, `auval
+  -strict`, pluginval (strictness 8, VST3 and AU, editor included),
+  clap-validator, `clap-probe` in each scenario above (failing if the
+  editor does not open, resize or reopen, or the audio goes silent), and
+  `gui-preview` at 1x and 2x.
+- **Linux**: `ctest` under Xvfb (so `x11-embedding` runs), clap-validator,
+  pluginval on the VST3, `gui-preview`.
+- **Windows**: build and `ctest`; pluginval on the VST3. The port is not
+  done: framework 1.2.0 does not compile with MSVC yet.
+
+Each job uploads the plugins, the probe's window captures and the previews
+as an artifact. A failing step repeats its compiler diagnostics and log tail
+as error annotations. GitHub's macOS runners are 1x virtual machines with a
+paravirtualised GPU: a pass there is evidence about Metal and Cocoa, not a
+substitute for real hardware.
