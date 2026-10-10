@@ -207,7 +207,7 @@ lets one fix reach every product. So:
    problem.
 2. Run every preset there. Then generate an instrument with `new_product.cmake`
    and run its tests too: the template only contains an effect.
-3. Bump `framework/VERSION` and add an entry to `framework/CHANGES.md` saying
+3. Bump `framework/VERSION.txt` and add an entry to `framework/CHANGES.md` saying
    what a product must do, if anything.
 4. In each product: `cmake -DFROM=../template -P framework/tools/update_framework.cmake`,
    delete `build/`, run every preset.

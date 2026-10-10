@@ -1,6 +1,6 @@
 # Framework changes
 
-The framework is versioned on its own (`framework/VERSION`) so a product can
+The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 

@@ -62,7 +62,7 @@ endif()
 file(MAKE_DIRECTORY "${dest}")
 
 string(TIMESTAMP year "%Y")
-file(READ "${template}/framework/VERSION" framework_version)
+file(READ "${template}/framework/VERSION.txt" framework_version)
 string(STRIP "${framework_version}" framework_version)
 
 # --- copy ------------------------------------------------------------------------------
