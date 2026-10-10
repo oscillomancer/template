@@ -45,6 +45,7 @@ endif()
 # --- plugin -------------------------------------------------------------------------------
 
 if (SUPPLE_BUILD_PLUGIN)
+    supple_test(probe-audio-tests SOURCES ${SUPPLE_FRAMEWORK}/test/probe_audio_test.cpp LINK product-core clap)
     # The CLAP surface, in process: a scripted host with real threads.
     supple_test(plugin-tests SOURCES ${SUPPLE_FRAMEWORK}/test/plugin_test.cpp LINK product-impl)
 
@@ -116,6 +117,7 @@ if (SUPPLE_BUILD_PLUGIN)
         # OpenGL 2 driver; see the note at the top of win32_probe.cpp.
         add_executable(win32-probe ${SUPPLE_FRAMEWORK}/tools/win32_probe.cpp)
         target_link_libraries(win32-probe PRIVATE clap user32 gdi32 Threads::Threads)
+        target_compile_definitions(win32-probe PRIVATE PROBE_PLAIN_PARAM="${PRODUCT_SMOKE_PLAIN_PARAM}")
         supple_defaults(win32-probe)
         add_test(NAME win32-embedding
             COMMAND win32-probe $<TARGET_FILE:product-plugin_clap> ${CMAKE_BINARY_DIR}/win32-probe.ppm)
@@ -125,6 +127,14 @@ if (SUPPLE_BUILD_PLUGIN)
             COMMAND win32-probe $<TARGET_FILE:product-plugin_clap> ${CMAKE_BINARY_DIR}/win32-probe-no-timer.ppm
                     --no-host-timer)
         set_tests_properties(win32-embedding win32-embedding-no-host-timer PROPERTIES RUN_SERIAL TRUE)
+        if (TARGET product-plugin_vst3)
+            add_executable(win32-module-test ${SUPPLE_FRAMEWORK}/test/win32_module_test.cpp)
+            target_link_libraries(win32-module-test PRIVATE clap user32)
+            supple_defaults(win32-module-test)
+            add_test(NAME win32-module-ownership COMMAND win32-module-test
+                $<TARGET_FILE:product-plugin_clap> $<TARGET_FILE:product-plugin_vst3>)
+            set_tests_properties(win32-module-ownership PROPERTIES RUN_SERIAL TRUE)
+        endif()
     endif()
 
     if (APPLE AND TARGET product-plugin_auv2)

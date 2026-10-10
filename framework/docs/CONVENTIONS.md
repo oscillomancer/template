@@ -154,6 +154,11 @@ Many plugins share one host process, several of them built on this framework.
   plugin ID (`com_suppleaudio_name_PuglWrapperView`), which is unique where
   display names need not be. auval caught the collision when two products
   of this lineage were installed together.
+- Windows window classes belong to a DLL: Pugl's registration, creation
+  and cleanup must all use that DLL's instance handle. A null handle can
+  select another loaded format's same-named class, leaving a window bound
+  to code that the host later unloads. A local Pugl patch and
+  `win32-module-ownership` enforce this with CLAP and VST3 loaded together.
 
 ## Dependencies
 

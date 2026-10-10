@@ -85,6 +85,12 @@ if (SUPPLE_BUILD_GUI)
         GIT_TAG ce3bf745eb2d2dbc14a50bf2446783f691ac4353
         GIT_SHALLOW OFF)
     FetchContent_MakeAvailable(pugl nanovg)
+    # Classes with the same product name may live in both CLAP and VST3
+    # modules. NULL selects another module's class; keep creation and cleanup
+    # tied to the DLL that registered it, so unloading one cannot strand a
+    # window procedure in the other.
+    find_package(Git REQUIRED)
+    supple_apply_patch(${pugl_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/pugl-win-module-class.patch)
     if (SUPPLE_METAL)
         # wjakob's fork rather than ollix/MetalNanoVG (untouched since 2022):
         # it adds an explicit command queue and target texture, and sizes the
