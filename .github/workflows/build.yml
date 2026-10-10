@@ -45,6 +45,8 @@ jobs:
     if: ${{ contains(fromJSON('["macos","all",""]'), inputs.platforms || '') }}
     name: macOS (${{ matrix.preset }})
     runs-on: macos-15
+    permissions:
+      contents: write  # TEMPORARY: the ci-results publish step below
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -166,6 +168,23 @@ jobs:
           name: macos-plugins
           path: dist/
           if-no-files-found: ignore
+
+      # TEMPORARY, for bringing CI up: logs, probe output and captures pushed
+      # to a throwaway branch where they can be read without the web UI.
+      - name: Publish results (temporary)
+        if: always() && matrix.preset == 'release' && github.event_name == 'push'
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          out="$RUNNER_TEMP/results"
+          rm -rf "$out" && mkdir -p "$out"
+          cp -r logs preview probe "$out/" 2>/dev/null || true
+          cp build/release/Testing/Temporary/LastTest.log "$out/logs/ctest-detail.log" 2>/dev/null || true
+          cd "$out"
+          git init -q -b ci-results-macos
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com add -A
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "results for $GITHUB_SHA"
+          git push -qf "https://x-access-token:$TOKEN@github.com/$GITHUB_REPOSITORY" ci-results-macos
 
   # ---------------------------------------------------------------------------
   linux:
