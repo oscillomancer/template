@@ -5,8 +5,13 @@ set(SUPPLE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 set(SUPPLE_FRAMEWORK ${SUPPLE_ROOT}/framework)
 set(SUPPLE_PRODUCT ${SUPPLE_ROOT}/product)
 set(SUPPLE_GENERATED ${CMAKE_BINARY_DIR}/generated)
-file(READ ${SUPPLE_FRAMEWORK}/VERSION SUPPLE_FRAMEWORK_VERSION)
+# VERSION.txt, never VERSION: framework/ is an include root, and on a
+# case-insensitive filesystem (macOS, Windows) a file called VERSION is what
+# the standard library's own #include <version> finds.
+file(READ ${SUPPLE_FRAMEWORK}/VERSION.txt SUPPLE_FRAMEWORK_VERSION)
 string(STRIP "${SUPPLE_FRAMEWORK_VERSION}" SUPPLE_FRAMEWORK_VERSION)
+include(${SUPPLE_FRAMEWORK}/cmake/CheckIncludeRoots.cmake)
+supple_check_include_roots(${SUPPLE_FRAMEWORK} ${SUPPLE_FRAMEWORK}/test ${SUPPLE_PRODUCT})
 message(STATUS "${PRODUCT_NAME} ${PRODUCT_VERSION} on framework ${SUPPLE_FRAMEWORK_VERSION}")
 
 # Bundle staging, AU preparation, install rules and tests all name

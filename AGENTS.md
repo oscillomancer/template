@@ -11,7 +11,7 @@ Supple Audio product, plus a starter product in `product/` that exercises it.
 - **Fixing or extending the framework?** This is the place. Follow "Changing
   the framework" at the end of `framework/AGENTS.md`: a test that would have
   caught it, every preset green, the instrument example generated and green,
-  `framework/VERSION` and `framework/CHANGES.md` updated. Then bring the
+  `framework/VERSION.txt` and `framework/CHANGES.md` updated. Then bring the
   change into each product with `framework/tools/update_framework.cmake`.
 - **Changing the starter product?** It exists to show patterns, not to ship.
   Keep it small and bit-transparent at its defaults. It uses knobs, toggles,

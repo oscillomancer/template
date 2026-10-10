@@ -1,8 +1,39 @@
 # Framework changes
 
-The framework is versioned on its own (`framework/VERSION`) so a product can
+The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
+
+## 1.2.0
+
+The first build and run on macOS since the rebuild, by the new CI workflow
+(`.github/workflows/build.yml`, on demand). Nothing breaks a product's
+sessions, IDs or sound. After updating: delete `build/`, run every preset.
+
+- **`framework/VERSION` is now `framework/VERSION.txt`.** `framework/` is
+  an include root, and on case-insensitive filesystems (macOS, Windows)
+  libc++'s `#include <version>` opened that file, so no C++ file compiled
+  on macOS. Configure now refuses any file in `framework/`,
+  `framework/test` or `product/` that a standard header name resolves to,
+  so a `product/Math.h` is caught on Linux before it breaks a Mac.
+  The 1.1.0 `update_framework.cmake` looks for the old name, so for this
+  one update copy the new `framework/tools/update_framework.cmake` into the
+  product first, then run it as usual.
+- **Editor sizes set before `set_parent` are honoured.** Pugl applies a
+  current size only to a realized view, so a host's `set_size` between
+  `gui.create` and `gui.set_parent` was refused and the editor opened at
+  1x; `gui-preview --scale 2` rendered at 1x on every platform. `x11-probe`
+  checks this now, and `clap-probe --presize` on macOS.
+- **Metal draws strokes without `NVG_STENCIL_STROKES`.** nanovg_metal's
+  version of it marks partially covered pixels in its first pass and then
+  skips them, so strokes lost their antialiased edges and one-unit lines
+  vanished at non-integer editor scales. GL is unchanged. Translucent
+  multi-segment strokes now double-blend at their joins under Metal; the
+  framework's widgets draw none.
+- The `asan` test preset no longer forces `detect_leaks=1`, which macOS
+  rejects at startup. Linux still detects leaks (its default).
+- `clap-probe` sizes its window from the editor's `get_size`, prints the
+  backing scale, and takes `--presize`.
 
 ## 1.1.0
 

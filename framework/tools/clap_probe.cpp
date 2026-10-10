@@ -11,7 +11,7 @@
 // reading code.
 //
 //   clap-probe <path-to-binary-inside-.clap> [blocks] [--mono] [--resize] [--reopen]
-//              [--drop-parent] [--destroy-hot] [--no-host-timer]
+//              [--drop-parent] [--destroy-hot] [--no-host-timer] [--presize]
 //
 // Its window work is Cocoa-only; elsewhere it exercises everything but the
 // window (x11-probe covers X11 embedding).
@@ -156,6 +156,8 @@ int main(int argc, char** argv) {
     // releases the parent out from under a live editor, which is what a host
     // does when it tears its window down without telling the plugin first.
     bool reopen = false, dropParent = false, destroyHot = false, resize = false;
+    // Sizes the editor between create() and set_parent(), as hosts may.
+    bool presize = false;
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--no-host-timer")) gRefuseTimers = true;
         else if (!std::strcmp(argv[i], "--mono")) channels = 1;
@@ -163,6 +165,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--drop-parent")) dropParent = true;
         else if (!std::strcmp(argv[i], "--destroy-hot")) destroyHot = true;
         else if (!std::strcmp(argv[i], "--resize")) resize = true;
+        else if (!std::strcmp(argv[i], "--presize")) presize = true;
         else blocks = std::atoi(argv[i]);
     }
 #if !defined(__APPLE__)
@@ -221,16 +224,24 @@ int main(int argc, char** argv) {
                 gui ? "yes" : "NO", timer ? "yes" : "NO");
 
     // --- open the editor exactly as a host would ---------------------------
+    // A host asks the editor its size after create() and sizes the parent to
+    // it, so the window does too: a fixed guess would crop or letterbox the
+    // panel and the capture would show the probe's mistake, not the editor's.
 #if defined(__APPLE__)
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    NSWindow* win = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 820, 480)
-                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-                    backing:NSBackingStoreBuffered
-                      defer:NO];
-    [win setTitle:@"clap-probe"];
-    NSView* parent = [win contentView];
+    NSWindow* win = nil;
+    NSView* parent = nil;
+    auto openWindow = [&](uint32_t cw, uint32_t ch) {
+        win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, (CGFloat)cw, (CGFloat)ch)
+                                          styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                                            backing:NSBackingStoreBuffered
+                                              defer:NO];
+        [win setTitle:@"clap-probe"];
+        parent = [win contentView];
+    };
+    // The editor's size in host units (points), as last reported.
+    uint32_t editorW = 900, editorH = 560;
 #else
     void* parent = nullptr;
 #endif
@@ -243,8 +254,21 @@ int main(int argc, char** argv) {
                     (int)floating, (int)gui->is_api_supported(g.plugin, api, false));
 
         g.guiCreated = gui->create(g.plugin, api, false);
+        if (presize) {
+            uint32_t pw = 1125, ph = 700;
+            gui->adjust_size(g.plugin, &pw, &ph);
+            const bool ok = gui->set_size(g.plugin, pw, ph);
+            std::printf("presize: adjust->%ux%u set_size=%d\n", pw, ph, (int)ok);
+        }
         uint32_t gw = 0, gh = 0;
         gui->get_size(g.plugin, &gw, &gh);
+#if defined(__APPLE__)
+        if (gw > 0 && gh > 0) {
+            editorW = gw;
+            editorH = gh;
+        }
+        openWindow(editorW, editorH);
+#endif
 
         clap_window_t w{};
         w.api = api;
@@ -255,7 +279,9 @@ int main(int argc, char** argv) {
                     (int)g.guiParented, (int)g.guiShown, gw, gh);
     }
 #if defined(__APPLE__)
+    if (!win) openWindow(editorW, editorH);
     [win makeKeyAndOrderFront:nil];
+    std::printf("backing scale     : %.1f\n", (double)[win backingScaleFactor]);
 
     // Pump once so the editor is fully realized and has drawn before any of
     // the teardown games below.
@@ -272,7 +298,7 @@ int main(int argc, char** argv) {
         std::printf("reopening the editor...\n");
         gui->destroy(g.plugin);
 
-        NSView* fresh = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 820, 480)];
+        NSView* fresh = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, (CGFloat)editorW, (CGFloat)editorH)];
         [win setContentView:fresh];
 
         const char* api2 = nullptr;
@@ -335,7 +361,7 @@ int main(int argc, char** argv) {
         // views go with it; the plugin still holds its GUI.
         std::printf("dropping the parent view out from under the editor...\n");
         [win setContentView:[[NSView alloc]
-                                initWithFrame:NSMakeRect(0, 0, 820, 480)]];
+                                initWithFrame:NSMakeRect(0, 0, (CGFloat)editorW, (CGFloat)editorH)]];
     }
 #endif
 

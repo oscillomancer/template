@@ -195,6 +195,8 @@ and must not overlap.
   and text fields open, and opened in a real host. It resizes, reopens and
   survives teardown (`x11-probe` on Linux, `clap-probe` on macOS).
 - Every format was built from the same commit; `auval` passes on macOS.
+  Without a Mac, the CI workflow (`docs/BUILDING.md`) builds and validates
+  macOS; say plainly that it ran on a virtual machine.
 - The root `AGENTS.md` and `README.md` describe what the code does now.
 - Whatever was not verified on a platform is said plainly.
 
@@ -207,7 +209,7 @@ lets one fix reach every product. So:
    problem.
 2. Run every preset there. Then generate an instrument with `new_product.cmake`
    and run its tests too: the template only contains an effect.
-3. Bump `framework/VERSION` and add an entry to `framework/CHANGES.md` saying
+3. Bump `framework/VERSION.txt` and add an entry to `framework/CHANGES.md` saying
    what a product must do, if anything.
 4. In each product: `cmake -DFROM=../template -P framework/tools/update_framework.cmake`,
    delete `build/`, run every preset.

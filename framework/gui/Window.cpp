@@ -161,7 +161,13 @@ bool Window::setSize(uint32_t w, uint32_t h) {
     // PuglSpan is 16 bits: a larger size would wrap, not clip.
     constexpr uint32_t kMaxSpan = 0xFFFF;
     if (w == 0 || h == 0 || toPixels(w) > kMaxSpan || toPixels(h) > kMaxSpan) return false;
-    if (view_ && puglSetSizeHint(view_, PUGL_CURRENT_SIZE, static_cast<PuglSpan>(toPixels(w)),
+    // Pugl applies CURRENT_SIZE only to a view that already has a native
+    // window, and fails it otherwise; a view is realized at DEFAULT_SIZE.
+    // Between create() and embed() -- where a host may well call set_size,
+    // and where a saved editor scale is applied -- the size therefore has to
+    // go to DEFAULT_SIZE, or it is refused and the editor opens at 1x.
+    const PuglSizeHint hint = view_ && puglGetNativeView(view_) ? PUGL_CURRENT_SIZE : PUGL_DEFAULT_SIZE;
+    if (view_ && puglSetSizeHint(view_, hint, static_cast<PuglSpan>(toPixels(w)),
                                  static_cast<PuglSpan>(toPixels(h))) != PUGL_SUCCESS)
         return false;
     hostW_ = w;
