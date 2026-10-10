@@ -17,7 +17,7 @@ file(WRITE "${product}/CMakePresets.json" [=[
   "configurePresets": [{"name": "custom", "binaryDir": "${sourceDir}/custom-build"}],
   "testPresets": [
     {"name": "asan", "environment": {
-      "ASAN_OPTIONS": "halt_on_error=1:detect_leaks=1:log_path=/tmp/my-asan",
+      "ASAN_OPTIONS": "halt_on_error=1:detect_leaks=1:log_path=/tmp/my-asan;session",
       "UBSAN_OPTIONS": "print_stacktrace=1"}},
     {"name": "custom", "environment": {"ASAN_OPTIONS": "detect_leaks=1"}}
   ]
@@ -39,7 +39,7 @@ string(JSON options GET "${presets}" testPresets 0 environment ASAN_OPTIONS)
 string(JSON ubsan GET "${presets}" testPresets 0 environment UBSAN_OPTIONS)
 string(JSON custom GET "${presets}" testPresets 1 environment ASAN_OPTIONS)
 string(JSON binary_dir GET "${presets}" configurePresets 0 binaryDir)
-if (NOT options STREQUAL "halt_on_error=1:log_path=/tmp/my-asan" OR
+if (NOT options STREQUAL "halt_on_error=1:log_path=/tmp/my-asan;session" OR
     NOT ubsan STREQUAL "print_stacktrace=1" OR NOT custom STREQUAL "detect_leaks=1" OR
     NOT binary_dir STREQUAL "\${sourceDir}/custom-build")
     message(FATAL_ERROR "ASan migration lost product-owned settings: ${presets}")
