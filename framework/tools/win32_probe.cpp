@@ -33,6 +33,8 @@
 #include <thread>
 #include <vector>
 
+#include "ProbeAudio.h"
+
 namespace {
 int failures = 0;
 void check(bool ok, const char* what) {
@@ -194,7 +196,7 @@ bool childSize(HWND parent, uint32_t& w, uint32_t& h) {
 // PW_RENDERFULLCONTENT asks DWM for the composed content, which includes the
 // child's GL surface; where that comes back blank (no compositor), the screen
 // itself is read instead, which needs the window in front.
-bool capture(HWND parent, const char* path) {
+bool capture(HWND parent, const char* path, std::vector<uint32_t>* pixels = nullptr) {
     RECT rc{};
     GetClientRect(parent, &rc);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
@@ -227,6 +229,11 @@ bool capture(HWND parent, const char* path) {
         BitBlt(mem, 0, 0, w, h, screen, origin.x, origin.y, SRCCOPY);
     }
     const size_t distinct = varied();
+    if (pixels) {
+        const auto* px = static_cast<const uint32_t*>(bits);
+        pixels->assign(px, px + static_cast<size_t>(w) * static_cast<size_t>(h));
+        for (auto& pixel : *pixels) pixel &= 0xFFFFFF;
+    }
 
     bool ok = false;
     if (FILE* f = std::fopen(path, "wb")) {
@@ -250,6 +257,85 @@ bool capture(HWND parent, const char* path) {
     DeleteDC(mem);
     ReleaseDC(nullptr, screen);
     return ok;
+}
+
+// Count actual window messages before taking another capture: PrintWindow
+// can itself provoke a paint, which must not masquerade as a timer repaint.
+struct ObservePaint {
+    HWND window;
+    WNDPROC original;
+    int timers = 0, paints = 0;
+    static ObservePaint* current;
+    explicit ObservePaint(HWND child) : window(child), original(nullptr) {
+        current = this;
+        original = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(window, GWLP_WNDPROC,
+                                                               reinterpret_cast<LONG_PTR>(procedure)));
+    }
+    ~ObservePaint() {
+        SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(original));
+        current = nullptr;
+    }
+    static LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
+        if (message == WM_TIMER) ++current->timers;
+        if (message == WM_PAINT) ++current->paints;
+        return CallWindowProcW(current->original, hwnd, message, w, l);
+    }
+};
+ObservePaint* ObservePaint::current = nullptr;
+
+void verifyTimerRepaint(Host& host, HWND parent, const char* output) {
+    const auto* params = static_cast<const clap_plugin_params_t*>(
+        host.plugin->get_extension(host.plugin, CLAP_EXT_PARAMS));
+    clap_param_info_t info{};
+    bool found = false;
+    for (uint32_t i = 0; params && i < params->count(host.plugin); ++i) {
+        if (params->get_info(host.plugin, i, &info) && !std::strcmp(info.name, PROBE_PLAIN_PARAM) &&
+            !(info.flags & (CLAP_PARAM_IS_READONLY | CLAP_PARAM_IS_HIDDEN)) && info.min_value < info.max_value) {
+            found = true;
+            break;
+        }
+    }
+    check(found, "a visible writable parameter is available for the repaint check");
+    if (!found) return;
+    std::vector<uint32_t> before, after;
+    const std::string prefix = std::string(output) + ".timer";
+    check(capture(parent, (prefix + "-before.ppm").c_str(), &before), "initial timer-check pixels");
+    pump(host, 5);
+    double value = 0;
+    check(params->get_value(host.plugin, info.id, &value), "parameter readable before automation");
+    clap_event_param_value_t event{};
+    event.header.size = sizeof(event);
+    event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    event.header.type = CLAP_EVENT_PARAM_VALUE;
+    event.param_id = info.id;
+    event.cookie = info.cookie;
+    event.note_id = event.port_index = event.channel = event.key = -1;
+    event.value = value == info.max_value ? info.min_value : info.max_value;
+    clap_input_events_t in{
+        &event, [](const clap_input_events_t*) -> uint32_t { return 1; },
+        [](const clap_input_events_t* list, uint32_t) -> const clap_event_header_t* {
+            return &static_cast<const clap_event_param_value_t*>(list->ctx)->header;
+        }};
+    clap_output_events_t out{nullptr,
+                            [](const clap_output_events_t*, const clap_event_header_t*) { return true; }};
+    {
+        ObservePaint observe(editorWindow(parent));
+        // This reloaded instance has not been activated: flush belongs on
+        // the main thread. No audio, meter movement, resize or user input
+        // can make the new picture pass on behalf of parameter automation.
+        params->flush(host.plugin, &in, &out);
+        double updated = 0;
+        check(params->get_value(host.plugin, info.id, &updated) && updated == event.value,
+              "automation reaches the parameter before the repaint check");
+        pump(host, 40);
+        check(observe.paints > 0, "parameter automation repaints without a forced expose");
+        if (host.refuseTimer) check(observe.timers > 0, "fallback WM_TIMER reaches the editor");
+    }
+    check(capture(parent, (prefix + "-after.ppm").c_str(), &after), "updated timer-check pixels");
+    size_t changed = 0;
+    if (before.size() == after.size())
+        for (size_t i = 0; i < before.size(); ++i) changed += before[i] != after[i];
+    check(changed > 100, "parameter automation changes the displayed editor");
 }
 
 // Hosts are per-monitor DPI aware; an unaware process would have Windows
@@ -292,6 +378,11 @@ int main(int argc, char** argv) {
     host.timer = static_cast<const clap_plugin_timer_support_t*>(
         host.plugin->get_extension(host.plugin, CLAP_EXT_TIMER_SUPPORT));
     if (!host.gui) return 2;
+    supple::probe::Audio buffers;
+    if (!buffers.configure(host.plugin, 512)) {
+        std::fprintf(stderr, "cannot query the plugin's audio ports\n");
+        return 2;
+    }
     check(host.gui->is_api_supported(host.plugin, CLAP_WINDOW_API_WIN32, false), "Win32 embedded API");
     check(host.plugin->activate(host.plugin, 48000, 1, 512), "activation");
     host.processing = true;
@@ -303,11 +394,6 @@ int main(int argc, char** argv) {
             audioGood = false;
             return;
         }
-        float left[512]{}, right[512]{};
-        float* data[]{left, right};
-        clap_audio_buffer_t buffer{};
-        buffer.data32 = data;
-        buffer.channel_count = 2;
         clap_input_events_t in{nullptr, [](const clap_input_events_t*) -> uint32_t { return 0; },
                                [](const clap_input_events_t*, uint32_t) -> const clap_event_header_t* {
                                    return nullptr;
@@ -315,22 +401,14 @@ int main(int argc, char** argv) {
         clap_output_events_t out{nullptr,
                                  [](const clap_output_events_t*, const clap_event_header_t*) { return true; }};
         clap_process_t p{};
-        p.frames_count = 512;
-        p.audio_inputs = &buffer;
-        p.audio_outputs = &buffer;
-        p.audio_inputs_count = p.audio_outputs_count = 1;
+        buffers.bind(p);
         p.in_events = &in;
         p.out_events = &out;
         double phase = 0;
         while (run) {
-            for (int i = 0; i < 512; ++i) {
-                left[i] = 0.2f * static_cast<float>(std::sin(phase));
-                right[i] = 0.17f * static_cast<float>(std::cos(phase * 1.37));
-                phase += 0.0576;
-            }
+            buffers.fillInputs(phase);
             if (host.plugin->process(host.plugin, &p) == CLAP_PROCESS_ERROR) audioGood = false;
-            for (int i = 0; i < 512; ++i)
-                if (!std::isfinite(left[i]) || !std::isfinite(right[i])) audioGood = false;
+            if (!buffers.finiteOutputs()) audioGood = false;
             p.steady_time += 512;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
@@ -420,7 +498,6 @@ int main(int argc, char** argv) {
     host.processing = false;
     check(audioGood, "concurrent audio survives resize/reopen/teardown");
     if (!host.refuseTimer) check(host.ticks > 0, "host timer drives GUI");
-    else std::puts("NOTE: no-host-timer proves lifecycle only.");
     host.plugin->deactivate(host.plugin);
     host.plugin->destroy(host.plugin);
     entry->deinit();
@@ -456,6 +533,7 @@ int main(int argc, char** argv) {
         check(again.gui->set_parent(again.plugin, &window) && again.gui->show(again.plugin), "editor embeds after a reload");
         pump(again, 15);
         check(embedded(parent), "reloaded editor is visible");
+        verifyTimerRepaint(again, parent, output);
         again.gui->destroy(again.plugin);
         DestroyWindow(parent);
         again.plugin->destroy(again.plugin);

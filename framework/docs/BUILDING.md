@@ -92,13 +92,15 @@ builds never touch those folders.
 | `ui-tests` | Interaction rules (drag, Shift, wheel, keys, text entry, menus, focus loss); repaint on host-side changes; layout lint; a 20 000-event fuzz of the real editor that fails on any nested or unbalanced gesture |
 | `plugin-tests` | The CLAP surface in process: descriptor, parameter list, state into a fresh instance, every bus layout, bypass, editor edits reaching a stopped host, edits and preset recalls during playback on real threads, telemetry gating, the restart protocol, the output constant hint cleared, tail changes announced, an instrument ending every note it was given |
 | `host-smoke-<n>ch` | The built `.clap` loaded from disk, once per bus width: ports, text round trips and rejection, float/double and in-place renders, no restart storms, the latency protocol when `PRODUCT_SMOKE_LATENCY_PARAM` is set, state into a fresh instance and byte-identical resave |
-| `patch-*` | Each clap-wrapper patch is still applied to the pinned checkout |
+| `patch-*` | Each clap-wrapper and Pugl patch is still applied to the pinned checkout |
+| `probe-audio-tests` | Probe audio buffers match mono, multichannel and instrument ports, with separate input/output storage |
 | `framework-update` | `update_framework.cmake` updates a 1.1.0-shaped product: the framework is replaced, the product is untouched, and the `asan` preset loses `detect_leaks=1` and nothing else |
 | `ci-probe-checker` (template only) | The macOS CI step's checks reject a probe whose editor did not open or resize to the size asked for |
 | `exports-clap`, `exports-vst3` (Linux) | The modules export their entry points and nothing else |
 | `vst3-unload` (Linux) | The VST3 unloads cleanly and survives process exit while loaded |
 | `x11-embedding` (Linux) | A real X11 parent: mapped child, non-blank pixels, resize, `set_scale(2)` doubling the editor, hide/show, three create/destroy cycles while audio runs. Skipped without a display |
-| `win32-embedding`, `win32-embedding-no-host-timer` (Windows) | The same against a real Win32 parent HWND, plus the editor window's own size after each resize, an editor sized before `set_parent`, and unloading and reloading the module before opening the editor again. The second runs with the host's timer refused, so the editor's `WM_TIMER` fallback drives it |
+| `win32-embedding`, `win32-embedding-no-host-timer` (Windows) | The same against a real Win32 parent HWND, plus native sizes after resize, sizing before `set_parent`, and module reload. On an inactive instance, automation must provoke a repaint before another capture and change the pixels. The second refuses the host timer and also requires `WM_TIMER` delivery |
+| `win32-module-ownership` (Windows) | CLAP and VST3 loaded together: each window belongs to its own DLL; VST3 unload preserves CLAP editors, and class cleanup follows the last instance |
 | `auv2-bundle` (macOS) | The AU carries clap-wrapper's AudioComponents plist and a valid signature |
 | configure | No file in an include root (`framework/`, `framework/test`, `product/`) shadows a standard header on a case-insensitive filesystem |
 | `clap-validator` | free-audio's clap-validator, when found or passed as `SUPPLE_CLAP_VALIDATOR` |

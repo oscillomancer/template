@@ -4,6 +4,25 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.3.1
+
+- Pugl's Windows window creation and class cleanup now use the owning
+  DLL's instance handle. A CLAP editor cannot accidentally use the same
+  product's VST3 window procedure; closing or unloading one format leaves
+  the other's editors intact. `win32-module-ownership` checks both real
+  modules together, including two CLAP instances and VST3 unload.
+- The Windows embedding probe allocates separate input and output buffers
+  from the plugin's advertised audio ports, including mono, multichannel
+  layouts and instruments with no input bus. `probe-audio-tests` exercises
+  those layouts on every platform and under the sanitizers.
+- Both Windows embedding runs now automate a visible parameter after the
+  initial paint on an inactive instance, require an unprompted repaint and
+  changed pixels, and, without a host timer, require actual `WM_TIMER`
+  delivery. Taking a screenshot cannot manufacture the repaint pass.
+
+After updating, delete `build/` and run the presets and Windows CI. No
+product IDs, state, parameter ranges or DSP behavior change.
+
 ## 1.3.0
 
 The first Windows build: MSVC 2022, x64, built and tested by CI. Nothing

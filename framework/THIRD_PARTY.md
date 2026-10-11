@@ -13,7 +13,7 @@ whenever a pinned dependency moves.
 | VST3 SDK | MIT | v3.8.0 as pinned by clap-wrapper (earlier releases were GPLv3/proprietary; vstgui is not used) |
 | Apple AudioUnit SDK | Apache-2.0 | macOS only, via clap-wrapper |
 | gulrak/filesystem | MIT | via clap-wrapper |
-| Pugl | ISC | `gui/pugl_metal.{h,m}` derive in part from it and keep its notice |
+| Pugl | ISC | One local Windows module/class ownership patch; `gui/pugl_metal.{h,m}` derive in part from it and keep its notice |
 | NanoVG | zlib | |
 | nanovg_metal (wjakob fork) | MIT | macOS only |
 | IBM Plex Mono, Plex Sans Condensed | SIL OFL 1.1 | subsets in `gui/fonts`, compiled in |
