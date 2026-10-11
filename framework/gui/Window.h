@@ -15,8 +15,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
+#include <string_view>
 
 #include <nanovg.h>
+
+#include "gui/Ui.h"
 
 struct PuglViewImpl;
 struct PuglWorldImpl;
@@ -25,13 +29,14 @@ namespace supple::gui {
 
 class EditorBase;
 
-class Window {
+// Also the editor's clipboard, through pugl's: plain text only.
+class Window : public Clipboard {
   public:
     // standalone selects pugl's world type. Inside a host this must stay
     // false: the host owns the application and pumps the native event loop,
     // and on macOS a PUGL_PROGRAM world would try to pump it from under it.
     Window(EditorBase& editor, const char* className, bool standalone = false);
-    ~Window();
+    ~Window() override;
     Window(const Window&) = delete;
     Window& operator=(const Window&) = delete;
 
@@ -60,6 +65,10 @@ class Window {
 
     // Called from the pugl event thunk; not part of the API.
     void handleEvent(const void* event);
+
+    // Clipboard
+    bool copy(std::string_view text) override;
+    bool paste(std::function<void(std::string_view)> done) override;
 
     // Invoked at the end of each draw with the context current. Only the
     // offline preview tool sets it.
@@ -97,6 +106,7 @@ class Window {
     float lastPressX_ = 0.0f, lastPressY_ = 0.0f;
     int lastPressButton_ = -1;
     int cursor_ = 0;
+    std::function<void(std::string_view)> paste_;  // waiting for the clipboard's text
 };
 
 }  // namespace supple::gui

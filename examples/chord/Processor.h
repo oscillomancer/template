@@ -12,21 +12,25 @@
 //   - every input note is retired with noteEnded() once released, so hosts
 //     (the VST3 wrapper above all) can forget it;
 //   - other MIDI (controllers, pitch bend) passes straight through midi();
+//   - the Custom shape is text, a property, parsed on the audio thread in
+//     property() without allocating;
 //   - everything is fixed storage, so nothing allocates.
 #pragma once
 
 #include <cmath>
 #include <cstdint>
+#include <string_view>
 
 #include "core/ParamValues.h"
 #include "core/ProcessorBase.h"
 #include "Params.h"
+#include "Properties.h"
 
 namespace product {
 
 class Processor : public supple::ProcessorBase<Processor> {
   public:
-    static constexpr int kMaxNotes = 4;   // the largest chord
+    static constexpr int kMaxNotes = 6;   // the largest chord
     static constexpr int kChords = 32;    // input notes held at once
     // Each shape's intervals above the root, in semitones.
     struct Shape {
@@ -36,6 +40,33 @@ class Processor : public supple::ProcessorBase<Processor> {
     static constexpr Shape kShapes[] = {
         {2, {0, 12}}, {2, {0, 7}}, {3, {0, 4, 7}}, {3, {0, 3, 7}}, {3, {0, 5, 7}}, {4, {0, 4, 7, 10}},
     };
+
+    // The Custom shape from its text: whole numbers of semitones from -24 to
+    // 48, separated by spaces or commas, the first kMaxNotes of them. Anything
+    // else is skipped; nothing usable plays the note alone.
+    static Shape parseIntervals(std::string_view text) {
+        Shape s{0, {}};
+        size_t i = 0;
+        while (i < text.size() && s.count < kMaxNotes) {
+            while (i < text.size() && (text[i] == ' ' || text[i] == ',')) ++i;
+            const size_t start = i;
+            while (i < text.size() && text[i] != ' ' && text[i] != ',') ++i;
+            std::string_view token = text.substr(start, i - start);
+            const bool negative = !token.empty() && token[0] == '-';
+            if (negative) token.remove_prefix(1);
+            if (token.empty() || token.size() > 2) continue;
+            int value = 0;
+            bool digits = true;
+            for (char c : token) {
+                digits = digits && c >= '0' && c <= '9';
+                value = value * 10 + (c - '0');
+            }
+            if (negative) value = -value;
+            if (digits && value >= -24 && value <= 48) s.intervals[s.count++] = value;
+        }
+        if (s.count == 0) s = {1, {0}};
+        return s;
+    }
 
     struct Telemetry {
         int16_t keys[kMaxNotes];  // the last chord played, -1 past its end
@@ -58,6 +89,10 @@ class Processor : public supple::ProcessorBase<Processor> {
         strum_ = static_cast<int64_t>(std::llround(v[kStrum] * 0.001 * sampleRate_));
     }
 
+    void property(uint32_t id, std::string_view value) {
+        if (id == kIntervals) custom_ = parseIntervals(value);
+    }
+
     void note(const supple::NoteEvent& e) {
         using Type = supple::NoteEvent::Type;
         if (e.type == Type::On) {
@@ -66,14 +101,16 @@ class Processor : public supple::ProcessorBase<Processor> {
             *chord = Chord{};
             chord->held = true;
             chord->input = e;
-            const Shape& s = kShapes[shape_];
+            const Shape& s = shape_ == kCustomShape ? custom_ : kShapes[shape_];
             chord->count = 0;
-            for (int k = 0; k < s.count && e.key + s.intervals[k] <= 127; ++k) {
+            for (int k = 0; k < s.count; ++k) {
+                const int key = e.key + s.intervals[k];
+                if (key < 0 || key > 127) continue;
                 supple::NoteEvent n = e;
-                n.key = static_cast<int16_t>(e.key + s.intervals[k]);
-                n.noteId = k == 0 ? e.noteId : -1;
+                n.key = static_cast<int16_t>(key);
+                n.noteId = chord->count == 0 ? e.noteId : -1;
                 chord->notes[chord->count] = n;
-                chord->due[chord->count] = now_ + k * strum_;
+                chord->due[chord->count] = now_ + chord->count * strum_;
                 ++chord->count;
             }
             for (int k = 0; k < kMaxNotes; ++k) last_[k] = k < chord->count ? chord->notes[k].key : int16_t{-1};
@@ -133,8 +170,9 @@ class Processor : public supple::ProcessorBase<Processor> {
     double sampleRate_ = 48000.0;
     int shape_ = 2;
     int64_t strum_ = 0, now_ = 0;
+    Shape custom_{1, {0}};
     Chord chords_[kChords];
-    int16_t last_[kMaxNotes] = {-1, -1, -1, -1};
+    int16_t last_[kMaxNotes] = {-1, -1, -1, -1, -1, -1};
 };
 
 }  // namespace product

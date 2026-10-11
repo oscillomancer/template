@@ -24,11 +24,20 @@
 //     out. Space is deliberately unbound: it belongs to the host's transport.
 //   - Losing focus ends every gesture and closes every overlay.
 //
+// Two controls are not bound to a parameter: a text field edits a property
+// (core/Property.h) by its ID, and the preset bar drives the preset library
+// (core/Presets.h). popup() and prompt() give a product's own drawing the
+// same menu and text field the controls use.
+//
 // Coordinates are design units throughout; Window converts.
 #pragma once
 
 #include <cstdint>
 #include <deque>
+#include <functional>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "core/Param.h"
 #include "gui/EditorHost.h"
@@ -47,7 +56,38 @@ struct Rect {
     Rect inset(float dx, float dy) const { return {x + dx, y + dy, w - 2.0f * dx, h - 2.0f * dy}; }
 };
 
-enum class Widget : uint8_t { Knob, HSlider, VSlider, Toggle, Segmented, Dropdown, Readout };
+enum class Widget : uint8_t { Knob, HSlider, VSlider, Toggle, Segmented, Dropdown, Readout, TextField, PresetBar };
+
+// What the editor can put on the system clipboard and read back. Window
+// provides it; tests and tools may not, and then copy and paste are off.
+class Clipboard {
+  public:
+    virtual ~Clipboard() = default;
+    virtual bool copy(std::string_view text) = 0;
+    // The text arrives later, from the window's event loop, or never.
+    virtual bool paste(std::function<void(std::string_view)> done) = 0;
+};
+
+// One row of a popup menu.
+struct MenuItem {
+    enum class Kind : uint8_t { Item, Header, Separator };
+    std::string label;
+    Kind kind = Kind::Item;
+    bool checked = false;
+    bool enabled = true;
+
+    static MenuItem item(std::string text, bool checked = false, bool enabled = true) {
+        return {std::move(text), Kind::Item, checked, enabled};
+    }
+    static MenuItem header(std::string text) { return {std::move(text), Kind::Header, false, false}; }
+    static MenuItem separator() { return {"", Kind::Separator, false, false}; }
+    bool selectable() const { return kind == Kind::Item && enabled; }
+};
+
+// The parts of a preset bar, left to right.
+namespace presetbar {
+inline constexpr int kPrevious = 0, kName = 1, kNext = 2, kCompare = 3;
+}  // namespace presetbar
 
 enum class Cursor : uint8_t { Arrow, Hand, Caret, LeftRight, UpDown };
 
@@ -68,7 +108,7 @@ inline constexpr uint32_t kBackspace = 0x0008u, kTab = 0x0009u, kEnter = 0x000Du
 }  // namespace key
 
 struct Control {
-    uint32_t param = 0;
+    uint32_t param = 0;  // a property's ID for a text field; unused by a preset bar
     Widget widget = Widget::Knob;
     Rect bounds;
     const char* label = nullptr;  // the parameter's short label when absent
@@ -90,7 +130,11 @@ struct ControlState {
     bool focused = false;
     bool active = false;      // being dragged or edited right now
     bool editing = false;     // its text field is open
-    int hoverIndex = -1;      // segment under the pointer
+    int hoverIndex = -1;      // segment (or preset bar part) under the pointer
+    std::string_view text;    // a text field's value; a preset bar's preset name
+    bool modified = false;    // preset bar: changed since the preset loaded
+    int slot = 0;             // preset bar: 0 for A, 1 for B
+    bool available = true;    // preset bar: there is a preset library
 
     const char* label(const Control& c) const { return c.label ? c.label : def ? def->displayLabel() : ""; }
 };
@@ -112,10 +156,16 @@ class Ui {
     // A value with its label and a bar, for display only: typically an
     // output parameter (a gain reduction meter the host can show too).
     Control& readout(uint32_t param, Rect r) { return add(param, Widget::Readout, r); }
+    // A property's value as one line of text, edited in place.
+    Control& textField(uint32_t property, Rect r) { return add(property, Widget::TextField, r); }
+    // Previous, the preset's name (a menu of presets and what to do with
+    // them), next, and A/B. Needs PRODUCT_PRESETS ON.
+    Control& presetBar(Rect r) { return add(0, Widget::PresetBar, r); }
 
     int count() const { return static_cast<int>(controls_.size()); }
     const Control& control(int i) const { return controls_[static_cast<size_t>(i)]; }
     Control& control(int i) { return controls_[static_cast<size_t>(i)]; }
+    // The first control bound to this parameter (not a text field or preset bar), or -1.
     int find(uint32_t param) const;
     ControlState state(int i) const;
 
@@ -145,24 +195,37 @@ class Ui {
 
     struct Menu {
         bool open = false;
-        int control = -1;
+        int control = -1;  // the control it belongs to, or -1
         Rect bounds;
         int hover = -1;
-        int count = 0;
+        std::vector<MenuItem> items;
+        int first = 0;    // the first row shown, when there are more than fit
+        int visible = 0;  // rows shown
         float rowHeight = 24.0f;
-        Rect row(int i) const { return {bounds.x, bounds.y + 4.0f + rowHeight * static_cast<float>(i), bounds.w, rowHeight}; }
+        std::function<void(int)> chosen;
+        int count() const { return static_cast<int>(items.size()); }
+        // Row i's place, for i in [first, first + visible).
+        Rect row(int i) const {
+            return {bounds.x, bounds.y + 4.0f + rowHeight * static_cast<float>(i - first), bounds.w, rowHeight};
+        }
+        bool scrollsUp() const { return first > 0; }
+        bool scrollsDown() const { return first + visible < count(); }
     };
     struct TextEdit {
+        static constexpr int kCapacity = 256;
         bool open = false;
         int control = -1;
         Rect bounds;
-        char buffer[48] = {};
+        char buffer[kCapacity] = {};
         int length = 0;
         int caret = 0;
-        bool selectAll = true;  // typing replaces the whole field
+        int limit = kCapacity - 1;  // bytes
+        bool ascii = true;          // a value for a parser; otherwise UTF-8 text
+        bool selectAll = true;      // typing replaces the whole field
         bool caretOn = true;
         double blink = 0.0;
-        bool rejected = false;  // the last commit did not parse
+        bool rejected = false;  // the last commit was refused
+        std::function<bool(std::string_view)> commit;  // a prompt's; a value's goes to its parameter
     };
     const Menu& menu() const { return menu_; }
     const TextEdit& textEdit() const { return text_; }
@@ -177,8 +240,23 @@ class Ui {
     void setFocus(int control);
     void openMenu(int control);
     void openTextEdit(int control);
+
+    // A menu below (or above) `anchor`; chosen(index) runs for the item
+    // picked, after the menu closed. Nothing runs if it is dismissed.
+    void popup(Rect anchor, std::vector<MenuItem> items, std::function<void(int)> chosen,
+               float minWidth = 160.0f, int control = -1);
+    // A text field over `box` holding `initial`, at most `limit` bytes of
+    // UTF-8. commit(text) runs on Enter; returning false keeps it open and
+    // marked rejected. Escape, or a click outside, abandons it.
+    void prompt(Rect box, std::string_view initial, int limit, std::function<bool(std::string_view)> commit,
+                int control = -1);
+
+    void setClipboard(Clipboard* clipboard) { clipboard_ = clipboard; }
+    Clipboard* clipboard() const { return clipboard_; }
     // Where a control's text field opens.
     static Rect valueBox(const Control& c);
+    // A preset bar's parts (presetbar::kPrevious ...), for drawing and input.
+    static Rect presetPart(const Rect& bar, int part);
 
   private:
     struct Drag {
@@ -203,6 +281,15 @@ class Ui {
     void step(int i, double normalDelta, int steps);
 
     void closeMenu();
+    void chooseMenu(int row);
+    bool selectableRow(int row) const;
+    void moveMenuHover(int direction);
+    void revealMenuHover();
+    int menuRowAt(float x, float y) const;
+    void openPresetMenu(int control);
+    void presetAction(int control, int part);
+    int presetPartAt(int control, float x) const;
+    void syncPresets(bool force);
     void commitText();
     void cancelText();
     bool textKey(uint32_t code, uint32_t mods);
@@ -225,6 +312,12 @@ class Ui {
     int hoverSegment_ = -1;
     float pointerX_ = -1.0f, pointerY_ = -1.0f;
     bool dirty_ = true;
+    Clipboard* clipboard_ = nullptr;
+    // What the preset bars show, polled from the library.
+    std::string presetName_;
+    bool presetModified_ = false;
+    int presetSlot_ = 0;
+    double presetPoll_ = 0.0;
 };
 
 }  // namespace supple::gui

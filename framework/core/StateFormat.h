@@ -7,7 +7,10 @@
 //   u32 format version  1
 //   chunks              tag, u32 byte length, payload
 //     PARM  u32 count, then count x (u32 parameter ID, f64 host value)
+//     PROP  u32 count, then count x (u32 property ID, u32 length, bytes)
 //     EDIT  f64 editor scale
+//     PRST  u32 flags (1: modified since loaded), u32 length, the current
+//           preset's name
 //
 // Tags are four ASCII bytes in reading order, so a state file starts with
 // the product's tag; numbers are little-endian.
@@ -27,14 +30,21 @@
 // defaults, and nothing is applied unless the whole blob parses. A new chunk
 // is a compatible addition; bump the format version only for a change an old
 // reader cannot skip.
+//
+// A preset is the same format saved in the preset context: no editor size,
+// no preset name and no perProject() property, so that loading it changes
+// the sound and nothing about the session. Loading in the preset context
+// likewise leaves perProject() properties alone, whatever the blob holds.
 #pragma once
 
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "core/ParamTable.h"
+#include "core/PropertyTable.h"
 
 namespace supple::state {
 
@@ -49,6 +59,12 @@ constexpr uint32_t fourcc(const char* s) {
 
 inline constexpr uint32_t kParamChunk = fourcc("PARM");
 inline constexpr uint32_t kEditorChunk = fourcc("EDIT");
+inline constexpr uint32_t kPropertyChunk = fourcc("PROP");
+inline constexpr uint32_t kPresetChunk = fourcc("PRST");
+
+// What the state is for (CLAP's state context): a session, or a preset. A
+// duplicated instance is a session.
+enum class Context { Project, Preset };
 
 class Writer {
   public:
@@ -62,6 +78,10 @@ class Writer {
         uint64_t u = 0;
         std::memcpy(&u, &v, 8);
         for (int i = 0; i < 8; ++i) bytes_.push_back(static_cast<uint8_t>(u >> (8 * i)));
+    }
+    void text(const std::string& v) {
+        u32(static_cast<uint32_t>(v.size()));
+        bytes_.insert(bytes_.end(), v.begin(), v.end());
     }
     size_t beginChunk(uint32_t chunkTag) {
         tag(chunkTag);
@@ -104,6 +124,13 @@ class Reader {
         pos_ += 8;
         return true;
     }
+    bool text(std::string& v, size_t limit) {
+        uint32_t n = 0;
+        if (!u32(n) || n > remaining() || n > limit) return false;
+        v.assign(reinterpret_cast<const char*>(data_ + pos_), n);
+        pos_ += n;
+        return true;
+    }
     bool skip(size_t n) {
         if (size_ - pos_ < n) return false;
         pos_ += n;
@@ -118,17 +145,33 @@ class Reader {
     size_t pos_ = 0;
 };
 
-// Everything a state blob can carry, decoded and validated.
+inline constexpr size_t kMaxPresetName = 255;
+
+// Everything a state blob can carry, decoded and validated. Defaults until
+// something sets them; `property[i]` holds a value only where `hasProperty[i]`.
 struct Snapshot {
     double host[params::kCount];
+    std::string property[properties::kSlots];
+    bool hasProperty[properties::kSlots] = {};
     double editorScale = 0.0;  // 0 when absent
+    bool hasPreset = false;    // the session remembers a preset by name
+    std::string presetName;
+    bool presetModified = false;
 
     Snapshot() {
         for (size_t i = 0; i < params::kCount; ++i) host[i] = hostDefault(params::at(i));
     }
+    // Every property its default, as a fresh instance has them.
+    void defaultProperties() {
+        for (size_t i = 0; i < properties::kCount; ++i) {
+            property[i] = properties::at(i).def;
+            hasProperty[i] = true;
+        }
+    }
 };
 
-inline std::vector<uint8_t> save(uint32_t magic, const double* hostValues, double editorScale) {
+inline std::vector<uint8_t> save(uint32_t magic, const Snapshot& s, Context context = Context::Project) {
+    const bool preset = context == Context::Preset;
     Writer w;
     w.tag(magic);
     w.u32(kFormatVersion);
@@ -137,13 +180,34 @@ inline std::vector<uint8_t> save(uint32_t magic, const double* hostValues, doubl
     for (size_t i = 0; i < params::kCount; ++i) {
         if (params::at(i).isOutput()) continue;
         w.u32(params::at(i).id);
-        w.f64(hostValues[i]);
+        w.f64(s.host[i]);
     }
     w.endChunk(chunk);
-    if (editorScale > 0.0) {
+    if constexpr (properties::kCount > 0) {
+        uint32_t count = 0;
+        for (size_t i = 0; i < properties::kCount; ++i)
+            count += s.hasProperty[i] && !(preset && properties::at(i).perProjectOnly()) ? 1 : 0;
+        if (count > 0) {
+            const size_t props = w.beginChunk(kPropertyChunk);
+            w.u32(count);
+            for (size_t i = 0; i < properties::kCount; ++i) {
+                if (!s.hasProperty[i] || (preset && properties::at(i).perProjectOnly())) continue;
+                w.u32(properties::at(i).id);
+                w.text(s.property[i]);
+            }
+            w.endChunk(props);
+        }
+    }
+    if (!preset && s.editorScale > 0.0) {
         const size_t editor = w.beginChunk(kEditorChunk);
-        w.f64(editorScale);
+        w.f64(s.editorScale);
         w.endChunk(editor);
+    }
+    if (!preset && s.hasPreset) {
+        const size_t named = w.beginChunk(kPresetChunk);
+        w.u32(s.presetModified ? 1u : 0u);
+        w.text(s.presetName);
+        w.endChunk(named);
     }
     return w.bytes();
 }
@@ -176,6 +240,30 @@ inline LoadResult load(const uint8_t* data, size_t size, uint32_t magic, Snapsho
                     snapshot.host[i] = sanitizeHost(params::at(static_cast<size_t>(i)), v);
             }
             sawParams = true;
+        } else if (tag == kPropertyChunk) {
+            uint32_t count = 0;
+            if (!r.u32(count) || count > length / 8) return LoadResult::Corrupt;
+            for (uint32_t k = 0; k < count; ++k) {
+                uint32_t id = 0;
+                std::string value;
+                if (!r.u32(id) || !r.text(value, end - r.position())) return LoadResult::Corrupt;
+                const int i = properties::indexOf(id);
+                // A value too long for the property now is dropped, as an
+                // out-of-range one would be; the default stands.
+                if (i >= 0 && properties::accepts(static_cast<size_t>(i), value)) {
+                    snapshot.property[i] = std::move(value);
+                    snapshot.hasProperty[i] = true;
+                }
+            }
+        } else if (tag == kPresetChunk) {
+            uint32_t flags = 0;
+            std::string name;
+            if (!r.u32(flags) || !r.text(name, end - r.position())) return LoadResult::Corrupt;
+            if (name.size() <= kMaxPresetName) {
+                snapshot.hasPreset = true;
+                snapshot.presetName = std::move(name);
+                snapshot.presetModified = (flags & 1u) != 0;
+            }
         } else if (tag == kEditorChunk && length >= 8) {
             double scale = 0.0;
             if (!r.f64(scale)) return LoadResult::Corrupt;

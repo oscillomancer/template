@@ -17,6 +17,9 @@ set(PRODUCT_COPYRIGHT   "Copyright (c) 2026 Supple Audio")
 # it before an instrument (AU: a MIDI processor). PRODUCT_CHANNELS stays unset.
 set(PRODUCT_KIND        "note-effect")
 
+# Factory presets in product/Presets.h, the user's own, the editor's preset bar.
+set(PRODUCT_PRESETS     ON)
+
 # CLAP features after the main category (note-effect, implied by PRODUCT_KIND).
 set(PRODUCT_FEATURES    "utility")
 

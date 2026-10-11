@@ -8,12 +8,16 @@
 #include <atomic>
 #include <clocale>
 #include <cstring>
+#include <filesystem>
+#include <string>
 #include <map>
 #include <random>
 #include <thread>
 
 #include "Check.h"
 #include "Testing.h"
+#include "core/Preset.h"
+#include "core/PresetLibrary.h"
 #include "core/StateFormat.h"
 #include "plugin/EditBridge.h"
 #include "ProductInfo.h"
@@ -966,7 +970,14 @@ TEST(a_level_reads_as_an_exact_gain_and_off_is_silence) {
 TEST(state_round_trips_byte_for_byte) {
     state::Snapshot a;
     for (size_t i = 0; i < params::kCount; ++i) a.host[i] = fromNormalized(params::at(i), 0.37);
-    const auto bytes = state::save(0x54455354, a.host, 1.25);
+    a.editorScale = 1.25;
+    a.defaultProperties();
+    for (size_t i = 0; i < properties::kCount; ++i)
+        a.property[i] = std::string("v\xC3\xA9") + std::to_string(i);  // UTF-8 survives
+    a.hasPreset = true;
+    a.presetName = "Somewhere";
+    a.presetModified = true;
+    const auto bytes = state::save(0x54455354, a);
     CHECK(bytes.size() > 8 && std::memcmp(bytes.data(), "TEST", 4) == 0);
     state::Snapshot b;
     CHECK(state::load(bytes.data(), bytes.size(), 0x54455354, b) == state::LoadResult::Ok);
@@ -976,17 +987,84 @@ TEST(state_round_trips_byte_for_byte) {
         CHECK_MSG(b.host[i] == (p.isOutput() ? hostDefault(p) : a.host[i]), "%s", p.name);
     }
     CHECK(b.editorScale == 1.25);
-    CHECK(state::save(0x54455354, b.host, b.editorScale) == bytes);
+    CHECK(b.hasPreset && b.presetName == "Somewhere" && b.presetModified);
+    for (size_t i = 0; i < properties::kCount; ++i) CHECK(b.hasProperty[i] && b.property[i] == a.property[i]);
+    CHECK(state::save(0x54455354, b) == bytes);
     // Nor does an output's value change what is saved.
     if (params::kOutputCount > 0) {
         for (uint16_t i : params::kOutputIndices) a.host[i] = fromNormalized(params::at(i), 0.81);
-        CHECK(state::save(0x54455354, a.host, 1.25) == bytes);
+        CHECK(state::save(0x54455354, a) == bytes);
+    }
+    std::printf("      %zu properties\n", properties::kCount);
+}
+
+TEST(a_preset_leaves_out_the_session) {
+    state::Snapshot a;
+    a.editorScale = 1.5;
+    a.defaultProperties();
+    for (size_t i = 0; i < properties::kCount; ++i) a.property[i] = "x" + std::to_string(i);
+    a.hasPreset = true;
+    a.presetName = "Name";
+    const auto bytes = state::save(0x54455354, a, state::Context::Preset);
+    state::Snapshot b;
+    CHECK(state::load(bytes.data(), bytes.size(), 0x54455354, b) == state::LoadResult::Ok);
+    CHECK(b.editorScale == 0.0);
+    CHECK(!b.hasPreset);
+    int perProject = 0;
+    for (size_t i = 0; i < properties::kCount; ++i) {
+        const bool session = properties::at(i).perProjectOnly();
+        perProject += session ? 1 : 0;
+        CHECK_MSG(b.hasProperty[i] == !session, "%s", properties::at(i).name);
+        if (!session) CHECK(b.property[i] == a.property[i]);
+    }
+    // A preset of the defaults is the same bytes however the session differs.
+    state::Snapshot fresh;
+    fresh.defaultProperties();
+    state::Snapshot other = fresh;
+    other.editorScale = 2.0;
+    other.hasPreset = true;
+    other.presetName = "Elsewhere";
+    for (size_t i = 0; i < properties::kCount; ++i)
+        if (properties::at(i).perProjectOnly()) other.property[i] = "session only";
+    CHECK(state::save(0x54455354, fresh, state::Context::Preset) ==
+          state::save(0x54455354, other, state::Context::Preset));
+    std::printf("      %d perProject properties\n", perProject);
+}
+
+TEST(a_property_value_too_long_for_it_loads_as_its_default) {
+    if constexpr (properties::kCount == 0) {
+        std::puts("      (no properties in this product)");
+    } else {
+        const PropertyDef& d = properties::at(0);
+        state::Writer w;
+        w.tag(0x54455354);
+        w.u32(1);
+        const size_t params = w.beginChunk(state::kParamChunk);
+        w.u32(0);
+        w.endChunk(params);
+        const size_t props = w.beginChunk(state::kPropertyChunk);
+        w.u32(2);
+        w.u32(d.id);
+        w.text(std::string(d.limit + 1, 'a'));
+        w.u32(0xFFFFFFF0u);  // an ID nobody has
+        w.text("ignored");
+        w.endChunk(props);
+        state::Snapshot out;
+        CHECK(state::load(w.bytes().data(), w.bytes().size(), 0x54455354, out) == state::LoadResult::Ok);
+        CHECK(!out.hasProperty[0]);
+        // A length running past its chunk is damage.
+        auto bytes = w.bytes();
+        bytes[bytes.size() - 8] = 0x7F;
+        CHECK(state::load(bytes.data(), bytes.size(), 0x54455354, out) == state::LoadResult::Corrupt);
     }
 }
 
 TEST(state_rejects_damage_and_skips_what_it_does_not_know) {
     state::Snapshot s;
-    auto bytes = state::save(0x54455354, s.host, 0.0);
+    s.defaultProperties();
+    s.hasPreset = true;
+    s.presetName = "Cut me";
+    auto bytes = state::save(0x54455354, s);
     state::Snapshot out;
     CHECK(state::load(bytes.data(), bytes.size(), 0x41424344, out) == state::LoadResult::NotOurs);
     for (size_t cut = 1; cut < bytes.size(); cut += 3)
@@ -1010,6 +1088,337 @@ TEST(state_rejects_damage_and_skips_what_it_does_not_know) {
     CHECK(out.host[first] == params::at(first).hostMax());
     for (size_t i = 0; i < params::kCount; ++i)
         if (i != first) CHECK(out.host[i] == hostDefault(params::at(i)));
+}
+
+// --- properties --------------------------------------------------------------------------
+
+namespace {
+
+// Records each property value it hears, and when.
+class PropertyProbe : public ProcessorBase<PropertyProbe> {
+  public:
+    void prepare(const ProcessSetup&, const ParamValues&) { prepared = true; }
+    void update(const ParamValues&) {}
+    void process(Block&) { ++blocks; }
+    void property(uint32_t id, std::string_view value) {
+        lastLength = std::min<size_t>(value.size(), sizeof(last));
+        std::memcpy(last, value.data(), lastLength);
+        if (count == 32) return;
+        Heard& h = heard[count++];
+        h.id = id;
+        h.length = std::min<size_t>(value.size(), sizeof(h.text));
+        std::memcpy(h.text, value.data(), h.length);
+        h.prepared = prepared;
+        h.blocks = blocks;
+    }
+    struct Heard {
+        uint32_t id = 0;
+        char text[64] = {};
+        size_t length = 0;
+        bool prepared = false;
+        int blocks = 0;
+        std::string_view value() const { return {text, length}; }
+    } heard[32];
+    int count = 0, blocks = 0;
+    bool prepared = false;
+    char last[64] = {};
+    size_t lastLength = 0;
+    std::string_view lastValue() const { return {last, lastLength}; }
+};
+
+void oneBlock(BasicEngine<PropertyProbe>& e) {
+    std::vector<double> l(64), r(64);
+    double* io[] = {l.data(), r.data()};
+    e.process<double>(io, io, 64);
+}
+
+}  // namespace
+
+TEST(the_processor_hears_every_property_after_prepare_and_each_change_before_the_next_block) {
+    if constexpr (properties::kCount == 0) {
+        std::puts("      (no properties in this product)");
+        return;
+    }
+    auto e = std::make_unique<BasicEngine<PropertyProbe>>();
+    const int width = product::info::kAudioOutput ? 2 : 0;
+    CHECK(e->properties().set(0, "before"));
+    e->activate(48000.0, 64, product::info::kAudioInput ? width : 0, width);
+    const PropertyProbe& p = e->processor();
+    CHECK(p.count == static_cast<int>(properties::kCount));
+    for (size_t k = 0; k < properties::kCount && k < 32; ++k) {
+        CHECK(p.heard[k].id == properties::at(k).id && p.heard[k].prepared);
+        CHECK(p.heard[k].value() == e->properties().get(k));
+    }
+    CHECK(p.heard[0].value() == "before");
+
+    // A change waits for the next block, and arrives before it runs.
+    const int before = p.count;
+    CHECK(e->properties().set(0, "after"));
+    CHECK(p.count == before);
+    oneBlock(*e);
+    CHECK(p.count == before + 1 && p.heard[before].value() == "after" && p.heard[before].blocks == 0);
+
+    // Two changes between blocks: only the last is heard. The same value
+    // again is no change at all.
+    CHECK(e->properties().set(0, "first") && e->properties().set(0, "second"));
+    oneBlock(*e);
+    CHECK(p.count == before + 2 && p.heard[before + 1].value() == "second");
+    CHECK(e->properties().set(0, "second"));
+    oneBlock(*e);
+    CHECK(p.count == before + 2);
+
+    // Too long for the property: refused, nothing changes.
+    CHECK(!e->properties().set(0, std::string(properties::at(0).limit + 1, 'x')));
+    CHECK(e->properties().get(0) == "second");
+    // Many changes: the copies the audio thread let go are freed, and none
+    // is lost (asan watches for both).
+    for (int k = 0; k < 500; ++k) {
+        CHECK(e->properties().set(0, std::to_string(k)));
+        oneBlock(*e);
+    }
+    e->properties().collect();
+    CHECK(p.lastValue() == "499");
+}
+
+// --- presets ---------------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint32_t kTestMagic = state::fourcc(product::info::kStateTag);
+
+// The state a preset library sees, kept in plain memory the way the plugin
+// keeps it in its stores.
+struct MemoryState : StateAccess {
+    double host[params::kCount];
+    PropertyStore props;
+    int loads = 0;
+
+    MemoryState() {
+        for (size_t i = 0; i < params::kCount; ++i) host[i] = hostDefault(params::at(i));
+    }
+    std::vector<uint8_t> saveState(state::Context context) override {
+        state::Snapshot s;
+        for (size_t i = 0; i < params::kCount; ++i) s.host[i] = host[i];
+        for (size_t i = 0; i < properties::kCount; ++i) {
+            s.property[i] = props.get(i);
+            s.hasProperty[i] = true;
+        }
+        return state::save(kTestMagic, s, context);
+    }
+    bool loadState(const uint8_t* data, size_t size, state::Context context) override {
+        state::Snapshot s;
+        if (state::load(data, size, kTestMagic, s) != state::LoadResult::Ok) return false;
+        for (size_t i = 0; i < params::kCount; ++i)
+            if (!params::at(i).isOutput()) host[i] = s.host[i];
+        for (size_t i = 0; i < properties::kCount; ++i)
+            if (context == state::Context::Project || !properties::at(i).perProjectOnly())
+                props.set(i, s.hasProperty[i] ? std::string_view(s.property[i]) : std::string_view(properties::at(i).def));
+        ++loads;
+        return true;
+    }
+};
+
+// The first parameter a preset can change, and a value other than its default.
+size_t settable() {
+    for (size_t i = 0; i < params::kCount; ++i)
+        if (!params::at(i).isOutput() && !params::at(i).is(pflag::kBypass)) return i;
+    return 0;
+}
+double otherValue(size_t i) {
+    const ParamDef& p = params::at(i);
+    return hostDefault(p) == p.hostMax() ? p.hostMin() : p.hostMax();
+}
+
+struct TempFolder {
+    std::filesystem::path path;
+    TempFolder() {
+        path = std::filesystem::temp_directory_path() /
+               ("supple-presets-" + std::to_string(std::random_device{}()) + "-" + std::to_string(std::rand()));
+    }
+    ~TempFolder() {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+};
+
+}  // namespace
+
+TEST(user_presets_save_load_rename_and_delete) {
+    TempFolder folder;
+    MemoryState st;
+    PresetLibrary lib(st, folder.path / "nested");  // created on the first save
+    const size_t i = settable();
+    CHECK(lib.currentName() == "Default" && !lib.modified() && lib.current() < 0);
+    st.host[i] = otherValue(i);
+    CHECK(lib.modified());
+
+    CHECK(lib.save("My Sound", false) == PresetLibrary::SaveResult::Ok);
+    CHECK(std::filesystem::exists(folder.path / "nested" / "My Sound.preset"));
+    CHECK(lib.currentName() == "My Sound" && !lib.modified() && lib.current() >= 0);
+    CHECK(lib.entries()[static_cast<size_t>(lib.current())].user());
+    CHECK(lib.save("My Sound", false) == PresetLibrary::SaveResult::Exists);
+    CHECK(lib.save("a/b", false) == PresetLibrary::SaveResult::InvalidName);
+    CHECK(lib.entries().size() == presets::kFactoryCount + 1);
+
+    // Defaults, then the preset again: its value comes back exactly.
+    CHECK(lib.loadDefaults() && st.host[i] == hostDefault(params::at(i)) && lib.currentName() == "Default");
+    CHECK(!lib.modified());
+    const int mine = static_cast<int>(presets::kFactoryCount);
+    CHECK(lib.load(mine) && st.host[i] == otherValue(i) && !lib.modified());
+
+    // A user preset sorts by name, whatever the case.
+    st.host[i] = hostDefault(params::at(i));
+    CHECK(lib.save("another", false) == PresetLibrary::SaveResult::Ok);
+    CHECK(lib.entries()[presets::kFactoryCount].name == "another");
+    CHECK(lib.entries()[presets::kFactoryCount + 1].name == "My Sound");
+
+    // Next and previous wrap around the whole list.
+    const int n = static_cast<int>(lib.entries().size());
+    CHECK(lib.load(n - 1) && lib.step(1) && lib.current() == 0);
+    CHECK(lib.step(-1) && lib.current() == n - 1);
+
+    // Rename keeps it current under its new name; a clash is refused.
+    const int another = static_cast<int>(presets::kFactoryCount);
+    CHECK(lib.load(another));
+    CHECK(!lib.rename(another, "My Sound"));
+    CHECK(lib.rename(another, "Zed"));
+    CHECK(lib.currentName() == "Zed" && lib.entries()[static_cast<size_t>(lib.current())].name == "Zed");
+    CHECK(std::filesystem::exists(folder.path / "nested" / "Zed.preset"));
+    CHECK(!std::filesystem::exists(folder.path / "nested" / "another.preset"));
+
+    // Deleting the current one leaves the sound, unnamed.
+    CHECK(lib.remove(lib.current()));
+    CHECK(lib.current() < 0 && lib.currentName().empty());
+    CHECK(lib.entries().size() == presets::kFactoryCount + 1);
+    // A factory preset is not the user's to rename or delete.
+    if (presets::kFactoryCount > 0) CHECK(!lib.rename(0, "Mine") && !lib.remove(0));
+}
+
+TEST(a_file_that_is_not_ours_is_not_listed_or_loaded) {
+    TempFolder folder;
+    std::filesystem::create_directories(folder.path);
+    for (const char* name : {"stray.preset", "empty.preset"}) {
+        std::FILE* f = std::fopen((folder.path / name).string().c_str(), "wb");
+        if (name[0] == 's') std::fputs("RIFF....WAVE", f);
+        std::fclose(f);
+    }
+    MemoryState st;
+    PresetLibrary lib(st, folder.path);
+    CHECK(lib.entries().size() == presets::kFactoryCount);
+    CHECK(!lib.loadFile(folder.path / "stray.preset") && st.loads == 0);
+    CHECK(!lib.loadFile(folder.path / "missing.preset"));
+}
+
+TEST(factory_presets_set_what_they_name_and_default_the_rest) {
+    std::printf("      %zu factory presets\n", presets::kFactoryCount);
+    MemoryState st;
+    PresetLibrary lib(st, {});
+    CHECK(!lib.canSave());
+    for (size_t k = 0; k < presets::kFactoryCount; ++k) {
+        const Preset& preset = presets::factory(k);
+        // Something else first, so every value has to be set.
+        for (size_t i = 0; i < params::kCount; ++i) st.host[i] = otherValue(i);
+        for (size_t i = 0; i < properties::kCount; ++i) st.props.set(i, "elsewhere");
+        CHECK(lib.loadFactory(k));
+        CHECK_MSG(lib.currentName() == preset.name && !lib.modified(), "%s", preset.name);
+        for (size_t i = 0; i < params::kCount; ++i) {
+            const ParamDef& p = params::at(i);
+            if (p.isOutput()) continue;
+            double want = hostDefault(p);
+            for (const PresetValue& v : preset.values)
+                if (v.id == p.id) want = sanitizeHost(p, toHost(p, v.plain));
+            CHECK_MSG(st.host[i] == want, "%s: %s", preset.name, p.name);
+        }
+        for (size_t i = 0; i < properties::kCount; ++i) {
+            std::string want = properties::at(i).perProjectOnly() ? "elsewhere" : properties::at(i).def;
+            for (const PresetText& t : preset.texts)
+                if (t.id == properties::at(i).id) want = t.value;
+            CHECK_MSG(st.props.get(i) == want, "%s: %s", preset.name, properties::at(i).name);
+        }
+        CHECK(presets::findFactory(preset.name) == static_cast<int>(k));
+    }
+    CHECK(presets::findFactory("no such preset") < 0);
+}
+
+TEST(a_b_comparison_keeps_two_states) {
+    MemoryState st;
+    PresetLibrary lib(st, {});
+    const size_t i = settable();
+    const double a = st.host[i], b = otherValue(i);
+    CHECK(lib.slot() == 0);
+    lib.compare(1);  // B starts as A
+    CHECK(lib.slot() == 1 && st.host[i] == a);
+    st.host[i] = b;
+    lib.compare(0);
+    CHECK(st.host[i] == a);
+    lib.compare(1);
+    CHECK(st.host[i] == b && lib.modified());
+    lib.copyToOther();  // B into A
+    lib.compare(0);
+    CHECK(st.host[i] == b);
+}
+
+TEST(settings_round_trip_as_text_and_garbage_changes_nothing) {
+    MemoryState st;
+    PresetLibrary lib(st, {});
+    const size_t i = settable();
+    st.host[i] = otherValue(i);
+    const std::string text = lib.copyText();
+    CHECK(text.find(product::info::kName) == 0);
+    st.host[i] = hostDefault(params::at(i));
+    CHECK(lib.pasteText("  " + text + "\n"));
+    CHECK(st.host[i] == otherValue(i) && lib.currentName().empty() && !lib.modified());
+    const int loads = st.loads;
+    for (const char* junk : {"", "hello", "Starter state: !!!!", "AAAA", "QUJDRA=="})
+        CHECK_MSG(!lib.pasteText(junk), "accepted '%s'", junk);
+    CHECK(st.loads == loads);
+}
+
+TEST(a_session_remembers_the_preset_and_whether_it_changed) {
+    TempFolder folder;
+    MemoryState st;
+    PresetLibrary lib(st, folder.path);
+    const size_t i = settable();
+    CHECK(lib.save("Kept", false) == PresetLibrary::SaveResult::Ok);
+    st.host[i] = otherValue(i);
+    state::Snapshot session;
+    lib.describe(session);
+    CHECK(session.hasPreset && session.presetName == "Kept" && session.presetModified);
+
+    PresetLibrary other(st, folder.path);
+    other.restore(session);
+    CHECK(other.currentName() == "Kept" && other.current() >= 0 && other.modified());
+    session.presetModified = false;
+    other.restore(session);
+    CHECK(!other.modified());
+    state::Snapshot none;
+    other.restore(none);
+    CHECK(other.currentName().empty() && other.current() < 0);
+}
+
+TEST(preset_names_are_files_on_every_platform) {
+    for (const char* good : {"Lead 1", "a", "Ünïcødé ✓", "a-b_c (2) [x] 'y' #3"})
+        CHECK_MSG(PresetLibrary::validName(good), "refused '%s'", good);
+    for (const char* bad : {"", " lead", "lead ", ".hidden", "end.", "a/b", "a\\b", "a:b", "a*b", "a?b", "a\"b",
+                            "a<b", "a>b", "a|b", "CON", "con.txt", "Com1", "LPT9", "nul ", "tab\there"})
+        CHECK_MSG(!PresetLibrary::validName(bad), "accepted '%s'", bad);
+    CHECK(!PresetLibrary::validName(std::string(65, 'x')));
+    CHECK(PresetLibrary::validName(std::string(64, 'x')));
+}
+
+TEST(base64_round_trips_and_refuses_damage) {
+    for (size_t n = 0; n < 10; ++n) {
+        std::vector<uint8_t> bytes(n);
+        for (size_t k = 0; k < n; ++k) bytes[k] = static_cast<uint8_t>(k * 77 + 3);
+        std::vector<uint8_t> back;
+        const std::string text = base64::encode(bytes);
+        CHECK(text.size() % 4 == 0);
+        CHECK(n == 0 ? !base64::decode(text, back) : base64::decode(text, back) && back == bytes);
+    }
+    std::vector<uint8_t> out;
+    CHECK(base64::decode("TWFu", out) && out.size() == 3 && out[0] == 'M');
+    for (const char* bad : {"TWF", "TW=u", "=WFu", "TWFu=", "T@Fu", "TW==TWFu"})
+        CHECK_MSG(!base64::decode(bad, out), "accepted '%s'", bad);
 }
 
 // --- edit bridge --------------------------------------------------------------------------

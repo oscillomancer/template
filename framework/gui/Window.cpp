@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include <pugl/pugl.h>
 
@@ -247,12 +248,26 @@ float Window::toDesignY(double y) const {
     return (static_cast<float>(y) - f.offsetY) / f.scale;
 }
 
+bool Window::copy(std::string_view text) {
+    return view_ && realized_ &&
+           puglSetClipboard(view_, PUGL_CLIPBOARD_GENERAL, "text/plain", text.data(), text.size()) == PUGL_SUCCESS;
+}
+
+bool Window::paste(std::function<void(std::string_view)> done) {
+    if (!view_ || !realized_) return false;
+    paste_ = std::move(done);
+    if (puglPaste(view_) == PUGL_SUCCESS) return true;
+    paste_ = nullptr;
+    return false;
+}
+
 void Window::handleEvent(const void* eventPointer) {
     const PuglEvent* e = static_cast<const PuglEvent*>(eventPointer);
     switch (e->type) {
         // The graphics context is current for REALIZE, UNREALIZE and EXPOSE
         // only, so the NanoVG context is built and torn down here.
         case PUGL_REALIZE:
+            editor_.setClipboard(this);
             if (!canvasLoad()) break;
             vg_ = canvasCreate(puglGetContext(view_));
             if (!vg_) break;
@@ -266,6 +281,8 @@ void Window::handleEvent(const void* eventPointer) {
             break;
 
         case PUGL_UNREALIZE:
+            editor_.setClipboard(nullptr);
+            paste_ = nullptr;
             editor_.detach();
             if (vg_) canvasDestroy(vg_);
             vg_ = nullptr;
@@ -332,6 +349,39 @@ void Window::handleEvent(const void* eventPointer) {
         case PUGL_KEY_PRESS: editor_.key(e->key.key, modsOf(e->key.state)); break;
         case PUGL_TEXT: editor_.text(e->text.character); break;
         case PUGL_FOCUS_OUT: editor_.focusLost(); break;
+
+        case PUGL_DATA_OFFER: {
+            // Only text, and only when the editor asked for it: a drop or a
+            // stray offer is refused.
+            const PuglDataOfferEvent& offer = e->offer;
+            const uint32_t types = puglGetNumClipboardTypes(view_, offer.clipboard);
+            bool accepted = false;
+            for (uint32_t i = 0; paste_ && offer.clipboard == PUGL_CLIPBOARD_GENERAL && i < types && !accepted; ++i) {
+                const char* type = puglGetClipboardType(view_, offer.clipboard, i);
+                if (type && !std::strncmp(type, "text/plain", 10))
+                    accepted = puglAcceptOffer(view_, &offer, i, PUGL_DATA_ACTION_COPY, 0, 0, width_, height_) ==
+                               PUGL_SUCCESS;
+            }
+            if (!accepted) {
+                puglRejectOffer(view_, &offer, 0, 0, width_, height_);
+                paste_ = nullptr;
+            }
+            break;
+        }
+
+        case PUGL_DATA: {
+            size_t length = 0;
+            const void* data = puglGetClipboard(view_, e->data.clipboard, e->data.typeIndex, &length);
+            auto done = std::move(paste_);
+            paste_ = nullptr;
+            if (done && data) {
+                std::string_view text(static_cast<const char*>(data), length);
+                while (!text.empty() && text.back() == '\0') text.remove_suffix(1);
+                done(text);
+                editor_.markDirty();
+            }
+            break;
+        }
 
         default: break;
     }

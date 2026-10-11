@@ -187,7 +187,17 @@ if (SUPPLE_BUILD_PLUGIN)
         else()
             set(validated "$<TARGET_FILE:product-plugin_clap>")
         endif()
-        add_test(NAME clap-validator COMMAND ${SUPPLE_CLAP_VALIDATOR} validate --only-failed "${validated}")
+        set(validator_options --only-failed)
+        if (PRODUCT_PRESETS)
+            # clap-validator 0.4.1 deadlocks on the second preset of any
+            # container -- a plugin location listing two factory presets, as
+            # CLAP has them -- in its own metadata receiver (begin_preset holds
+            # the lock flush_preset takes). plugin-tests crawls and loads them
+            # instead. Drop this when a release fixes it.
+            list(APPEND validator_options --exclude "^preset-discovery-(crawl|load)$")
+        endif()
+        add_test(NAME clap-validator COMMAND ${SUPPLE_CLAP_VALIDATOR} validate ${validator_options} "${validated}")
+        set_tests_properties(clap-validator PROPERTIES TIMEOUT 300)
     else()
         message(STATUS "clap-validator not found; its test is not registered")
     endif()

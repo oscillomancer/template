@@ -24,6 +24,7 @@
 #include <memory>
 #include <random>
 #include <utility>
+#include <string>
 #include <vector>
 
 #include "core/Engine.h"
@@ -156,6 +157,7 @@ struct RenderOptions {
     double sampleRate = 48000.0;
     std::vector<int> blocks = {512};               // host block sizes, cycled
     std::vector<std::pair<uint32_t, double>> initial;  // plain values before activation
+    std::vector<std::pair<uint32_t, std::string>> properties;  // property values before activation
     std::vector<Automation> automation;            // any order; applied at their frames
     bool metering = false;
     Signal sidechain;                  // PRODUCT_SIDECHAIN: the key; empty leaves it unconnected
@@ -183,6 +185,10 @@ inline Signal render(const Signal& input, const RenderOptions& o, Engine* engine
         for (const auto& [id, plain] : o.initial) {
             const int i = params::indexOf(id);
             if (i >= 0) engine->store().set(static_cast<size_t>(i), toHost(params::at(static_cast<size_t>(i)), plain));
+        }
+        for (const auto& [id, value] : o.properties) {
+            const int i = properties::indexOf(id);
+            if (i >= 0) engine->properties().set(static_cast<size_t>(i), value);
         }
         engine->activate(o.sampleRate, maxBlock, product::info::kAudioInput ? channels : 0, channels);
     }

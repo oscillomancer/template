@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace supple::gui::widgets {
 namespace {
@@ -210,7 +211,10 @@ void well(NVGcontext* vg, const Theme& t, Rect r, float radius) {
 // --- controls --------------------------------------------------------------------
 
 void control(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
-    if (!c.visible || !s.def) return;
+    if (!c.visible) return;
+    if (c.widget == Widget::TextField) return textField(vg, t, c, s);
+    if (c.widget == Widget::PresetBar) return presetBar(vg, t, c, s);
+    if (!s.def) return;
     switch (c.widget) {
         case Widget::Knob: knob(vg, t, c, s); break;
         case Widget::HSlider: hslider(vg, t, c, s); break;
@@ -219,7 +223,108 @@ void control(NVGcontext* vg, const Theme& t, const Control& c, const ControlStat
         case Widget::Segmented: segmented(vg, t, c, s); break;
         case Widget::Dropdown: dropdown(vg, t, c, s); break;
         case Widget::Readout: readout(vg, t, c, s); break;
+        default: break;
     }
+}
+
+void textField(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
+    const Rect b = c.bounds;
+    const float radius = std::min(5.0f, b.h * 0.5f);
+    nvgSave(vg);
+    if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
+    well(vg, t, b, radius);
+    if (s.hover && !s.editing) {
+        roundedRect(vg, b.inset(0.5f), radius);
+        nvgStrokeColor(vg, rgb(t.lineLit));
+        nvgStrokeWidth(vg, 1.0f);
+        nvgStroke(vg);
+    }
+    if (!s.editing) {
+        nvgScissor(vg, b.x + 4.0f, b.y, b.w - 8.0f, b.h);
+        const std::string text(s.text);
+        if (!text.empty())
+            label(vg, b.x + 9.0f, b.cy() + 0.5f, text.c_str(), 11.5f, rgb(t.text));
+        else if (c.label)
+            label(vg, b.x + 9.0f, b.cy() + 0.5f, c.label, 11.5f, rgb(t.textFaint));
+        nvgResetScissor(vg);
+    }
+    if (s.focused && !s.editing) focusOutline(vg, t, b, radius);
+    nvgRestore(vg);
+}
+
+namespace {
+void chevron(NVGcontext* vg, float cx, float cy, float direction, NVGcolor colour) {
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, cx + 2.0f * direction, cy - 4.5f);
+    nvgLineTo(vg, cx - 2.5f * direction, cy);
+    nvgLineTo(vg, cx + 2.0f * direction, cy + 4.5f);
+    nvgStrokeColor(vg, colour);
+    nvgStrokeWidth(vg, 1.6f);
+    nvgLineCap(vg, NVG_ROUND);
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStroke(vg);
+}
+}  // namespace
+
+void presetBar(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
+    const Rect b = c.bounds;
+    const float radius = std::min(5.0f, b.h * 0.5f);
+    nvgSave(vg);
+    if (!c.enabled || !s.available) nvgGlobalAlpha(vg, 0.4f);
+    const Rect body{b.x, b.y, Ui::presetPart(b, presetbar::kNext).right() - b.x, b.h};
+    roundedRect(vg, body, radius);
+    nvgFillPaint(vg, nvgLinearGradient(vg, b.x, b.y, b.x, b.bottom(), rgb(t.raised),
+                                       lerp(rgb(t.raised), rgb(t.ground), 0.45f)));
+    nvgFill(vg);
+    roundedRect(vg, body.inset(0.5f), radius);
+    nvgStrokeColor(vg, s.active ? rgba(t.accent, 0.85f) : rgb(t.line));
+    nvgStrokeWidth(vg, 1.0f);
+    nvgStroke(vg);
+
+    for (int part : {presetbar::kPrevious, presetbar::kName, presetbar::kNext}) {
+        const Rect r = Ui::presetPart(b, part);
+        const bool hot = s.hoverIndex == part;
+        if (hot) {
+            roundedRect(vg, r.inset(2.0f), radius - 1.5f);
+            nvgFillColor(vg, rgba(t.text, 0.06f));
+            nvgFill(vg);
+        }
+        if (part == presetbar::kName) {
+            std::string name = s.available ? std::string(s.text) : std::string("Presets");
+            if (name.empty()) name = "No preset";
+            if (s.modified) name += " *";
+            nvgScissor(vg, r.x + 4.0f, r.y, r.w - 8.0f, r.h);
+            const float size = fitSize(vg, name.c_str(), 11.5f, 9.5f, r.w - 12.0f, font::kUiBold);
+            label(vg, r.cx(), r.cy() + 0.5f, name.c_str(), size, rgb(t.text), Align::Center, true);
+            nvgResetScissor(vg);
+        } else {
+            if (part == presetbar::kNext) hairline(vg, r.x, r.y + 5.0f, r.x, r.bottom() - 5.0f, rgba(t.line, 0.9f));
+            else hairline(vg, r.right(), r.y + 5.0f, r.right(), r.bottom() - 5.0f, rgba(t.line, 0.9f));
+            chevron(vg, r.cx(), r.cy(), part == presetbar::kPrevious ? 1.0f : -1.0f,
+                    hot ? rgb(t.text) : rgb(t.textMuted));
+        }
+    }
+
+    // A and B, the one in use lit.
+    const Rect ab = Ui::presetPart(b, presetbar::kCompare);
+    well(vg, t, ab, radius);
+    for (int k = 0; k < 2; ++k) {
+        const Rect half{ab.x + ab.w * 0.5f * static_cast<float>(k), ab.y, ab.w * 0.5f, ab.h};
+        const bool on = s.slot == k;
+        if (on) {
+            roundedRect(vg, half.inset(2.5f), radius - 2.0f);
+            nvgFillColor(vg, rgba(t.accent, 0.24f));
+            nvgFill(vg);
+            nvgStrokeColor(vg, rgba(t.accent, 0.75f));
+            nvgStrokeWidth(vg, 1.0f);
+            nvgStroke(vg);
+        }
+        label(vg, half.cx(), half.cy() + 0.5f, k == 0 ? "A" : "B", 11.0f,
+              on ? rgb(t.text) : s.hoverIndex == presetbar::kCompare ? rgb(t.text) : rgb(t.textMuted),
+              Align::Center, true);
+    }
+    if (s.focused) focusOutline(vg, t, b, radius);
+    nvgRestore(vg);
 }
 
 void knob(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
@@ -533,38 +638,63 @@ void dropdown(NVGcontext* vg, const Theme& t, const Control& c, const ControlSta
 
 void overlays(NVGcontext* vg, const Theme& t, const Ui& ui) {
     const Ui::Menu& m = ui.menu();
-    if (m.open && m.control >= 0) {
-        const ControlState s = ui.state(m.control);
-        if (s.def) {
-            nvgSave(vg);
-            shadow(vg, m.bounds, 6.0f, 18.0f, 0.6f);
-            roundedRect(vg, m.bounds, 6.0f);
-            nvgFillColor(vg, rgb(t.surface));
-            nvgFill(vg);
-            roundedRect(vg, m.bounds.inset(0.5f), 6.0f);
-            nvgStrokeColor(vg, rgb(t.lineLit));
-            nvgStrokeWidth(vg, 1.0f);
-            nvgStroke(vg);
-            const int current = static_cast<int>(std::lround(s.value - s.def->hostMin()));
-            for (int i = 0; i < m.count; ++i) {
-                const Rect row = m.row(i).inset(4.0f, 1.0f);
-                if (i == m.hover) {
-                    roundedRect(vg, row, 4.0f);
-                    nvgFillColor(vg, rgba(t.accent, 0.18f));
-                    nvgFill(vg);
-                }
-                if (i == current) {
-                    nvgBeginPath(vg);
-                    nvgCircle(vg, row.x + 10.0f, row.cy(), 2.6f);
-                    nvgFillColor(vg, rgb(t.accent));
-                    nvgFill(vg);
-                }
-                char scratch[16];
-                label(vg, row.x + 20.0f, row.cy() + 0.5f, optionLabel(*s.def, i, scratch, sizeof(scratch)), 11.5f,
-                      i == m.hover || i == current ? rgb(t.text) : rgb(t.textMuted), Align::Left, i == current);
+    if (m.open) {
+        nvgSave(vg);
+        shadow(vg, m.bounds, 6.0f, 18.0f, 0.6f);
+        roundedRect(vg, m.bounds, 6.0f);
+        nvgFillColor(vg, rgb(t.surface));
+        nvgFill(vg);
+        roundedRect(vg, m.bounds.inset(0.5f), 6.0f);
+        nvgStrokeColor(vg, rgb(t.lineLit));
+        nvgStrokeWidth(vg, 1.0f);
+        nvgStroke(vg);
+        nvgScissor(vg, m.bounds.x, m.bounds.y + 2.0f, m.bounds.w, m.bounds.h - 4.0f);
+        for (int i = m.first; i < m.first + m.visible && i < m.count(); ++i) {
+            const MenuItem& item = m.items[static_cast<size_t>(i)];
+            const Rect row = m.row(i).inset(4.0f, 1.0f);
+            if (item.kind == MenuItem::Kind::Separator) {
+                hairline(vg, row.x + 6.0f, std::round(row.cy()) + 0.5f, row.right() - 6.0f,
+                         std::round(row.cy()) + 0.5f, rgb(t.line));
+                continue;
             }
-            nvgRestore(vg);
+            if (item.kind == MenuItem::Kind::Header) {
+                caption(vg, row.x + 8.0f, row.cy() + 1.0f, item.label.c_str(), rgb(t.textFaint));
+                continue;
+            }
+            if (i == m.hover) {
+                roundedRect(vg, row, 4.0f);
+                nvgFillColor(vg, rgba(t.accent, 0.18f));
+                nvgFill(vg);
+            }
+            if (item.checked) {
+                nvgBeginPath(vg);
+                nvgCircle(vg, row.x + 10.0f, row.cy(), 2.6f);
+                nvgFillColor(vg, rgb(t.accent));
+                nvgFill(vg);
+            }
+            const NVGcolor colour = !item.enabled                    ? rgb(t.textFaint)
+                                    : i == m.hover || item.checked ? rgb(t.text)
+                                                                   : rgb(t.textMuted);
+            const float size = fitSize(vg, item.label.c_str(), 11.5f, 9.0f, row.w - 28.0f, font::kUi);
+            label(vg, row.x + 20.0f, row.cy() + 0.5f, item.label.c_str(), size, colour, Align::Left,
+                  item.checked);
         }
+        nvgResetScissor(vg);
+        // More above or below: a small arrow at that edge.
+        for (int edge = 0; edge < 2; ++edge) {
+            if (edge == 0 ? !m.scrollsUp() : !m.scrollsDown()) continue;
+            const float cx = m.bounds.right() - 14.0f;
+            const float cy = edge == 0 ? m.bounds.y + 7.0f : m.bounds.bottom() - 7.0f;
+            const float d = edge == 0 ? -1.0f : 1.0f;
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, cx - 4.0f, cy - 2.0f * d);
+            nvgLineTo(vg, cx, cy + 2.0f * d);
+            nvgLineTo(vg, cx + 4.0f, cy - 2.0f * d);
+            nvgClosePath(vg);
+            nvgFillColor(vg, rgb(t.textMuted));
+            nvgFill(vg);
+        }
+        nvgRestore(vg);
     }
 
     const Ui::TextEdit& e = ui.textEdit();
@@ -580,25 +710,33 @@ void overlays(NVGcontext* vg, const Theme& t, const Ui& ui) {
         nvgStrokeWidth(vg, 1.2f);
         nvgStroke(vg);
 
-        nvgFontFace(vg, font::kMonoMedium);
-        nvgFontSize(vg, 12.0f);
+        // A value is centred in Plex Mono; text is left-aligned in Inter and
+        // slides along to keep the caret in view.
+        nvgFontFace(vg, e.ascii ? font::kMonoMedium : font::kUi);
+        nvgFontSize(vg, e.ascii ? 12.0f : 11.5f);
         nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
-        const float width = nvgTextBounds(vg, 0, 0, e.buffer, nullptr, nullptr);
-        const float x = r.cx() - width * 0.5f, y = r.cy() + 0.5f;
+        const char* end = e.buffer + e.length;
+        const float width = nvgTextBounds(vg, 0, 0, e.buffer, end, nullptr);
+        const float caretAt = e.caret > 0 ? nvgTextBounds(vg, 0, 0, e.buffer, e.buffer + e.caret, nullptr) : 0.0f;
+        const float inner = r.w - 16.0f;
+        float x = e.ascii ? r.cx() - width * 0.5f : r.x + 8.0f;
+        if (!e.ascii && caretAt > inner) x -= caretAt - inner;
+        const float y = r.cy() + 0.5f;
+        nvgScissor(vg, r.x + 3.0f, r.y, r.w - 6.0f, r.h);
         if (e.selectAll && e.length > 0) {
             roundedRect(vg, {x - 2.0f, r.y + 4.0f, width + 4.0f, r.h - 8.0f}, 2.0f);
             nvgFillColor(vg, rgba(t.accent, 0.30f));
             nvgFill(vg);
         }
         nvgFillColor(vg, rgb(t.text));
-        nvgText(vg, x, y, e.buffer, nullptr);
+        nvgText(vg, x, y, e.buffer, end);
         if (e.caretOn && !e.selectAll) {
-            const float cx = x + (e.caret > 0 ? nvgTextBounds(vg, 0, 0, e.buffer, e.buffer + e.caret, nullptr) : 0.0f);
             nvgBeginPath(vg);
-            nvgRect(vg, std::round(cx), r.y + 5.0f, 1.0f, r.h - 10.0f);
+            nvgRect(vg, std::round(x + caretAt), r.y + 5.0f, 1.0f, r.h - 10.0f);
             nvgFillColor(vg, rgb(t.accent));
             nvgFill(vg);
         }
+        nvgResetScissor(vg);
         nvgRestore(vg);
     }
 }

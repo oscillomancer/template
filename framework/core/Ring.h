@@ -48,6 +48,12 @@ class Ring {
         return true;
     }
 
+    // Producer side: room for at least one more item. Only the producer
+    // fills the queue, so the answer holds until it pushes.
+    bool writable() const {
+        return write_.load(std::memory_order_relaxed) - read_.load(std::memory_order_acquire) < kCapacity;
+    }
+
     // Consumer side.
     bool empty() const {
         return read_.load(std::memory_order_relaxed) == write_.load(std::memory_order_acquire);

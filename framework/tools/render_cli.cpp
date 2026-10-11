@@ -9,6 +9,7 @@
 //   render-cli in.wav out.wav --set "Input Gain=+6 dB" --set "Low Cut=120 Hz"
 //   render-cli in.wav out.wav --at 48000 "Mix=50%" --block 257
 //   render-cli in.wav out.wav --sidechain key.wav     (PRODUCT_SIDECHAIN)
+//   render-cli in.wav out.wav --preset "Wide Pan" --set "Depth=40%"
 //   render-cli --list
 //
 // Aux outputs (PRODUCT_AUX_OUTPUTS) are written beside the output, one file
@@ -25,6 +26,8 @@
 
 #include "core/Engine.h"
 #include "core/ParamTable.h"
+#include "core/Preset.h"
+#include "core/PropertyTable.h"
 #include "ProductInfo.h"
 #include "wav.h"
 
@@ -37,7 +40,9 @@ void usage() {
         "%s %s offline renderer\n\n"
         "  render-cli <input.wav> <output.wav> [options]\n"
         "  render-cli --list               the parameter table: names, ranges, defaults\n\n"
+        "  --preset \"Name\"                 a factory preset first (PRODUCT_PRESETS); --set overrides it\n"
         "  --set \"Name=value\"              a parameter, in its own text (\"-6 dB\", \"1.2k\", \"50%%\")\n"
+        "  --property \"Name=text\"          a property (product/Properties.h)\n"
         "  --at <frame> \"Name=value\"       the same, changed at that sample frame\n"
         "  --block <frames>                host block size (default 512); repeat to cycle sizes\n"
         "  --bits <24|32>                  24-bit PCM or 32-bit float (default)\n"
@@ -57,6 +62,12 @@ void list() {
         formatValue(p, hostDefault(p), def, sizeof(def));
         std::printf("%-28s %-18s %-18s %s%s\n", p.name, lo, hi, def, p.isOutput() ? "  (output)" : "");
     }
+    for (size_t i = 0; i < properties::kCount; ++i)
+        std::printf("%s%-28s \"%s\"%s\n", i == 0 ? "\nproperties\n" : "", properties::at(i).name,
+                    properties::at(i).def, properties::at(i).perProjectOnly() ? "  (per project)" : "");
+    for (size_t i = 0; i < presets::kFactoryCount; ++i)
+        std::printf("%s%-28s %s\n", i == 0 ? "\nfactory presets\n" : "", presets::factory(i).name,
+                    presets::factory(i).category);
 }
 
 struct Change {
@@ -108,6 +119,8 @@ int main(int argc, char** argv) {
     }
     std::string input, output, sidechainFile;
     std::vector<Change> changes;
+    std::vector<std::pair<size_t, std::string>> propertyValues;
+    int preset = -1;
     std::vector<int> blocks;
     int bits = 32;
     for (int i = 1; i < argc; ++i) {
@@ -119,6 +132,24 @@ int main(int argc, char** argv) {
         } else if (arg == "--at" && i + 2 < argc) {
             const int frame = std::atoi(argv[++i]);
             if (!parseAssignment(argv[++i], std::max(0, frame), changes)) return 2;
+        } else if (arg == "--preset" && i + 1 < argc) {
+            preset = presets::findFactory(argv[++i]);
+            if (preset < 0) {
+                std::fprintf(stderr, "error: no factory preset named \"%s\" (try --list)\n", argv[i]);
+                return 2;
+            }
+        } else if (arg == "--property" && i + 1 < argc) {
+            const std::string text = argv[++i];
+            const size_t eq = text.find('=');
+            int k = -1;
+            for (size_t j = 0; eq != std::string::npos && j < properties::kCount; ++j)
+                if (text.compare(0, eq, properties::at(j).name) == 0 && std::strlen(properties::at(j).name) == eq)
+                    k = static_cast<int>(j);
+            if (k < 0 || !properties::accepts(static_cast<size_t>(k), text.substr(eq + 1))) {
+                std::fprintf(stderr, "error: cannot set property \"%s\" (try --list)\n", text.c_str());
+                return 2;
+            }
+            propertyValues.push_back({static_cast<size_t>(k), text.substr(eq + 1)});
         } else if (arg == "--block" && i + 1 < argc) {
             blocks.push_back(std::max(1, std::atoi(argv[++i])));
         } else if (arg == "--bits" && i + 1 < argc) {
@@ -179,6 +210,19 @@ int main(int argc, char** argv) {
         for (auto& c : bus.ch) std::fill(c.begin(), c.end(), 0.0);
 
     auto engine = std::make_unique<Engine>();
+    if (preset >= 0) {
+        // What loading it in the editor does: its values, defaults for the rest.
+        const Preset& p = presets::factory(static_cast<size_t>(preset));
+        for (const PresetValue& v : p.values) {
+            const int i = params::indexOf(v.id);
+            if (i >= 0) engine->store().set(static_cast<size_t>(i), toHost(params::at(static_cast<size_t>(i)), v.plain));
+        }
+        for (const PresetText& t : p.texts) {
+            const int i = properties::indexOf(t.id);
+            if (i >= 0) engine->properties().set(static_cast<size_t>(i), t.value);
+        }
+    }
+    for (const auto& [k, value] : propertyValues) engine->properties().set(k, value);
     std::stable_sort(changes.begin(), changes.end(), [](const Change& a, const Change& b) { return a.frame < b.frame; });
     size_t next = 0;
     while (next < changes.size() && changes[next].frame == 0) {

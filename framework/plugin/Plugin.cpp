@@ -9,8 +9,9 @@
 // EditBridge; text to core/Param.h; state to core/StateFormat.h. What is left
 // is the CLAP surface and the threading contract around it:
 //
-//   main thread   init, activate, state, params info/text, gui, timers,
-//                 on_main_thread. Writes only the ParamStore.
+//   main thread   init, activate, state, presets, params info/text, gui,
+//                 timers, on_main_thread. Writes only the ParamStore and the
+//                 PropertyStore.
 //   audio thread  process, reset, and params.flush while active. The only
 //                 thread that touches the processor while it is active.
 //
@@ -22,6 +23,8 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -30,10 +33,14 @@
 
 #include "core/Engine.h"
 #include "core/ParamTable.h"
+#include "core/Preset.h"
+#include "core/PresetLibrary.h"
+#include "core/PropertyTable.h"
 #include "core/Realtime.h"
 #include "core/StateFormat.h"
 #include "plugin/EditBridge.h"
 #include "plugin/Entry.h"
+#include "plugin/PresetDiscovery.h"
 #include "plugin/TestHooks.h"
 #include "ProductInfo.h"
 
@@ -160,9 +167,9 @@ class ClapEvents {
 
 // --- the plugin -------------------------------------------------------------------
 
-struct Plugin
+struct Plugin : StateAccess
 #if SUPPLE_WITH_GUI
-    : gui::EditorHost
+    , gui::EditorHost
 #endif
 {
     clap_plugin_t clap{};
@@ -173,6 +180,8 @@ struct Plugin
     const clap_host_gui_t* hostGui = nullptr;
     const clap_host_tail_t* hostTail = nullptr;
     const clap_host_voice_info_t* hostVoiceInfo = nullptr;
+    const clap_host_state_t* hostState = nullptr;
+    const clap_host_preset_load_t* hostPresetLoad = nullptr;
 
     Engine engine;
     EditBridge edits;
@@ -189,9 +198,121 @@ struct Plugin
     std::atomic<double> heardOutputs[kOutputSlots];
     bool resendOutputs = true;  // audio thread: after activation, tell the host every value once
 
+    // The preset library (main thread), for a product with presets.
+    std::unique_ptr<PresetLibrary> presets;
+
     Plugin() {
         for (size_t k = 0; k < params::kOutputCount; ++k)
             heardOutputs[k].store(hostDefault(params::at(params::kOutputIndices[k])), std::memory_order_relaxed);
+    }
+
+    // --- state (main thread) -------------------------------------------------------
+
+    double currentEditorScale() const {
+#if SUPPLE_WITH_GUI
+        return editor ? editor->userScale() : editorScale;
+#else
+        return editorScale;
+#endif
+    }
+
+    std::vector<uint8_t> save(state::Context context) {
+        engine.properties().collect();
+        state::Snapshot s;
+        for (size_t i = 0; i < params::kCount; ++i) s.host[i] = engine.store().get(i);
+        for (size_t i = 0; i < properties::kCount; ++i) {
+            s.property[i] = engine.properties().get(i);
+            s.hasProperty[i] = true;
+        }
+        s.editorScale = currentEditorScale();
+        if (presets && context == state::Context::Project) presets->describe(s);
+        return state::save(kStateMagic, s, context);
+    }
+
+    bool load(const uint8_t* data, size_t size, state::Context context) {
+        state::Snapshot snapshot;
+        const state::LoadResult result = state::load(data, size, kStateMagic, snapshot);
+        if (result == state::LoadResult::Corrupt) return false;
+        if (result == state::LoadResult::NotOurs) {
+            const bool legacy = product::Processor::loadLegacyState(data, size, [&](uint32_t id, double plainValue) {
+                const int i = params::indexOf(id);
+                if (i >= 0 && std::isfinite(plainValue))
+                    snapshot.host[i] = toHost(params::at(static_cast<size_t>(i)), plainValue);
+            });
+            if (!legacy) return false;
+        }
+        apply(snapshot, context);
+        return true;
+    }
+
+    // Everything the snapshot holds, for its context: a preset changes the
+    // sound and leaves the session (editor size, perProject() properties,
+    // which preset is loaded) as it was.
+    void apply(const state::Snapshot& snapshot, state::Context context) {
+        const bool session = context == state::Context::Project;
+        const bool restart = active && restartParamsDiffer(snapshot.host);
+        // Only the stores are written here; the audio thread applies them.
+        // Outputs are the processor's, and state does not carry them.
+        for (size_t i = 0; i < params::kCount; ++i)
+            if (!params::at(i).isOutput()) engine.store().set(i, snapshot.host[i]);
+        for (size_t i = 0; i < properties::kCount; ++i) {
+            if (!session && properties::at(i).perProjectOnly()) continue;
+            engine.properties().set(i, snapshot.hasProperty[i] ? std::string_view(snapshot.property[i])
+                                                               : std::string_view(properties::at(i).def));
+        }
+        if (session && snapshot.editorScale > 0.0) restoreEditorScale(snapshot.editorScale);
+        if (session && presets) presets->restore(snapshot);
+        if (hostParams && hostParams->rescan) hostParams->rescan(host, CLAP_PARAM_RESCAN_VALUES);
+        if (restart) requestRestart();
+        // A stopped host would otherwise apply the new values only when it
+        // next processes; a flush applies them now.
+        if (active) requestFlush();
+    }
+
+    void restoreEditorScale(double scale) {
+        editorScale = scale;
+#if SUPPLE_WITH_GUI
+        if (editor) {
+            // The host decides: ask first, and resize only if it agrees. A
+            // refusal keeps the open editor as it is, and that is what saves.
+            uint32_t w = 0, h = 0, cw = 0, ch = 0;
+            editor->sizeAt(scale, w, h);
+            editor->size(cw, ch);
+            if (w != cw || h != ch) {
+                if (hostGui && hostGui->request_resize && hostGui->request_resize(host, w, h))
+                    editor->setUserScale(scale);
+                else
+                    editorScale = editor->userScale();
+            }
+        }
+#endif
+    }
+
+    // The session changed from inside the plugin; the host should save it.
+    void markDirty() {
+        if (hostState && hostState->mark_dirty) hostState->mark_dirty(host);
+    }
+
+    // --- StateAccess: the preset library's loads are the plugin's own -------------
+    std::vector<uint8_t> saveState(state::Context context) override { return save(context); }
+    bool loadState(const uint8_t* data, size_t size, state::Context context) override {
+        if (!load(data, size, context)) return false;
+        markDirty();
+        return true;
+    }
+
+    void createPresets() {
+        if constexpr (!info::kPresets) return;
+        presets = std::make_unique<PresetLibrary>(*this, PresetLibrary::defaultUserFolder());
+        presets->onLoaded = [this](const PresetLibrary::Entry& entry) {
+            if (!hostPresetLoad || !hostPresetLoad->loaded) return;
+            if (entry.user()) {
+                const std::string path = PresetLibrary::toUtf8(entry.file);
+                hostPresetLoad->loaded(host, CLAP_PRESET_DISCOVERY_LOCATION_FILE, path.c_str(), nullptr);
+            } else {
+                hostPresetLoad->loaded(host, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, entry.name.c_str());
+            }
+        };
     }
 
     // Reasons for the next on_main_thread, set from any thread.
@@ -392,6 +513,23 @@ struct Plugin
         edits.end(static_cast<size_t>(i));
         requestFlush();
     }
+    std::string_view property(uint32_t id) const override {
+        const int i = properties::indexOf(id);
+        return i >= 0 ? std::string_view(engine.properties().get(static_cast<size_t>(i))) : std::string_view();
+    }
+    bool setProperty(uint32_t id, std::string_view value) override {
+        const int i = properties::indexOf(id);
+        if (i < 0) return false;
+        const uint64_t before = engine.properties().version();
+        if (!engine.properties().set(static_cast<size_t>(i), value)) return false;
+        if (engine.properties().version() != before) {
+            markDirty();
+            if (active) requestFlush();
+        }
+        return true;
+    }
+    uint64_t propertiesVersion() const override { return engine.properties().version(); }
+    PresetLibrary* presetLibrary() override { return presets.get(); }
     bool popTelemetry(TelemetryFrame& frame) override { return engine.telemetry().pop(frame); }
     int latencySamples() const override { return engine.latency(); }
     double sampleRate() const override { return engine.sampleRate(); }
@@ -709,16 +847,7 @@ const clap_plugin_params_t kParams = {paramsCount, paramsInfo, paramsValue, para
 
 // --- state ---------------------------------------------------------------------------------
 
-bool CLAP_ABI stateSave(const clap_plugin_t* p, const clap_ostream_t* stream) {
-    Plugin* s = self(p);
-    double host[params::kCount];
-    for (size_t i = 0; i < params::kCount; ++i) host[i] = s->engine.store().get(i);
-#if SUPPLE_WITH_GUI
-    const double scale = s->editor ? s->editor->userScale() : s->editorScale;
-#else
-    const double scale = s->editorScale;
-#endif
-    const std::vector<uint8_t> bytes = state::save(kStateMagic, host, scale);
+bool writeAll(const clap_ostream_t* stream, const std::vector<uint8_t>& bytes) {
     size_t written = 0;
     while (written < bytes.size()) {
         const int64_t n = stream->write(stream, bytes.data() + written, bytes.size() - written);
@@ -728,61 +857,60 @@ bool CLAP_ABI stateSave(const clap_plugin_t* p, const clap_ostream_t* stream) {
     return true;
 }
 
-bool CLAP_ABI stateLoad(const clap_plugin_t* p, const clap_istream_t* stream) {
-    Plugin* s = self(p);
-    std::vector<uint8_t> bytes;
+bool readAll(const clap_istream_t* stream, std::vector<uint8_t>& bytes) {
     uint8_t chunk[4096];
     for (;;) {
         const int64_t n = stream->read(stream, chunk, sizeof(chunk));
         if (n < 0) return false;
-        if (n == 0) break;
+        if (n == 0) return true;
         bytes.insert(bytes.end(), chunk, chunk + n);
         if (bytes.size() > (64u << 20)) return false;  // not ours, whatever it is
     }
-
-    state::Snapshot snapshot;
-    const state::LoadResult result = state::load(bytes.data(), bytes.size(), kStateMagic, snapshot);
-    if (result == state::LoadResult::Corrupt) return false;
-    if (result == state::LoadResult::NotOurs) {
-        const bool legacy = product::Processor::loadLegacyState(
-            bytes.data(), bytes.size(), [&](uint32_t id, double plainValue) {
-                const int i = params::indexOf(id);
-                if (i >= 0 && std::isfinite(plainValue))
-                    snapshot.host[i] = toHost(params::at(static_cast<size_t>(i)), plainValue);
-            });
-        if (!legacy) return false;
-    }
-
-    const bool restart = s->active && s->restartParamsDiffer(snapshot.host);
-    // Only the store is written here; the audio thread applies it. Outputs
-    // are the processor's, and state does not carry them.
-    for (size_t i = 0; i < params::kCount; ++i)
-        if (!params::at(i).isOutput()) s->engine.store().set(i, snapshot.host[i]);
-    if (snapshot.editorScale > 0.0) {
-        s->editorScale = snapshot.editorScale;
-#if SUPPLE_WITH_GUI
-        if (s->editor) {
-            // The host decides: ask first, and resize only if it agrees. A
-            // refusal keeps the open editor as it is, and that is what saves.
-            uint32_t w = 0, h = 0, cw = 0, ch = 0;
-            s->editor->sizeAt(snapshot.editorScale, w, h);
-            s->editor->size(cw, ch);
-            if (w != cw || h != ch) {
-                if (s->hostGui && s->hostGui->request_resize && s->hostGui->request_resize(s->host, w, h))
-                    s->editor->setUserScale(snapshot.editorScale);
-                else
-                    s->editorScale = s->editor->userScale();
-            }
-        }
-#endif
-    }
-    if (s->hostParams && s->hostParams->rescan) s->hostParams->rescan(s->host, CLAP_PARAM_RESCAN_VALUES);
-    if (restart) s->requestRestart();
-    // A stopped host would otherwise apply the new values only when it next
-    // processes; a flush applies them now.
-    if (s->active) s->requestFlush();
-    return true;
 }
+
+bool CLAP_ABI stateSave(const clap_plugin_t* p, const clap_ostream_t* stream) {
+    return writeAll(stream, self(p)->save(state::Context::Project));
+}
+
+bool CLAP_ABI stateLoad(const clap_plugin_t* p, const clap_istream_t* stream) {
+    std::vector<uint8_t> bytes;
+    return readAll(stream, bytes) && self(p)->load(bytes.data(), bytes.size(), state::Context::Project);
+}
+
+state::Context contextOf(uint32_t type) {
+    return type == CLAP_STATE_CONTEXT_FOR_PRESET ? state::Context::Preset : state::Context::Project;
+}
+
+bool CLAP_ABI stateContextSave(const clap_plugin_t* p, const clap_ostream_t* stream, uint32_t type) {
+    return writeAll(stream, self(p)->save(contextOf(type)));
+}
+
+bool CLAP_ABI stateContextLoad(const clap_plugin_t* p, const clap_istream_t* stream, uint32_t type) {
+    std::vector<uint8_t> bytes;
+    return readAll(stream, bytes) && self(p)->load(bytes.data(), bytes.size(), contextOf(type));
+}
+
+const clap_plugin_state_context_t kStateContext = {stateContextSave, stateContextLoad};
+
+// --- presets (main thread) ----------------------------------------------------------------
+
+bool CLAP_ABI presetFromLocation(const clap_plugin_t* p, uint32_t kind, const char* location, const char* loadKey) {
+    Plugin* s = self(p);
+    bool ok = false;
+    if (s->presets) {
+        if (kind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN) {
+            const int index = presets::findFactory(loadKey);
+            ok = index >= 0 && s->presets->loadFactory(static_cast<size_t>(index));
+        } else if (kind == CLAP_PRESET_DISCOVERY_LOCATION_FILE && location) {
+            ok = s->presets->loadFile(PresetLibrary::fromUtf8(location));
+        }
+    }
+    if (!ok && s->hostPresetLoad && s->hostPresetLoad->on_error)
+        s->hostPresetLoad->on_error(s->host, kind, location, loadKey, 0, "not a preset of this plugin");
+    return ok;
+}
+
+const clap_plugin_preset_load_t kPresetLoad = {presetFromLocation};
 
 const clap_plugin_state_t kState = {stateSave, stateLoad};
 
@@ -940,6 +1068,10 @@ bool CLAP_ABI pluginInit(const clap_plugin_t* p) {
     s->hostGui = s->hostExtension<const clap_host_gui_t>(CLAP_EXT_GUI);
     s->hostTail = s->hostExtension<const clap_host_tail_t>(CLAP_EXT_TAIL);
     s->hostVoiceInfo = s->hostExtension<const clap_host_voice_info_t>(CLAP_EXT_VOICE_INFO);
+    s->hostState = s->hostExtension<const clap_host_state_t>(CLAP_EXT_STATE);
+    s->hostPresetLoad = s->hostExtension<const clap_host_preset_load_t>(CLAP_EXT_PRESET_LOAD);
+    if (!s->hostPresetLoad) s->hostPresetLoad = s->hostExtension<const clap_host_preset_load_t>(CLAP_EXT_PRESET_LOAD_COMPAT);
+    s->createPresets();
     return true;
 }
 
@@ -1088,6 +1220,10 @@ const void* CLAP_ABI pluginExtension(const clap_plugin_t*, const char* id) {
     if (info::kNoteInput && !std::strcmp(id, CLAP_PLUGIN_AS_VST3)) return &kAsVst3;
     if (!std::strcmp(id, CLAP_EXT_PARAMS)) return &kParams;
     if (!std::strcmp(id, CLAP_EXT_STATE)) return &kState;
+    if (!std::strcmp(id, CLAP_EXT_STATE_CONTEXT)) return &kStateContext;
+    if (info::kPresets &&
+        (!std::strcmp(id, CLAP_EXT_PRESET_LOAD) || !std::strcmp(id, CLAP_EXT_PRESET_LOAD_COMPAT)))
+        return &kPresetLoad;
     if (!std::strcmp(id, CLAP_EXT_LATENCY)) return &kLatency;
     if (!std::strcmp(id, CLAP_EXT_TAIL)) return &kTail;
 #if SUPPLE_WITH_GUI
@@ -1100,6 +1236,7 @@ const void* CLAP_ABI pluginExtension(const clap_plugin_t*, const char* id) {
 void CLAP_ABI pluginOnMainThread(const clap_plugin_t* p) {
     Plugin* s = self(p);
     s->callbackRequested.store(false, std::memory_order_release);
+    s->engine.properties().collect();
     if (s->restartWanted.exchange(false, std::memory_order_acq_rel)) s->requestRestart();
     if (s->voicesChanged.exchange(false, std::memory_order_acq_rel) && s->hostVoiceInfo && s->hostVoiceInfo->changed)
         s->hostVoiceInfo->changed(s->host);
@@ -1157,5 +1294,10 @@ void supple_test_set_metering(const clap_plugin_t* plugin, bool on) {
 bool supple_entry_init(const char*) { return true; }
 void supple_entry_deinit() {}
 const void* supple_entry_get_factory(const char* factoryId) {
-    return factoryId && !std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) ? &supple::plugin::kFactory : nullptr;
+    if (!factoryId) return nullptr;
+    if (!std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID)) return &supple::plugin::kFactory;
+    if (supple::presets::kEnabled && (!std::strcmp(factoryId, CLAP_PRESET_DISCOVERY_FACTORY_ID) ||
+                                      !std::strcmp(factoryId, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT)))
+        return supple::plugin::presetDiscoveryFactory();
+    return nullptr;
 }

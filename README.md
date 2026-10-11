@@ -29,6 +29,8 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 product/
   product.cmake   identity, kind, layouts, capabilities, sources
   Params.h        every parameter: one row each
+  Properties.h    state that is not a parameter (optional)
+  Presets.h       factory presets (optional, with PRODUCT_PRESETS ON)
   Processor.h     the DSP
   Editor.cpp      layout and the product's own drawing
   Theme.h         the palette
@@ -49,12 +51,12 @@ beside `framework/`, not in it, so products do not carry them.
 | Example | What it shows |
 | --- | --- |
 | `instrument` (Tone) | Notes at their exact sample, voices and voice info, note ends for the host, pitch bend and the mod wheel, tuning and volume note expressions, per-note modulation of a parameter |
-| `pulse` (Pulse) | A tempo-synced rate, framework-smoothed parameters, a level off at its minimum (-inf dB), an output parameter the host displays |
+| `pulse` (Pulse) | A tempo-synced rate, framework-smoothed parameters, a level off at its minimum (-inf dB), an output parameter the host displays, factory presets in categories and the preset bar |
 | `duck` (Duck) | A sidechain input, a named aux output, surround (5.1, 7.1.4) and ambisonic layouts |
-| `chord` (Chord) | A note effect: notes and MIDI in and out, no audio, notes sent at exact frames |
+| `chord` (Chord) | A note effect: notes and MIDI in and out, no audio, notes sent at exact frames; properties (a chord typed as text, a per-project label) and presets that set them |
 
 Bigger capabilities are switched on in `product.cmake` (`PRODUCT_SIDECHAIN ON`,
-`PRODUCT_AUX_OUTPUTS "Kick" "Snare"`, `PRODUCT_NOTE_OUTPUT ON`, ...); a product
+`PRODUCT_AUX_OUTPUTS "Kick" "Snare"`, `PRODUCT_NOTE_OUTPUT ON`, `PRODUCT_PRESETS ON`, ...); a product
 that switches nothing on is a plain effect or instrument.
 
 ## Read next

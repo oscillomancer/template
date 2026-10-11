@@ -85,7 +85,6 @@ int64_t CLAP_ABI memRead(const clap_istream* s, void* p, uint64_t n) {
 // counts the requests so the test can assert they only happen when latency
 // genuinely moves.
 int g_restarts = 0;
-int g_callbacks = 0;
 const clap_plugin_t* g_plug = nullptr;
 
 const void* CLAP_ABI hostGetExtension(const clap_host*, const char*) { return nullptr; }
@@ -96,7 +95,6 @@ void CLAP_ABI hostRequestProcess(const clap_host*) {}
 // the plugin reach its on_main_thread path, which is where the restart request
 // is actually made.
 void CLAP_ABI hostRequestCallback(const clap_host*) {
-    ++g_callbacks;
     if (g_plug) g_plug->on_main_thread(g_plug);
 }
 
@@ -532,6 +530,69 @@ int main(int argc, char** argv) {
             std::printf("     first difference at sample %zu: %g vs %g\n", first, reused[first], clean[first]);
         check(reused.size() == clean.size() && first == reused.size(),
               "after state + reset(), output equals a fresh instance's");
+    }
+
+    // --- presets, as a host's browser finds and loads them ---
+    check(plug->get_extension(plug, CLAP_EXT_STATE_CONTEXT) != nullptr, "advertises state-context");
+    if (auto* discovery = (const clap_preset_discovery_factory_t*)entry->get_factory(CLAP_PRESET_DISCOVERY_FACTORY_ID)) {
+        auto* load = (const clap_plugin_preset_load_t*)plug->get_extension(plug, CLAP_EXT_PRESET_LOAD);
+        check(load != nullptr && discovery->count(discovery) == 1, "presets: one provider, and preset-load");
+        struct Found {
+            std::vector<std::string> keys;
+            bool plugin = false;
+        } found;
+        clap_preset_discovery_indexer_t indexer{};
+        indexer.clap_version = CLAP_VERSION;
+        indexer.name = "host-smoke";
+        indexer.indexer_data = &found;
+        indexer.declare_filetype = [](const clap_preset_discovery_indexer_t*, const clap_preset_discovery_filetype_t*) {
+            return true;
+        };
+        indexer.declare_location = [](const clap_preset_discovery_indexer_t* x, const clap_preset_discovery_location_t* l) {
+            if (l->kind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN) static_cast<Found*>(x->indexer_data)->plugin = true;
+            return true;
+        };
+        indexer.declare_soundpack = [](const clap_preset_discovery_indexer_t*, const clap_preset_discovery_soundpack_t*) {
+            return true;
+        };
+        indexer.get_extension = [](const clap_preset_discovery_indexer_t*, const char*) -> const void* { return nullptr; };
+        const auto* provider = discovery->create(discovery, &indexer, discovery->get_descriptor(discovery, 0)->id);
+        check(provider && provider->init(provider), "presets: the provider initialises");
+        clap_preset_discovery_metadata_receiver_t receiver{};
+        receiver.receiver_data = &found;
+        receiver.on_error = [](const clap_preset_discovery_metadata_receiver_t*, int32_t, const char*) {};
+        receiver.begin_preset = [](const clap_preset_discovery_metadata_receiver_t* r, const char*, const char* key) {
+            static_cast<Found*>(r->receiver_data)->keys.push_back(key ? key : "");
+            return true;
+        };
+        receiver.add_plugin_id = [](const clap_preset_discovery_metadata_receiver_t*, const clap_universal_plugin_id_t*) {};
+        receiver.set_soundpack_id = [](const clap_preset_discovery_metadata_receiver_t*, const char*) {};
+        receiver.set_flags = [](const clap_preset_discovery_metadata_receiver_t*, uint32_t) {};
+        receiver.add_creator = [](const clap_preset_discovery_metadata_receiver_t*, const char*) {};
+        receiver.set_description = [](const clap_preset_discovery_metadata_receiver_t*, const char*) {};
+        receiver.set_timestamps = [](const clap_preset_discovery_metadata_receiver_t*, clap_timestamp, clap_timestamp) {};
+        receiver.add_feature = [](const clap_preset_discovery_metadata_receiver_t*, const char*) {};
+        receiver.add_extra_info = [](const clap_preset_discovery_metadata_receiver_t*, const char*, const char*) {};
+        if (provider && found.plugin) {
+            check(provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, &receiver),
+                  "presets: the factory presets are listed");
+            // Each one loaded while processing, as a host's browser does.
+            bool loaded = true, stillFinite = true;
+            for (const std::string& key : found.keys) {
+                loaded = loaded && load && load->from_location(plug, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, key.c_str());
+                for (int b = 0; b < 4; ++b) {
+                    quiet();
+                    stillFinite = stillFinite && plug->process(plug, &proc) != CLAP_PROCESS_ERROR;
+                    buses.forEachOutput([&](float* c) {
+                        for (uint32_t k = 0; k < block; ++k) stillFinite = stillFinite && std::isfinite(c[k]);
+                    });
+                }
+            }
+            std::printf("     %zu factory presets\n", found.keys.size());
+            check(loaded && !found.keys.empty(), "presets: every factory preset loads by its key");
+            check(stillFinite, "presets: and processes cleanly after each");
+        }
+        if (provider) provider->destroy(provider);
     }
 
     plug->stop_processing(plug);

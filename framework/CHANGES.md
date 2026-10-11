@@ -4,6 +4,41 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.8.0
+
+State and presets. Nothing for a product to do: one that uses none of it
+saves the same bytes as before. A product with the old preset-less state
+loads into the new framework unchanged.
+
+- **Properties** (`product/Properties.h`, optional; `core/Property.h`):
+  state that is not a parameter, by ID, as text or bytes, `.perProject()`
+  for what presets leave alone. The processor hears them in
+  `property(id, value)` on the audio thread, through a lock-free handoff
+  (`core/PropertyStore.h`); the editor edits one with `ui().textField(id,
+  rect)` or `host().property/setProperty`.
+- **Presets** (`PRODUCT_PRESETS ON`, factory ones in `product/Presets.h`,
+  `core/Preset.h`): checked at compile time; user presets saved, renamed and
+  deleted in a per-platform folder (`core/PresetLibrary.h`); the editor's
+  preset bar (`ui().presetBar(rect)`) with A/B comparison and the whole state
+  copied and pasted as text; CLAP preset discovery and preset-load for
+  hosts' browsers; the host told what the editor loaded, and that the
+  session changed (`state.mark_dirty`).
+- **State context**: CLAP's state-context extension. A preset leaves out the
+  editor size, perProject properties and the preset name; loading one leaves
+  them alone. A session remembers its preset and whether it changed.
+- **Editor**: `ui().popup()` for a menu of the product's own (headers,
+  separators, disabled items, scrolling when long), which the dropdown now
+  uses too, and `ui().prompt()` for a line of UTF-8 text. `Ui::Menu::count`
+  is now a method. The window provides the system clipboard (pugl's).
+- **Tools**: `render-cli --preset` and `--property`; `gui-preview --preset`,
+  `--property`, `--menu Presets`, `--text <property>`.
+- `noteValueOf("1/8")`: a note value's plain value, for preset tables.
+- clap-validator runs without its `preset-discovery-crawl` and `-load` tests
+  for a product with presets: 0.4.1 deadlocks in its own receiver on a
+  container's second preset. The framework's tests crawl and load instead.
+- Not yet: file references that survive a moved project. They arrive with
+  file loading, which needs a file chooser and a background loader first.
+
 ## 1.7.1
 
 The CI probes take any kind of product. Nothing for a product to do; a

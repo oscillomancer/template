@@ -78,7 +78,25 @@ value, which round-trips exactly: save, load and save again is byte-identical.
 Hosts that compare state to detect a modified project rely on that, and
 clap-validator checks it. Unknown chunks and IDs are skipped, missing ones
 default, and a blob that does not parse completely changes nothing. The
-editor's size travels in its own chunk.
+editor's size travels in its own chunk, properties in another (a value too
+long for its property now is dropped and its default stands), and the name of
+the loaded preset in a third. A product that uses none of these saves the same
+bytes it always did.
+
+A preset is the same format saved in the preset context: no editor size, no
+preset name, no perProject property. Loading in that context changes the sound
+and leaves the session alone. Because state round-trips exactly, "modified" is
+a byte comparison of the state now with the state just after the preset
+loaded, and A/B is two such states. Copy and paste carry a preset-context
+state as base64 after the product's name, so a pasted line from another
+product is refused by its tag.
+
+Properties reach the processor without a lock: the main thread keeps every
+value and publishes a fresh copy of a changed one into its mailbox; the audio
+thread swaps it in at the next block and hands back the copy it replaced
+through a queue the main thread empties. The audio thread only exchanges
+pointers. When that queue is full a delivery waits a block rather than
+freeing anything on the audio thread.
 
 ## Latency, restart, bypass, tail
 

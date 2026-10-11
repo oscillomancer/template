@@ -7,7 +7,9 @@
 // repaint follows changes from anywhere, and the layout is sane.
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <map>
+#include <memory>
 #include <random>
 #include <string>
 
@@ -15,6 +17,9 @@
 #include "HeadlessCanvas.h"
 #include "core/Engine.h"
 #include "core/ParamTable.h"
+#include "core/Preset.h"
+#include "core/PresetLibrary.h"
+#include "core/PropertyTable.h"
 #include "gui/EditorBase.h"
 #include "ProductInfo.h"
 #include "gui/Ui.h"
@@ -24,17 +29,58 @@ using namespace supple::gui;
 
 namespace {
 
-// A host that records the gesture protocol and objects to every breach.
-struct MockHost : EditorHost {
+// A host that records the gesture protocol and objects to every breach. It
+// keeps properties, and a preset library over a folder of its own.
+struct MockHost : EditorHost, StateAccess {
     double values[params::kCount];
     double mods[params::kCount]{};
     bool open[params::kCount]{};
-    int openCount = 0, maxOpen = 0, begins = 0, ends = 0, sets = 0;
+    int openCount = 0, maxOpen = 0, begins = 0, ends = 0, sets = 0, propertySets = 0;
     bool nested = false, strayEnd = false, valueOutsideGesture = false;
     TelemetryRing ring;
+    PropertyStore props;
+    std::filesystem::path folder;
+    std::unique_ptr<PresetLibrary> presets;
 
     MockHost() {
         for (size_t i = 0; i < params::kCount; ++i) values[i] = hostDefault(params::at(i));
+        folder = std::filesystem::temp_directory_path() / ("supple-ui-presets-" + std::to_string(std::random_device{}()));
+        presets = std::make_unique<PresetLibrary>(*this, folder);
+    }
+    ~MockHost() override {
+        presets.reset();
+        std::error_code ec;
+        std::filesystem::remove_all(folder, ec);
+    }
+    std::string_view property(uint32_t id) const override {
+        const int i = properties::indexOf(id);
+        return i >= 0 ? std::string_view(props.get(static_cast<size_t>(i))) : std::string_view();
+    }
+    bool setProperty(uint32_t id, std::string_view value) override {
+        const int i = properties::indexOf(id);
+        ++propertySets;
+        return i >= 0 && props.set(static_cast<size_t>(i), value);
+    }
+    uint64_t propertiesVersion() const override { return props.version(); }
+    PresetLibrary* presetLibrary() override { return presets.get(); }
+    std::vector<uint8_t> saveState(state::Context context) override {
+        state::Snapshot s;
+        for (size_t i = 0; i < params::kCount; ++i) s.host[i] = values[i];
+        for (size_t i = 0; i < properties::kCount; ++i) {
+            s.property[i] = props.get(i);
+            s.hasProperty[i] = true;
+        }
+        return state::save(state::fourcc(product::info::kStateTag), s, context);
+    }
+    bool loadState(const uint8_t* data, size_t size, state::Context) override {
+        state::Snapshot s;
+        if (state::load(data, size, state::fourcc(product::info::kStateTag), s) != state::LoadResult::Ok) return false;
+        for (size_t i = 0; i < params::kCount; ++i)
+            if (!params::at(i).isOutput()) values[i] = s.host[i];
+        for (size_t i = 0; i < properties::kCount; ++i)
+            if (!properties::at(i).perProjectOnly())
+                props.set(i, s.hasProperty[i] ? std::string_view(s.property[i]) : std::string_view(properties::at(i).def));
+        return true;
     }
     static size_t slot(uint32_t id) {
         const int i = params::indexOf(id);
@@ -380,6 +426,229 @@ TEST(a_control_on_an_output_only_displays_it) {
     CHECK(host.clean());
 }
 
+// --- text fields, menus, prompts, the preset bar ---------------------------------------------
+
+TEST(a_text_field_edits_its_property_as_utf8) {
+    if constexpr (properties::kCount == 0) {
+        std::puts("      (no properties in this product)");
+        return;
+    }
+    MockHost host;
+    Ui ui{host, 800.0f, 600.0f};
+    const PropertyDef& d = properties::at(0);
+    const Control& field = ui.textField(d.id, {20, 20, 300, 26});
+    CHECK(ui.interactive(0) && ui.state(0).text == d.def);
+    ui.pointerDown(field.bounds.cx(), field.bounds.cy(), 0, 0, false);
+    CHECK(ui.textEdit().open && ui.textEdit().selectAll && !ui.textEdit().ascii);
+    ui.text('a');
+    ui.text(0xE9);     // é: two bytes
+    ui.text(0x1F600);  // four
+    CHECK(ui.textEdit().length == 7);
+    ui.key(key::kBackspace, 0);  // a whole character, not a byte
+    CHECK(ui.textEdit().length == 3);
+    ui.key(key::kLeft, 0);
+    CHECK(ui.textEdit().caret == 1);
+    ui.key(key::kEnter, 0);
+    CHECK(!ui.textEdit().open && host.property(d.id) == "a\xC3\xA9");
+    CHECK(ui.state(0).text == "a\xC3\xA9");
+
+    // Typing stops at the property's limit.
+    ui.key(key::kEnter, 0);  // focused: Enter opens it again
+    CHECK(ui.textEdit().open);
+    for (uint32_t k = 0; k < d.limit + 10 && k < 300; ++k) ui.text('z');
+    CHECK(ui.textEdit().length == static_cast<int>(std::min<uint32_t>(d.limit, Ui::TextEdit::kCapacity - 1)));
+    ui.key(key::kEscape, 0);  // abandoned: nothing changes
+    CHECK(!ui.textEdit().open && host.property(d.id) == "a\xC3\xA9");
+    // A click elsewhere abandons it too.
+    ui.pointerDown(field.bounds.cx(), field.bounds.cy(), 0, 0, false);
+    ui.text('q');
+    ui.pointerDown(700, 500, 0, 0, false);
+    CHECK(!ui.textEdit().open && host.property(d.id) == "a\xC3\xA9");
+    CHECK(host.clean() && host.begins == 0);  // no parameter gesture anywhere
+}
+
+TEST(a_popup_skips_what_cannot_be_chosen_and_scrolls) {
+    MockHost host;
+    Ui ui{host, 400.0f, 300.0f};
+    std::vector<MenuItem> items;
+    for (int k = 0; k < 40; ++k) {
+        if (k % 10 == 0) items.push_back(MenuItem::header("Group " + std::to_string(k / 10)));
+        else if (k % 10 == 9) items.push_back(MenuItem::separator());
+        else items.push_back(MenuItem::item("Item " + std::to_string(k), k == 15, k != 2));
+    }
+    int chosen = -1;
+    ui.popup({10, 10, 100, 20}, items, [&](int row) { chosen = row; });
+    const Ui::Menu& m = ui.menu();
+    CHECK(m.open && m.visible < m.count() && m.hover == 15);
+    CHECK(m.bounds.y >= 4.0f && m.bounds.bottom() <= 296.0f);
+    ui.key(key::kHome, 0);
+    CHECK(m.hover == 1);
+    ui.key(key::kDown, 0);  // 2 is disabled
+    CHECK(m.hover == 3);
+    ui.key(key::kEnd, 0);
+    CHECK(m.hover == 38 && m.first + m.visible > 38 && m.scrollsUp());
+    ui.wheel(m.bounds.cx(), m.bounds.cy(), 0, 1.0f, 0);  // scroll back up a row
+    CHECK(m.first + m.visible == 38);
+    // A click on a header does nothing; on an item, chooses it.
+    ui.key(key::kHome, 0);  // shows rows 1 to 11; 10 is a header
+    const Rect header = m.row(10);
+    ui.pointerDown(header.cx(), header.cy(), 0, 0, false);
+    CHECK(m.open && chosen < 0);
+    const Rect row = m.row(4);
+    ui.pointerMove(row.cx(), row.cy(), 0);
+    ui.pointerDown(row.cx(), row.cy(), 0, 0, false);
+    CHECK(!m.open && chosen == 4);
+    // Dismissed: nothing chosen.
+    chosen = -1;
+    ui.popup({10, 10, 100, 20}, items, [&](int row) { chosen = row; });
+    ui.key(key::kEscape, 0);
+    CHECK(!ui.menu().open && chosen < 0);
+}
+
+TEST(a_prompt_can_refuse_or_hand_over_to_a_confirmation) {
+    MockHost host;
+    Ui ui{host, 400.0f, 300.0f};
+    int asked = 0;
+    ui.prompt({10, 10, 200, 26}, "name", 16, [&](std::string_view text) {
+        ++asked;
+        return text != "name";  // the same name is refused
+    });
+    ui.key(key::kEnter, 0);
+    CHECK(asked == 1 && ui.textEdit().open && ui.textEdit().rejected);
+    ui.key(key::kEnd, 0);
+    ui.text('2');
+    ui.key(key::kEnter, 0);
+    CHECK(asked == 2 && !ui.textEdit().open);
+    bool confirmed = false;
+    ui.prompt({10, 10, 200, 26}, "x", 16, [&](std::string_view) {
+        ui.popup({10, 10, 200, 26}, {MenuItem::header("Sure?"), MenuItem::item("Yes")}, [&](int) { confirmed = true; });
+        return true;
+    });
+    ui.key(key::kEnter, 0);
+    CHECK(!ui.textEdit().open && ui.menu().open && ui.menu().hover < 0);
+    ui.key(key::kDown, 0);
+    ui.key(key::kEnter, 0);
+    CHECK(confirmed && !ui.menu().open);
+}
+
+namespace {
+int menuRow(const Ui& ui, const char* label) {
+    for (int r = 0; r < ui.menu().count(); ++r)
+        if (ui.menu().items[static_cast<size_t>(r)].label == label) return r;
+    return -1;
+}
+void choose(Ui& ui, int row) {
+    while (ui.menu().hover != row && ui.menu().open) {
+        const int before = ui.menu().hover;
+        ui.key(row > ui.menu().hover ? key::kDown : key::kUp, 0);
+        if (ui.menu().hover == before) break;
+    }
+    ui.key(key::kEnter, 0);
+}
+}  // namespace
+
+TEST(the_preset_bar_steps_compares_saves_renames_and_deletes) {
+    MockHost host;
+    Ui ui{host, 800.0f, 600.0f};
+    PresetLibrary& lib = *host.presets;
+    const Control& bar = ui.presetBar({20, 20, 320, 28});
+    auto click = [&](int part) {
+        const Rect r = Ui::presetPart(bar.bounds, part);
+        ui.pointerDown(r.cx(), r.cy(), 0, 0, false);
+    };
+    CHECK(ui.interactive(0) && ui.state(0).text == "Default" && !ui.state(0).modified);
+    for (int part : {presetbar::kPrevious, presetbar::kName, presetbar::kNext, presetbar::kCompare})
+        CHECK(ui.presetPart(bar.bounds, part).w > 0.0f);
+
+    click(presetbar::kCompare);
+    CHECK(lib.slot() == 1 && ui.state(0).slot == 1);
+    click(presetbar::kCompare);
+    CHECK(lib.slot() == 0);
+    if (presets::kFactoryCount > 0) {
+        click(presetbar::kNext);
+        CHECK(lib.current() == 0 && ui.state(0).text == presets::factory(0).name);
+        click(presetbar::kPrevious);
+        CHECK(lib.current() == static_cast<int>(lib.entries().size()) - 1);
+    }
+
+    // Change something, then Save As from the menu.
+    size_t i = 0;
+    while (i + 1 < params::kCount && (params::at(i).isOutput() || params::at(i).is(pflag::kBypass))) ++i;
+    host.values[i] = params::at(i).hostMax() == host.values[i] ? params::at(i).hostMin() : params::at(i).hostMax();
+    ui.idle(0.3);
+    CHECK(ui.state(0).modified);
+    click(presetbar::kName);
+    CHECK(ui.menu().open && menuRow(ui, "Save") >= 0 && !ui.menu().items[static_cast<size_t>(menuRow(ui, "Save"))].enabled);
+    choose(ui, menuRow(ui, "Save As…"));
+    CHECK(ui.textEdit().open);
+    for (char c : std::string("Ui Test")) ui.text(static_cast<uint32_t>(c));
+    ui.key(key::kEnter, 0);
+    CHECK(!ui.textEdit().open && lib.currentName() == "Ui Test" && ui.state(0).text == "Ui Test");
+    CHECK(std::filesystem::exists(host.folder / "Ui Test.preset") && !ui.state(0).modified);
+
+    // Save As the same name asks before replacing.
+    click(presetbar::kName);
+    choose(ui, menuRow(ui, "Save As…"));
+    ui.key(key::kEnter, 0);  // "Ui Test" again
+    CHECK(ui.menu().open && menuRow(ui, "Replace") >= 0);
+    choose(ui, menuRow(ui, "Replace"));
+    CHECK(!ui.menu().open);
+
+    // Rename, then delete after confirming.
+    click(presetbar::kName);
+    choose(ui, menuRow(ui, "Rename…"));
+    ui.key(key::kBackspace, 0);  // everything was selected
+    for (char c : std::string("Renamed")) ui.text(static_cast<uint32_t>(c));
+    ui.key(key::kEnter, 0);
+    CHECK(lib.currentName() == "Renamed" && std::filesystem::exists(host.folder / "Renamed.preset"));
+    click(presetbar::kName);
+    choose(ui, menuRow(ui, "Delete…"));
+    CHECK(ui.menu().open && menuRow(ui, "Delete") >= 0);
+    choose(ui, menuRow(ui, "Delete"));
+    CHECK(!std::filesystem::exists(host.folder / "Renamed.preset") && lib.current() < 0);
+
+    // Without a clipboard, copy and paste are there but off.
+    click(presetbar::kName);
+    CHECK(!ui.menu().items[static_cast<size_t>(menuRow(ui, "Copy Settings"))].enabled);
+    choose(ui, menuRow(ui, "Default Settings"));
+    CHECK(lib.currentName() == "Default" && host.values[i] == hostDefault(params::at(i)));
+    CHECK(host.clean() && host.begins == 0);
+}
+
+namespace {
+struct FakeClipboard : Clipboard {
+    std::string text;
+    bool copy(std::string_view t) override {
+        text = t;
+        return true;
+    }
+    bool paste(std::function<void(std::string_view)> done) override {
+        done(text);
+        return true;
+    }
+};
+}  // namespace
+
+TEST(settings_copy_and_paste_through_the_clipboard) {
+    MockHost host;
+    Ui ui{host, 800.0f, 600.0f};
+    FakeClipboard clipboard;
+    ui.setClipboard(&clipboard);
+    const Control& bar = ui.presetBar({20, 20, 320, 28});
+    const Rect name = Ui::presetPart(bar.bounds, presetbar::kName);
+    size_t i = 0;
+    while (i + 1 < params::kCount && (params::at(i).isOutput() || params::at(i).is(pflag::kBypass))) ++i;
+    const double changed = params::at(i).hostMax() == host.values[i] ? params::at(i).hostMin() : params::at(i).hostMax();
+    host.values[i] = changed;
+    ui.pointerDown(name.cx(), name.cy(), 0, 0, false);
+    choose(ui, menuRow(ui, "Copy Settings"));
+    CHECK(clipboard.text.find(product::info::kName) == 0);
+    host.values[i] = hostDefault(params::at(i));
+    ui.pointerDown(name.cx(), name.cy(), 0, 0, false);
+    choose(ui, menuRow(ui, "Paste Settings"));
+    CHECK(host.values[i] == changed);
+}
+
 // --- the product's editor -------------------------------------------------------------------
 
 namespace {
@@ -407,7 +676,13 @@ TEST(the_layout_is_inside_the_panel_and_controls_do_not_overlap) {
     CHECK(ui.count() > 0);
     for (int i = 0; i < ui.count(); ++i) {
         const Control& a = ui.control(i);
-        CHECK_MSG(params::find(a.param), "control %d names parameter %u, which is not in the table", i, a.param);
+        if (a.widget == Widget::TextField)
+            CHECK_MSG(properties::indexOf(a.param) >= 0, "text field %d names property %u, which is not in the table", i,
+                      a.param);
+        else if (a.widget == Widget::PresetBar)
+            CHECK_MSG(product::info::kPresets, "control %d is a preset bar, and presets are off", i);
+        else
+            CHECK_MSG(params::find(a.param), "control %d names parameter %u, which is not in the table", i, a.param);
         CHECK_MSG(a.bounds.x >= 0 && a.bounds.y >= 0 && a.bounds.right() <= p.editor->width() &&
                       a.bounds.bottom() <= p.editor->height(),
                   "control %d lies outside the %gx%g panel", i, p.editor->width(), p.editor->height());
@@ -528,7 +803,11 @@ TEST(random_use_of_the_whole_editor_keeps_the_gesture_contract) {
                 break;
             case 4: p.editor->wheel(x(rng), y(rng), 0.0f, step(rng) / 20.0f, mods); break;
             case 5: p.editor->key(keys[rng() % (sizeof(keys) / sizeof(keys[0]))], mods); break;
-            case 6: p.editor->text("0123456789.-k%"[rng() % 14]); break;
+            case 6: {
+                static const uint32_t typed[] = {'0', '1', '5', '.', '-', 'k', '%', ' ', 'a', 0xE9, 0x2713, 0x1F600};
+                p.editor->text(typed[rng() % (sizeof(typed) / sizeof(typed[0]))]);
+                break;
+            }
             case 7: p.editor->idle(0.01 + (rng() % 30) / 100.0); break;
             case 8:
                 if (rng() % 20 == 0) p.editor->focusLost();

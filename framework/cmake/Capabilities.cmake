@@ -12,6 +12,9 @@
 #   PRODUCT_NOTE_EXPRESSIONS per-note expressions the product uses, offered to
 #                            VST3 hosts: volume pan tuning vibrato expression
 #                            brightness pressure
+#   PRODUCT_PRESETS          ON: presets -- factory ones from product/Presets.h,
+#                            the user's own in a per-platform folder, listed
+#                            to CLAP hosts, and the editor's preset bar
 
 function(supple_bool out value)
     if (value)
@@ -157,6 +160,13 @@ foreach(expression ${PRODUCT_NOTE_EXPRESSIONS})
     math(EXPR PRODUCT_NOTE_EXPRESSIONS_C "${PRODUCT_NOTE_EXPRESSIONS_C} | (1 << ${bit})")
 endforeach()
 
+# --- presets -----------------------------------------------------------------------------------
+
+supple_bool(PRODUCT_PRESETS_C "${PRODUCT_PRESETS}")
+if (NOT PRODUCT_PRESETS AND EXISTS "${SUPPLE_PRODUCT}/Presets.h")
+    message(FATAL_ERROR "product/Presets.h lists factory presets: set PRODUCT_PRESETS ON in product.cmake")
+endif()
+
 set(summary "${PRODUCT_KIND}")
 if (PRODUCT_CHANNELS)
     list(JOIN PRODUCT_CHANNELS "/" layouts_text)
@@ -173,5 +183,8 @@ if (note_input)
 endif()
 if (note_output)
     string(APPEND summary ", notes out")
+endif()
+if (PRODUCT_PRESETS)
+    string(APPEND summary ", presets")
 endif()
 message(STATUS "${PRODUCT_NAME}: ${summary}")

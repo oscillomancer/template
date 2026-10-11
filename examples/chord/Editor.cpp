@@ -10,6 +10,7 @@
 #include "Params.h"
 #include "Processor.h"
 #include "ProductInfo.h"
+#include "Properties.h"
 #include "Theme.h"
 
 namespace product {
@@ -18,7 +19,7 @@ using namespace supple::gui;
 namespace w = supple::gui::widgets;
 
 namespace {
-constexpr Rect kChordPanel{24, 76, 512, 220};
+constexpr Rect kChordPanel{24, 76, 592, 250};
 
 const char* noteName(int key, char* out, size_t size) {
     static const char* names[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
@@ -29,8 +30,20 @@ const char* noteName(int key, char* out, size_t size) {
 
 Editor::Editor(EditorHost& host) : EditorBase(host, kTheme, kEditorWidth, kEditorHeight) {
     usePeakMeters(false);  // no audio, no meters
-    ui().segmented(kShape, {kChordPanel.x + 16, kChordPanel.y + 48, 360, 28});
+    ui().textField(kLabel, {148, 17, 150, 26}).withLabel("Label this instance");
+    ui().presetBar({kEditorWidth - 24 - 296, 16, 296, 28});
+    ui().segmented(kShape, {kChordPanel.x + 16, kChordPanel.y + 48, 440, 28});
+    intervals_ = ui().count();
+    ui().textField(kIntervals, {kChordPanel.x + 16, kChordPanel.y + 88, 200, 26}).withLabel("0 4 7 11");
     ui().knob(kStrum, {kChordPanel.right() - 112, kChordPanel.y + 36, 96, 102});
+}
+
+void Editor::animate(double) {
+    const bool custom = static_cast<int>(plain(kShape)) == kCustomShape;
+    if (ui().control(intervals_).enabled != custom) {
+        ui().control(intervals_).enabled = custom;
+        markDirty();
+    }
 }
 
 std::unique_ptr<EditorBase> createEditor(EditorHost& host) { return std::make_unique<Editor>(host); }
@@ -46,7 +59,9 @@ void Editor::onTelemetry(const supple::TelemetryFrame& frame) {
 void Editor::drawKeys(NVGcontext* vg, Rect r) {
     const Theme& t = theme();
     w::well(vg, t, r, 5.0f);
-    const Processor::Shape& shape = Processor::kShapes[static_cast<int>(plain(kShape))];
+    const int index = static_cast<int>(plain(kShape));
+    const Processor::Shape shape =
+        index == kCustomShape ? Processor::parseIntervals(host().property(kIntervals)) : Processor::kShapes[index];
     auto inShape = [&](int semitone) {
         for (int k = 0; k < shape.count; ++k)
             if (shape.intervals[k] == semitone) return true;
@@ -69,7 +84,7 @@ void Editor::drawKeys(NVGcontext* vg, Rect r) {
             nvgFill(vg);
         }
     }
-    char text[64] = "";
+    char text[96] = "";
     size_t n = 0;
     for (int16_t key : last_) {
         if (key < 0) break;
@@ -107,10 +122,11 @@ void Editor::paint(NVGcontext* vg) {
     w::caption(vg, 27, 47, info::kVendor, rgb(t.textFaint), w::Align::Left, 9.0f);
     char version[32];
     std::snprintf(version, sizeof(version), "v%s", info::kVersion);
-    w::label(vg, width() - 24, 30, version, 10.5f, rgb(t.textFaint), w::Align::Right);
+    w::label(vg, width() - 24, 52, version, 9.5f, rgb(t.textFaint), w::Align::Right);
 
     w::panel(vg, t, kChordPanel, "Chord");
-    drawKeys(vg, {kChordPanel.x + 16, kChordPanel.y + 96, 360, 84});
+    w::label(vg, kChordPanel.x + 226, kChordPanel.y + 101.5f, "semitones, for Custom", 11.0f, rgb(t.textFaint));
+    drawKeys(vg, {kChordPanel.x + 16, kChordPanel.y + 128, 440, 84});
     drawControls(vg);
 }
 

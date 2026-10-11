@@ -93,6 +93,9 @@ class EditorBase {
     // The controls, read-only: for tests and tools that inspect the layout.
     const Ui& layout() const { return ui_; }
     void markDirty() { dirty_ = true; }
+    // The window's clipboard, for copying and pasting settings; null when
+    // there is none.
+    void setClipboard(Clipboard* clipboard) { ui_.setClipboard(clipboard); }
 
   protected:
     EditorHost& host() const { return host_; }
@@ -130,6 +133,7 @@ class EditorBase {
     std::vector<double> shownValue_;
     std::vector<double> shownModulation_;
     std::vector<bool> watched_;
+    uint64_t shownProperties_ = 0;
     PeakMeter input_[kMeterChannels];
     PeakMeter output_[kMeterChannels];
     int meterChannels_ = kMeterChannels;

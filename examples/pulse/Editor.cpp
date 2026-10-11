@@ -23,6 +23,7 @@ constexpr Rect kOutputPanel{528, 76, 168, 280};
 }  // namespace
 
 Editor::Editor(EditorHost& host) : EditorBase(host, kTheme, kEditorWidth, kEditorHeight) {
+    ui().presetBar({kEditorWidth - 24 - 300, 16, 300, 28});
     ui().segmented(kSync, {kRatePanel.x + 16, kRatePanel.y + 48, kRatePanel.w - 32, 28});
     rate_ = ui().count();
     ui().knob(kRate, {kRatePanel.x + 8, kRatePanel.y + 100, 92, 102});
@@ -106,7 +107,7 @@ void Editor::paint(NVGcontext* vg) {
     w::caption(vg, 27, 47, info::kVendor, rgb(t.textFaint), w::Align::Left, 9.0f);
     char version[32];
     std::snprintf(version, sizeof(version), "v%s", info::kVersion);
-    w::label(vg, width() - 24, 30, version, 10.5f, rgb(t.textFaint), w::Align::Right);
+    w::label(vg, width() - 24 - 300 - 14, 30, version, 10.5f, rgb(t.textFaint), w::Align::Right);
 
     w::panel(vg, t, kRatePanel, "Rate");
     w::panel(vg, t, kShapePanel, "Shape");

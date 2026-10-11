@@ -19,6 +19,9 @@ set(PRODUCT_KIND        "effect")
 # Main bus widths offered to the host, the first being the default.
 set(PRODUCT_CHANNELS    2 1)
 
+# Factory presets in product/Presets.h, the user's own, the editor's preset bar.
+set(PRODUCT_PRESETS     ON)
+
 # CLAP features after the main category (audio-effect, implied by PRODUCT_KIND).
 set(PRODUCT_FEATURES    "tremolo" "stereo" "mono")
 

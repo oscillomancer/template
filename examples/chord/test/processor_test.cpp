@@ -9,6 +9,7 @@
 #include "Check.h"
 #include "Params.h"
 #include "Processor.h"
+#include "Properties.h"
 #include "Testing.h"
 
 using namespace supple;
@@ -19,9 +20,11 @@ namespace {
 using Kind = NoteOutput::Kind;
 
 std::vector<test::Sent> play(std::vector<test::EventAt> events, std::vector<std::pair<uint32_t, double>> initial = {},
-                             std::vector<int> blocks = {512}, int frames = 48000) {
+                             std::vector<int> blocks = {512}, int frames = 48000,
+                             std::vector<std::pair<uint32_t, std::string>> properties = {}) {
     std::vector<test::Sent> sent;
     test::RenderOptions o;
+    o.properties = std::move(properties);
     o.frames = frames;
     o.blocks = std::move(blocks);
     o.initial = std::move(initial);
@@ -104,6 +107,36 @@ TEST(every_note_started_is_stopped) {
     }
     CHECK_MSG(balance == 0, "%d notes left sounding", balance);
     CHECK(only(sent, Kind::End).size() == 200);
+}
+
+
+TEST(the_custom_shape_plays_the_intervals_typed) {
+    // Commas or spaces; "x" and 99 (out of range) are skipped; strum order kept.
+    const auto ons = only(play({test::noteOn(10, 60, 0.5, 3)}, {{kShape, kCustomShape}}, {512}, 4800,
+                               {{kIntervals, "0, 3 x 7 99 -12"}}),
+                          Kind::Note);
+    const int keys[] = {60, 63, 67, 48};
+    CHECK(ons.size() == 4);
+    for (size_t k = 0; k < ons.size() && k < 4; ++k) CHECK(ons[k].note.key == keys[k] && ons[k].frame == 10);
+    CHECK(!ons.empty() && ons[0].note.noteId == 3);
+}
+
+TEST(custom_text_with_nothing_usable_plays_the_note_alone) {
+    for (const char* text : {"", "chord", "100 -30", ", ,"}) {
+        const auto ons = only(play({test::noteOn(0, 60)}, {{kShape, kCustomShape}}, {512}, 4800, {{kIntervals, text}}),
+                              Kind::Note);
+        CHECK_MSG(ons.size() == 1 && ons[0].note.key == 60, "'%s' played %zu notes", text, ons.size());
+    }
+    const Processor::Shape s = Processor::parseIntervals("0 1 2 3 4 5 6 7 8");
+    CHECK(s.count == Processor::kMaxNotes);
+}
+
+TEST(notes_beyond_the_keyboard_are_left_out_of_the_chord) {
+    const auto ons = only(play({test::noteOn(0, 120, 1.0, 4)}, {{kShape, kCustomShape}}, {512}, 4800,
+                               {{kIntervals, "12 0 4"}}),
+                          Kind::Note);
+    // 132 does not exist; the root that does keeps the host's ID.
+    CHECK(ons.size() == 2 && ons[0].note.key == 120 && ons[0].note.noteId == 4 && ons[1].note.key == 124);
 }
 
 SUPPLE_TEST_MAIN

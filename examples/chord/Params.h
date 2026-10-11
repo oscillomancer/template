@@ -16,7 +16,9 @@ enum ParamId : uint32_t {
     kStrum = 1,
 };
 
-inline constexpr const char* kShapeLabels[] = {"Octave", "Fifth", "Major", "Minor", "Sus4", "7th"};
+// Custom plays the intervals typed into the Intervals property.
+inline constexpr const char* kShapeLabels[] = {"Octave", "Fifth", "Major", "Minor", "Sus4", "7th", "Custom"};
+inline constexpr int kCustomShape = 6;
 
 inline constexpr supple::ParamDef kParams[] = {
     supple::choice(kShape, "Shape", kShapeLabels, 2),

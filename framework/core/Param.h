@@ -368,4 +368,8 @@ constexpr ParamDef noteValue(uint32_t id, const char* name, const char* def) {
     return choice(id, name, kNoteValueLabels, detail::noteValueIndex(def));
 }
 
+// A noteValue() parameter's plain value for a label, for presets:
+// {kTime, noteValueOf("1/4")}. -1 (rejected by the preset checks) if none.
+constexpr double noteValueOf(const char* label) { return detail::noteValueIndex(label); }
+
 }  // namespace supple

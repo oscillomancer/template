@@ -7,8 +7,12 @@
 // cross-thread test here checked for races as well.
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <string>
 #include <random>
 #include <thread>
 #include <vector>
@@ -16,6 +20,9 @@
 #include "Check.h"
 #include "core/Engine.h"
 #include "core/ParamTable.h"
+#include "core/Preset.h"
+#include "core/PresetLibrary.h"
+#include "core/PropertyTable.h"
 #include "gui/EditorHost.h"
 #include "plugin/Entry.h"
 #include "plugin/TestHooks.h"
@@ -30,6 +37,10 @@ namespace {
 struct Host {
     clap_host_t clap{};
     std::atomic<int> callbacks{0}, restarts{0}, flushRequests{0}, latencyChanges{0}, rescans{0}, tailChanges{0};
+    std::atomic<int> dirty{0}, presetErrors{0};
+    // The last preset the plugin said it loaded (preset-load.loaded).
+    uint32_t loadedKind = 99;
+    std::string loadedLocation, loadedKey;
     std::atomic<bool> callbackPending{false};
     std::atomic<std::thread::id> mainThread{std::this_thread::get_id()};
     std::atomic<bool> requestFlushOffMain{false};
@@ -63,6 +74,18 @@ struct Host {
         static const clap_host_tail_t tail{[](const clap_host_t* h) { self(h).tailChanges++; }};
         if (!std::strcmp(id, CLAP_EXT_LATENCY)) return &latency;
         if (!std::strcmp(id, CLAP_EXT_TAIL)) return &tail;
+        static const clap_host_state_t state{[](const clap_host_t* h) { self(h).dirty++; }};
+        if (!std::strcmp(id, CLAP_EXT_STATE)) return &state;
+        static const clap_host_preset_load_t presetLoad{
+            [](const clap_host_t* h, uint32_t, const char*, const char*, int32_t, const char*) {
+                self(h).presetErrors++;
+            },
+            [](const clap_host_t* h, uint32_t kind, const char* location, const char* key) {
+                self(h).loadedKind = kind;
+                self(h).loadedLocation = location ? location : "";
+                self(h).loadedKey = key ? key : "";
+            }};
+        if (!std::strcmp(id, CLAP_EXT_PRESET_LOAD)) return &presetLoad;
         return nullptr;
     }
 };
@@ -264,6 +287,61 @@ std::vector<uint8_t> saveState(Instance& i) {
     return bytes;
 }
 
+struct ByteReader {
+    const std::vector<uint8_t>* bytes;
+    size_t at = 0;
+    clap_istream_t stream{this, [](const clap_istream_t* s, void* p, uint64_t n) -> int64_t {
+                              auto* r = static_cast<ByteReader*>(s->ctx);
+                              const size_t take = std::min<size_t>(static_cast<size_t>(n), r->bytes->size() - r->at);
+                              if (take) std::memcpy(p, r->bytes->data() + r->at, take);
+                              r->at += take;
+                              return static_cast<int64_t>(take);
+                          }};
+};
+
+const clap_plugin_state_context_t* stateContext(Instance& i) {
+    return static_cast<const clap_plugin_state_context_t*>(i.plugin->get_extension(i.plugin, CLAP_EXT_STATE_CONTEXT));
+}
+
+std::vector<uint8_t> saveState(Instance& i, uint32_t context) {
+    std::vector<uint8_t> bytes;
+    clap_ostream_t os{&bytes, [](const clap_ostream_t* s, const void* p, uint64_t n) -> int64_t {
+                          auto* b = static_cast<std::vector<uint8_t>*>(s->ctx);
+                          b->insert(b->end(), static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + n);
+                          return static_cast<int64_t>(n);
+                      }};
+    stateContext(i)->save(i.plugin, &os, context);
+    return bytes;
+}
+
+bool loadState(Instance& i, const std::vector<uint8_t>& bytes, uint32_t context) {
+    ByteReader reader{&bytes};
+    return stateContext(i)->load(i.plugin, &reader.stream, context);
+}
+
+// Points the user preset folder somewhere of the test's own while it lives.
+struct PresetFolder {
+    std::filesystem::path path;
+    PresetFolder() {
+        path = std::filesystem::temp_directory_path() / ("supple-plugin-presets-" + std::to_string(std::random_device{}()));
+        std::filesystem::create_directories(path);
+        set(PresetLibrary::toUtf8(path).c_str());
+    }
+    ~PresetFolder() {
+        set("");
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+    static void set(const char* value) {
+#if defined(_WIN32)
+        _putenv_s("SUPPLE_PRESETS_DIR", value);
+#else
+        if (*value) setenv("SUPPLE_PRESETS_DIR", value, 1);
+        else unsetenv("SUPPLE_PRESETS_DIR");
+#endif
+    }
+};
+
 bool loadState(Instance& i, const std::vector<uint8_t>& bytes) {
     struct Reader {
         const std::vector<uint8_t>* bytes;
@@ -376,6 +454,220 @@ TEST(state_restores_every_value_and_resaves_identically) {
     CHECK(!loadState(c, damaged));
     CHECK(!loadState(c, {}));
     for (size_t k = 0; k < params::kCount; ++k) CHECK(c.value(k) == hostDefault(params::at(k)));
+}
+
+// --- properties, state context and presets ------------------------------------------------
+
+TEST(properties_are_state_and_reach_the_processor_only_through_their_store) {
+    if constexpr (properties::kCount == 0) {
+        std::puts("      (no properties in this product)");
+        return;
+    }
+    std::vector<uint8_t> saved;
+    {
+        Instance a;
+        gui::EditorHost* editor = supple_test_editor_host(a.plugin);
+        if (!editor) {
+            std::puts("      (no editor host in this build)");
+            return;
+        }
+        for (size_t k = 0; k < properties::kCount; ++k) {
+            CHECK(editor->property(properties::at(k).id) == properties::at(k).def);
+            const uint64_t version = editor->propertiesVersion();
+            CHECK(editor->setProperty(properties::at(k).id, "v" + std::to_string(k)));
+            CHECK(editor->propertiesVersion() != version);
+        }
+        CHECK(a.host.dirty == static_cast<int>(properties::kCount));
+        // Too long: refused, and nothing to save.
+        CHECK(!editor->setProperty(properties::at(0).id, std::string(properties::at(0).limit + 1, 'x')));
+        CHECK(!editor->setProperty(0xFFFFFFF0u, "nobody"));
+        CHECK(a.host.dirty == static_cast<int>(properties::kCount));
+        saved = saveState(a);
+    }
+    Instance b;
+    CHECK(loadState(b, saved));
+    gui::EditorHost* editor = supple_test_editor_host(b.plugin);
+    for (size_t k = 0; editor && k < properties::kCount; ++k)
+        CHECK(editor->property(properties::at(k).id) == "v" + std::to_string(k));
+    CHECK(saveState(b) == saved);
+    CHECK(b.host.dirty == 0);  // the host loaded it: nothing to tell it
+}
+
+TEST(the_preset_context_leaves_the_session_alone) {
+    Instance a;
+    CHECK(stateContext(a) != nullptr);
+    gui::EditorHost* editor = supple_test_editor_host(a.plugin);
+    for (size_t k = 0; editor && k < properties::kCount; ++k) editor->setProperty(properties::at(k).id, "from a");
+    const std::vector<uint8_t> preset = saveState(a, CLAP_STATE_CONTEXT_FOR_PRESET);
+    const std::vector<uint8_t> project = saveState(a, CLAP_STATE_CONTEXT_FOR_PROJECT);
+    CHECK(project == saveState(a) && saveState(a, CLAP_STATE_CONTEXT_FOR_DUPLICATE) == project);
+    CHECK(preset.size() <= project.size());
+
+    Instance b;
+    gui::EditorHost* other = supple_test_editor_host(b.plugin);
+    for (size_t k = 0; other && k < properties::kCount; ++k) other->setProperty(properties::at(k).id, "from b");
+    CHECK(loadState(b, project, CLAP_STATE_CONTEXT_FOR_PRESET));  // a whole session, as a preset
+    for (size_t k = 0; other && k < properties::kCount; ++k) {
+        const bool session = properties::at(k).perProjectOnly();
+        CHECK_MSG(other->property(properties::at(k).id) == (session ? "from b" : "from a"), "%s", properties::at(k).name);
+    }
+    CHECK(loadState(b, preset, CLAP_STATE_CONTEXT_FOR_PROJECT));  // a preset as a session: defaults the rest
+    for (size_t k = 0; other && k < properties::kCount; ++k) {
+        const bool session = properties::at(k).perProjectOnly();
+        CHECK(other->property(properties::at(k).id) == (session ? properties::at(k).def : "from a"));
+    }
+}
+
+TEST(hosts_load_presets_by_location_and_hear_of_the_editors) {
+    if constexpr (!presets::kEnabled) {
+        CHECK(supple_entry_get_factory(CLAP_PRESET_DISCOVERY_FACTORY_ID) == nullptr);
+        std::puts("      (presets are off in this product)");
+        return;
+    }
+    PresetFolder folder;
+    Instance i;
+    const auto* load = static_cast<const clap_plugin_preset_load_t*>(i.plugin->get_extension(i.plugin, CLAP_EXT_PRESET_LOAD));
+    CHECK(load != nullptr);
+    if (!load) return;
+    for (size_t k = 0; k < presets::kFactoryCount; ++k)
+        CHECK(load->from_location(i.plugin, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, presets::factory(k).name));
+    CHECK(i.host.presetErrors == 0);
+    CHECK(!load->from_location(i.plugin, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "No Such Preset"));
+    CHECK(i.host.presetErrors == 1);
+
+    // A file: a preset saved by another instance.
+    Instance other;
+    const std::filesystem::path file = folder.path / "Elsewhere.preset";
+    {
+        const std::vector<uint8_t> bytes = saveState(other, CLAP_STATE_CONTEXT_FOR_PRESET);
+        std::ofstream(file, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()),
+                                                    static_cast<std::streamsize>(bytes.size()));
+    }
+    const std::string path = PresetLibrary::toUtf8(file);
+    CHECK(load->from_location(i.plugin, CLAP_PRESET_DISCOVERY_LOCATION_FILE, path.c_str(), nullptr));
+    CHECK(!load->from_location(i.plugin, CLAP_PRESET_DISCOVERY_LOCATION_FILE, (path + ".missing").c_str(), nullptr));
+    CHECK(i.host.presetErrors == 2);
+
+    // The editor's own loads are reported to the host, and the session
+    // remembers which preset it is.
+    gui::EditorHost* editor = supple_test_editor_host(i.plugin);
+    PresetLibrary* library = editor ? editor->presetLibrary() : nullptr;
+    if (!library) return;
+    library->refresh();
+    CHECK(library->entries().size() == presets::kFactoryCount + 1);
+    if (presets::kFactoryCount > 0) {
+        CHECK(library->load(0));
+        CHECK(i.host.loadedKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN && i.host.loadedKey == presets::factory(0).name);
+        Instance restored;
+        CHECK(loadState(restored, saveState(i)));
+        PresetLibrary* again = supple_test_editor_host(restored.plugin)->presetLibrary();
+        CHECK(again->currentName() == presets::factory(0).name && !again->modified());
+    }
+    const int user = static_cast<int>(presets::kFactoryCount);
+    CHECK(library->load(user));
+    CHECK(i.host.loadedKind == CLAP_PRESET_DISCOVERY_LOCATION_FILE && i.host.loadedLocation == path);
+    CHECK(i.host.dirty >= 1);
+}
+
+namespace {
+
+// A preset browser's side of discovery: what the provider declares and says.
+struct Indexer {
+    clap_preset_discovery_indexer_t clap{};
+    std::vector<std::string> extensions;
+    std::vector<std::pair<uint32_t, std::string>> locations;  // kind, location
+    Indexer() {
+        clap.clap_version = CLAP_VERSION;
+        clap.name = "plugin-tests";
+        clap.indexer_data = this;
+        clap.declare_filetype = [](const clap_preset_discovery_indexer_t* x, const clap_preset_discovery_filetype_t* t) {
+            static_cast<Indexer*>(x->indexer_data)->extensions.push_back(t->file_extension ? t->file_extension : "");
+            return true;
+        };
+        clap.declare_location = [](const clap_preset_discovery_indexer_t* x, const clap_preset_discovery_location_t* l) {
+            static_cast<Indexer*>(x->indexer_data)->locations.push_back({l->kind, l->location ? l->location : ""});
+            return true;
+        };
+        clap.declare_soundpack = [](const clap_preset_discovery_indexer_t*, const clap_preset_discovery_soundpack_t*) {
+            return true;
+        };
+        clap.get_extension = [](const clap_preset_discovery_indexer_t*, const char*) -> const void* { return nullptr; };
+    }
+};
+
+struct Receiver {
+    clap_preset_discovery_metadata_receiver_t clap{};
+    std::vector<std::pair<std::string, std::string>> presets;  // name, load key
+    std::vector<std::string> pluginIds;
+    int errors = 0;
+    Receiver() {
+        clap.receiver_data = this;
+        clap.on_error = [](const clap_preset_discovery_metadata_receiver_t* r, int32_t, const char*) { self(r).errors++; };
+        clap.begin_preset = [](const clap_preset_discovery_metadata_receiver_t* r, const char* name, const char* key) {
+            self(r).presets.push_back({name ? name : "", key ? key : ""});
+            return true;
+        };
+        clap.add_plugin_id = [](const clap_preset_discovery_metadata_receiver_t* r, const clap_universal_plugin_id_t* id) {
+            self(r).pluginIds.push_back(std::string(id->abi) + ":" + id->id);
+        };
+        clap.set_soundpack_id = [](const clap_preset_discovery_metadata_receiver_t*, const char*) {};
+        clap.set_flags = [](const clap_preset_discovery_metadata_receiver_t*, uint32_t) {};
+        clap.add_creator = [](const clap_preset_discovery_metadata_receiver_t*, const char*) {};
+        clap.set_description = [](const clap_preset_discovery_metadata_receiver_t*, const char*) {};
+        clap.set_timestamps = [](const clap_preset_discovery_metadata_receiver_t*, clap_timestamp, clap_timestamp) {};
+        clap.add_feature = [](const clap_preset_discovery_metadata_receiver_t*, const char*) {};
+        clap.add_extra_info = [](const clap_preset_discovery_metadata_receiver_t*, const char*, const char*) {};
+    }
+    static Receiver& self(const clap_preset_discovery_metadata_receiver_t* r) {
+        return *static_cast<Receiver*>(r->receiver_data);
+    }
+};
+
+}  // namespace
+
+TEST(preset_discovery_lists_the_factory_and_the_users_folder) {
+    if constexpr (!presets::kEnabled) {
+        std::puts("      (presets are off in this product)");
+        return;
+    }
+    PresetFolder folder;
+    const auto* factory = static_cast<const clap_preset_discovery_factory_t*>(
+        supple_entry_get_factory(CLAP_PRESET_DISCOVERY_FACTORY_ID));
+    CHECK(factory && factory->count(factory) == 1);
+    if (!factory) return;
+    const clap_preset_discovery_provider_descriptor_t* d = factory->get_descriptor(factory, 0);
+    Indexer indexer;
+    const clap_preset_discovery_provider_t* provider = factory->create(factory, &indexer.clap, d->id);
+    CHECK(provider && provider->init(provider));
+    CHECK(indexer.extensions.size() == 1 && indexer.extensions[0] == "preset");
+    CHECK(indexer.locations.size() == (presets::kFactoryCount > 0 ? 2u : 1u));
+
+    Receiver factoryPresets;
+    CHECK(provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, &factoryPresets.clap));
+    CHECK(factoryPresets.presets.size() == presets::kFactoryCount);
+    for (size_t k = 0; k < factoryPresets.presets.size(); ++k)
+        CHECK(factoryPresets.presets[k].first == presets::factory(k).name &&
+              factoryPresets.presets[k].second == presets::factory(k).name);
+    for (const std::string& id : factoryPresets.pluginIds) CHECK(id == std::string("clap:") + product::info::kId);
+
+    Instance i;
+    const std::filesystem::path file = folder.path / "Mine.preset";
+    {
+        const std::vector<uint8_t> bytes = saveState(i, CLAP_STATE_CONTEXT_FOR_PRESET);
+        std::ofstream(file, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()),
+                                                    static_cast<std::streamsize>(bytes.size()));
+        std::ofstream(folder.path / "Junk.preset") << "not a preset";
+    }
+    Receiver user;
+    CHECK(provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_FILE, PresetLibrary::toUtf8(file).c_str(),
+                                 &user.clap));
+    CHECK(user.presets.size() == 1 && user.presets[0].first == "Mine" && user.errors == 0);
+    Receiver junk;
+    CHECK(!provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_FILE,
+                                  PresetLibrary::toUtf8(folder.path / "Junk.preset").c_str(), &junk.clap));
+    CHECK(junk.presets.empty() && junk.errors == 1);
+    provider->destroy(provider);
+    CHECK(factory->create(factory, &indexer.clap, "someone.else") == nullptr);
 }
 
 // --- ports ------------------------------------------------------------------------------

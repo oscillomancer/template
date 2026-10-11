@@ -72,12 +72,15 @@ void EditorBase::idle(double seconds) {
 bool EditorBase::needsRepaint() {
     if (ui_.takeDirty()) dirty_ = true;
     if (dirty_) return true;
+    if (host_.propertiesVersion() != shownProperties_) return dirty_ = true;
     for (size_t i = 0; i < params::kCount; ++i) {
         const uint32_t id = params::at(i).id;
         if (params::at(i).isOutput() && !watched_[i]) {
             bool shown = false;
-            for (int c = 0; c < ui_.count() && !shown; ++c)
-                shown = ui_.control(c).param == id && ui_.control(c).visible;
+            for (int c = 0; c < ui_.count() && !shown; ++c) {
+                const Control& k = ui_.control(c);
+                shown = k.param == id && k.visible && k.widget != Widget::TextField && k.widget != Widget::PresetBar;
+            }
             if (!shown) continue;  // nobody sees it move
         }
         if (host_.value(id) != shownValue_[i]) return dirty_ = true;
@@ -90,6 +93,7 @@ bool EditorBase::needsRepaint() {
 void EditorBase::render(NVGcontext* vg) {
     if (!attached_) return;
     // Recorded before drawing, so a change that lands mid-frame repaints again.
+    shownProperties_ = host_.propertiesVersion();
     for (size_t i = 0; i < params::kCount; ++i) {
         const uint32_t id = params::at(i).id;
         shownValue_[i] = host_.value(id);

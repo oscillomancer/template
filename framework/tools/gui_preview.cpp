@@ -9,6 +9,8 @@
 //   gui-preview out.png
 //   gui-preview out.png --scale 2 --set "Low Cut Enabled=On" --hover "Low Cut"
 //   gui-preview menu.png --menu "Slope"
+//   gui-preview presets.png --preset "Wide Pan" --menu Presets
+//   gui-preview text.png --property "Label=Strings" --text "Label"
 //
 // This proves drawing only. It cannot validate embedding, host timers,
 // resizing in a host or teardown; clap-probe and x11-probe do that.
@@ -25,6 +27,9 @@
 
 #include "core/Engine.h"
 #include "core/ParamTable.h"
+#include "core/Preset.h"
+#include "core/PresetLibrary.h"
+#include "core/PropertyTable.h"
 #include "gui/Canvas.h"
 #include "gui/Gui.h"
 #include "ProductInfo.h"
@@ -34,10 +39,50 @@ using namespace supple::gui;
 
 namespace {
 
-class PreviewHost : public EditorHost {
+class PreviewHost : public EditorHost, public StateAccess {
   public:
     PreviewHost() {
         for (size_t i = 0; i < params::kCount; ++i) values_[i] = hostDefault(params::at(i));
+        // A folder with nothing in it: the factory presets, and saving on.
+        if (product::info::kPresets)
+            presets_ = std::make_unique<PresetLibrary>(
+                *this, std::filesystem::temp_directory_path() / "supple-gui-preview-no-presets");
+    }
+    std::string_view property(uint32_t id) const override {
+        const int i = properties::indexOf(id);
+        return i >= 0 ? std::string_view(properties_.get(static_cast<size_t>(i))) : std::string_view();
+    }
+    bool setProperty(uint32_t id, std::string_view value) override {
+        const int i = properties::indexOf(id);
+        if (i < 0 || !properties_.set(static_cast<size_t>(i), value)) return false;
+        if (engine_) engine_->properties().set(static_cast<size_t>(i), value);
+        return true;
+    }
+    uint64_t propertiesVersion() const override { return properties_.version(); }
+    PresetLibrary* presetLibrary() override { return presets_.get(); }
+
+    std::vector<uint8_t> saveState(state::Context context) override {
+        state::Snapshot s;
+        for (size_t i = 0; i < params::kCount; ++i) s.host[i] = values_[i];
+        for (size_t i = 0; i < properties::kCount; ++i) {
+            s.property[i] = properties_.get(i);
+            s.hasProperty[i] = true;
+        }
+        return state::save(state::fourcc(product::info::kStateTag), s, context);
+    }
+    bool loadState(const uint8_t* data, size_t size, state::Context context) override {
+        state::Snapshot s;
+        if (state::load(data, size, state::fourcc(product::info::kStateTag), s) != state::LoadResult::Ok) return false;
+        for (size_t i = 0; i < params::kCount; ++i) {
+            if (params::at(i).isOutput()) continue;
+            values_[i] = s.host[i];
+            if (engine_) engine_->store().set(i, s.host[i]);
+        }
+        for (size_t i = 0; i < properties::kCount; ++i)
+            if (context == state::Context::Project || !properties::at(i).perProjectOnly())
+                setProperty(properties::at(i).id, s.hasProperty[i] ? std::string_view(s.property[i])
+                                                                  : std::string_view(properties::at(i).def));
+        return true;
     }
     // An output shows what the DSP reported for the programme fed so far.
     double value(uint32_t id) const override {
@@ -64,6 +109,7 @@ class PreviewHost : public EditorHost {
         if (!engine_) {
             engine_ = std::make_unique<Engine>();
             for (size_t i = 0; i < params::kCount; ++i) engine_->store().set(i, values_[i]);
+            for (size_t i = 0; i < properties::kCount; ++i) engine_->properties().set(i, properties_.get(i));
             engine_->activate(kRate, kPeriodMax, product::info::kAudioInput ? width : 0, width);
             engine_->setMetering(true);
         }
@@ -131,6 +177,8 @@ class PreviewHost : public EditorHost {
     double values_[params::kCount];
     TelemetryRing ring_;
     std::unique_ptr<Engine> engine_;
+    PropertyStore properties_;
+    std::unique_ptr<PresetLibrary> presets_;
     double time_ = 0.0;
     bool played_ = false;
 };
@@ -138,6 +186,12 @@ class PreviewHost : public EditorHost {
 int paramByName(const char* name) {
     for (size_t i = 0; i < params::kCount; ++i)
         if (!std::strcmp(params::at(i).name, name)) return static_cast<int>(i);
+    return -1;
+}
+
+int propertyByName(const char* name) {
+    for (size_t i = 0; i < properties::kCount; ++i)
+        if (!std::strcmp(properties::at(i).name, name)) return static_cast<int>(i);
     return -1;
 }
 
@@ -220,8 +274,9 @@ void onFrame(void* user) {
 
 void usage() {
     std::printf(
-        "gui-preview <out.png> [--scale N] [--set \"Name=value\"]... [--hover NAME] [--focus NAME]\n"
-        "            [--menu NAME] [--text NAME] [--seconds S]\n");
+        "gui-preview <out.png> [--scale N] [--set \"Name=value\"]... [--property \"Name=text\"]...\n"
+        "            [--preset NAME] [--hover NAME] [--focus NAME] [--menu NAME|Presets] [--text NAME]\n"
+        "            [--seconds S]\n");
 }
 
 }  // namespace
@@ -243,7 +298,20 @@ int main(int argc, char** argv) {
         else if (arg == "--focus") focus = next;
         else if (arg == "--menu") menu = next;
         else if (arg == "--text") text = next;
-        else if (arg == "--set") {
+        else if (arg == "--preset") {
+            const int index = presets::findFactory(next);
+            if (!host.presetLibrary() || index < 0 || !host.presetLibrary()->loadFactory(static_cast<size_t>(index))) {
+                std::fprintf(stderr, "no factory preset \"%s\"\n", next);
+                return 2;
+            }
+        } else if (arg == "--property") {
+            const char* eq = std::strchr(next, '=');
+            const int k = eq ? propertyByName(std::string(next, static_cast<size_t>(eq - next)).c_str()) : -1;
+            if (k < 0 || !host.setProperty(properties::at(static_cast<size_t>(k)).id, eq + 1)) {
+                std::fprintf(stderr, "cannot set property \"%s\"\n", next);
+                return 2;
+            }
+        } else if (arg == "--set") {
             const char* eq = std::strchr(next, '=');
             const int p = eq ? paramByName(std::string(next, static_cast<size_t>(eq - next)).c_str()) : -1;
             double v = 0.0;
@@ -286,8 +354,24 @@ int main(int argc, char** argv) {
 
     EditorBase& editor = gui.editor();
     auto centre = [&](const char* name, float& x, float& y) {
+        int c = -1;
+        const Ui& ui = editor.layout();
+        if (!std::strcmp(name, "Presets")) {
+            for (int k = 0; k < ui.count() && c < 0; ++k)
+                if (ui.control(k).widget == Widget::PresetBar) c = k;
+            if (c >= 0) {  // its name, which opens the menu
+                const Rect r = Ui::presetPart(ui.control(c).bounds, presetbar::kName);
+                x = r.cx();
+                y = r.cy();
+                return true;
+            }
+        }
+        const int k = propertyByName(name);
+        for (int i = 0; k >= 0 && i < ui.count() && c < 0; ++i)
+            if (ui.control(i).widget == Widget::TextField && ui.control(i).param == properties::at(static_cast<size_t>(k)).id)
+                c = i;
         const int p = paramByName(name);
-        const int c = p >= 0 ? editor.layout().find(params::at(static_cast<size_t>(p)).id) : -1;
+        if (c < 0 && p >= 0) c = ui.find(params::at(static_cast<size_t>(p)).id);
         if (c < 0) {
             std::fprintf(stderr, "no control for \"%s\"\n", name);
             return false;
@@ -303,7 +387,10 @@ int main(int argc, char** argv) {
         editor.pointerUp(x, y, 0, 0);
     }
     if (menu && centre(menu, x, y)) editor.pointerDown(x, y, 0, 0, false);
-    if (text && centre(text, x, y)) editor.pointerDown(x, y, 0, mod::kCtrl, false);
+    if (text && centre(text, x, y)) {
+        editor.pointerDown(x, y, 0, mod::kCtrl, false);
+        if (propertyByName(text) >= 0) editor.key(key::kEnd, 0);  // the caret, not a selection
+    }
     if (hover && centre(hover, x, y)) editor.pointerMove(x, y, 0);
 
     // Some window managers (KWin, for an XWayland window) put a newly mapped

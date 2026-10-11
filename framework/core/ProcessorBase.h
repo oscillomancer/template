@@ -47,6 +47,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 #include "core/Layout.h"
 #include "core/ParamTable.h"
@@ -295,6 +296,11 @@ class ProcessorBase {
     void midi(const MidiMessage&) {}
     void noteExpression(const NoteExpression&) {}
     void noteModulation(const NoteModulation&) {}
+    // A property's value (product/Properties.h): every one after prepare(),
+    // then each as it changes, before the block that follows. The view stays
+    // valid until that property's next delivery; copy or parse what is
+    // needed, without allocating.
+    void property(uint32_t id, std::string_view value) { (void)id, (void)value; }
 
     // Reports an output parameter's value, in plain units, from update() or
     // process(). The framework passes it to the host (about 30 times a

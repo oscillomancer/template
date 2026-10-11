@@ -41,13 +41,16 @@ name, ID and codes, which `new_product` then refuses to reuse.
   `polyModulatable()` Level.
 - `pulse` (Pulse): a tremolo and auto-pan. Tempo sync (`noteValue`, the
   song position when playing), `smoothed()` parameters read from
-  `Block::smoothed`, an `offAtMinimum()` level, degrees, and an `output()`
-  parameter shown in a readout and sent to the host.
+  `Block::smoothed`, an `offAtMinimum()` level, degrees, an `output()`
+  parameter shown in a readout and sent to the host, and `PRODUCT_PRESETS`:
+  factory presets in categories and the preset bar.
 - `duck` (Duck): a ducker keyed from `PRODUCT_SIDECHAIN`, with what it
   removes on an aux output (`PRODUCT_AUX_OUTPUTS "Ducked"`), in stereo,
   mono, 5.1, 7.1.4 and first-order ambisonics.
 - `chord` (Chord): a `note-effect`. Notes and MIDI in and out, no audio, a
   strum that sends notes at exact frames, every input note retired.
+  Properties: a Custom chord typed as text and parsed in `property()`, and
+  a `perProject()` label; presets that set them.
 
 ## The starter product
 

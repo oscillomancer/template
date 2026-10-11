@@ -148,7 +148,8 @@ supple_sources(product_test_sources ${PRODUCT_TEST_SOURCES})
 # --- the product ----------------------------------------------------------------------------
 
 # Everything SDK-free: parameters, the engine, the product's DSP.
-add_library(product-core STATIC ${SUPPLE_FRAMEWORK}/core/Param.cpp ${product_dsp_sources})
+add_library(product-core STATIC ${SUPPLE_FRAMEWORK}/core/Param.cpp ${SUPPLE_FRAMEWORK}/core/PresetLibrary.cpp
+    ${product_dsp_sources})
 target_include_directories(product-core PUBLIC ${SUPPLE_FRAMEWORK} ${SUPPLE_PRODUCT} ${SUPPLE_GENERATED})
 supple_defaults(product-core)
 
@@ -188,7 +189,7 @@ if (SUPPLE_BUILD_GUI)
 endif()
 
 if (SUPPLE_BUILD_PLUGIN)
-    add_library(product-impl STATIC ${SUPPLE_FRAMEWORK}/plugin/Plugin.cpp)
+    add_library(product-impl STATIC ${SUPPLE_FRAMEWORK}/plugin/Plugin.cpp ${SUPPLE_FRAMEWORK}/plugin/PresetDiscovery.cpp)
     target_link_libraries(product-impl PUBLIC product-core clap)
     # clapwrapper/vst3.h: the extension that tells the VST3 wrapper about
     # note expressions and MIDI channels.

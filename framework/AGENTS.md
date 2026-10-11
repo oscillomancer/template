@@ -13,8 +13,10 @@ Read this file, then `docs/CONVENTIONS.md` for the reasons behind the rules.
 
 | You want to change | Edit |
 | --- | --- |
-| Name, plugin ID, version, AU codes, kind, layouts, capabilities (sidechain, aux outputs, notes), sources | `product/product.cmake` |
+| Name, plugin ID, version, AU codes, kind, layouts, capabilities (sidechain, aux outputs, notes, presets), sources | `product/product.cmake` |
 | Parameters: names, ranges, tapers, units, defaults, flags | `product/Params.h` |
+| State that is not a parameter: text, a label, a curve (optional) | `product/Properties.h` |
+| Factory presets (optional, with `PRODUCT_PRESETS ON`) | `product/Presets.h` |
 | What the plugin does to sound | `product/Processor.h` (and any `.cpp` listed in product.cmake) |
 | Layout, the product's own drawing, its custom interaction | `product/Editor.h`, `product/Editor.cpp` |
 | Colours | `product/Theme.h` |
@@ -97,6 +99,10 @@ effect is switched on there (checked by `cmake/Capabilities.cmake`):
 - `PRODUCT_NOTE_EXPRESSIONS tuning volume ...`: the per-note expressions the
   processor uses, which VST3 hosts are then offered (volume, pan, tuning,
   vibrato, expression, brightness, pressure). The instrument example.
+- `PRODUCT_PRESETS ON`: presets. Factory ones from `product/Presets.h`,
+  the user's own in a per-platform folder, both listed to CLAP hosts
+  (preset discovery, preset-load), and the editor's preset bar. The pulse
+  and chord examples.
 
 Framework tests follow these: a product is tested on the buses and notes it
 has, and the examples have them all.
@@ -169,6 +175,46 @@ Further modifiers:
   the real delay always matches the latency the host was told. Set
   `PRODUCT_SMOKE_LATENCY_PARAM` so host-smoke checks the protocol.
 
+## State and presets
+
+State is every parameter by ID and host value, plus whatever the product
+keeps that is not a parameter, in a chunked format that round-trips byte for
+byte (`core/StateFormat.h`). There is nothing to write for it.
+
+- **Properties** (`product/Properties.h`, optional): values that are not
+  parameters, so hosts never automate them, but sessions and presets keep
+  them. A custom chord typed as text, an instance's label, a drawn curve
+  serialised by the product. Declared like parameters:
+  `supple::property(kIntervals, "Intervals", "0 4 7").maxBytes(64)`. IDs are
+  session ABI. A value is bytes, normally UTF-8; a product keeping its own
+  encoding in one versions it there. `.perProject()` marks one that belongs
+  to the session, not the sound: presets leave it out, and loading one leaves
+  it alone. The editor edits one with `ui().textField(id, rect)` or reads and
+  writes it through `host().property(id)` / `setProperty(id, text)`; the
+  processor hears each in `property(id, value)` (see DSP). The chord example.
+- **Factory presets** (`product/Presets.h`, needs `PRODUCT_PRESETS ON`): a
+  table of name, category, parameter values in plain units as `update` reads
+  them (a percent as 0..1, a choice by index, a note value by
+  `noteValueOf("1/8")`) and property values. Everything a preset leaves out
+  takes its default. Checked when it compiles: an unknown ID, an output, a
+  value out of range or a perProject property is a build error. A preset's
+  name is how hosts remember it: renaming a shipped one breaks their
+  reference.
+- **The preset bar** (`ui().presetBar(rect)`): previous, the preset's name
+  (with `*` once changed), next, and A/B. Its menu lists the factory presets
+  by category and the user's, and saves, renames, deletes, copies and pastes
+  the whole state as text, and returns to the defaults. User presets are
+  state files (`<name>.preset`) in `~/Library/Audio/Presets/<vendor>/<product>`,
+  `%APPDATA%\<vendor>\<product>\Presets` or
+  `~/.local/share/<vendor>/<product>/presets`; `SUPPLE_PRESETS_DIR` replaces
+  all three, for tests.
+- **Hosts** see the same presets through CLAP preset discovery and load them
+  with preset-load; the plugin tells the host which preset the editor
+  loaded, and that the session changed. The CLAP state-context extension
+  saves a preset without the session (editor size, perProject properties,
+  the preset's name), and a session remembers which preset it was and
+  whether it was changed since.
+
 ## DSP
 
 `product::Processor` derives from `supple::ProcessorBase<Processor>`; the
@@ -229,6 +275,11 @@ contract is at the top of `core/ProcessorBase.h`. In short:
   playback starts. `block.tempo()` is the host's tempo, or 120 when it
   sent none; `beatsToSeconds(beats, bpm)` converts. The pulse example does
   all of this.
+- Properties arrive through `property(id, std::string_view value)` on the
+  audio thread: every one after `prepare()`, then each as it changes, before
+  the next block. The view stays valid until that property's next delivery;
+  parse or copy what is needed, without allocating (the chord example parses
+  a chord from text there).
 - Editor data: declare `struct Telemetry` and `captureTelemetry`, and only
   accumulate it while `block.metering` is true. Input and output peak meters
   are measured by the framework already.
@@ -246,8 +297,13 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 - In the constructor, add controls in Tab order:
   `ui().knob(kCutoff, {x, y, w, h})`, `hslider`, `vslider`, `toggle`,
   `segmented`, `dropdown`, and `readout` (label, value and bar; display
-  only). Rects are in design units (`kEditorWidth` × `kEditorHeight`); the
-  window scales the whole panel.
+  only); `textField(propertyId, rect)` for a property (its label is the
+  placeholder) and `presetBar(rect)` for presets. Rects are in design units
+  (`kEditorWidth` × `kEditorHeight`); the window scales the whole panel.
+- A menu or a text field of the product's own: `ui().popup(anchor, items,
+  chosen)` (`MenuItem::item`, `header`, `separator`; long menus scroll) and
+  `ui().prompt(box, text, limit, commit)`, where `commit` returning false
+  keeps the field open and marked.
 - A control bound to an output parameter only displays it. An output
   repaints the editor only while a visible control shows it; drawing of the
   product's own that reads one calls `watch(id)` in the constructor.

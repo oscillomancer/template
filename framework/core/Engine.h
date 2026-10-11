@@ -40,12 +40,14 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 #include "core/Denormals.h"
 #include "core/Dsp.h"
 #include "core/ParamTable.h"
 #include "core/ParamValues.h"
+#include "core/PropertyStore.h"
 #include "core/ProcessorBase.h"
 #include "core/Realtime.h"
 #include "core/Telemetry.h"
@@ -135,6 +137,10 @@ class BasicEngine {
 
     ParamStore& store() { return store_; }
     const ParamStore& store() const { return store_; }
+    // Property values (core/Property.h): set on the main thread, heard by the
+    // processor at the start of the next block.
+    PropertyStore& properties() { return properties_; }
+    const PropertyStore& properties() const { return properties_; }
     Processor& processor() { return processor_; }
     const Processor& processor() const { return processor_; }
 
@@ -190,6 +196,8 @@ class BasicEngine {
         values_.markAll();
         values_.setInitial(true);
         processor_.prepare(ProcessSetup{sampleRate_, maxBlock_, channelsOut_, layout_}, values_);
+        properties_.deliverAll(
+            [this](size_t i, std::string_view value) { processor_.property(properties::at(i).id, value); });
         retargetGlides(true);
         processor_.update(values_);
         values_.clearChanges();
@@ -370,6 +378,12 @@ class BasicEngine {
 
     void syncStore() {
         store_.drain([this](size_t i) { refresh(i); });
+        if constexpr (properties::kCount > 0) {
+            // While stopped, activate() delivers every value anyway.
+            if (active_)
+                properties_.deliver(
+                    [this](size_t i, std::string_view value) { processor_.property(properties::at(i).id, value); });
+        }
     }
 
     void apply(const EngineEvent& e) {
@@ -690,6 +704,7 @@ class BasicEngine {
 
     Processor processor_;
     ParamStore store_;
+    PropertyStore properties_;
     ParamValues values_;
     double mod_[params::kCount]{};
     std::atomic<double> modulation_[params::kCount];
