@@ -15,7 +15,7 @@ on:
         description: Platforms to build and test
         type: choice
         options: [macos, linux, windows, all]
-        default: macos
+        default: all
       sanitizers:
         description: Also run the asan preset (and tsan on Linux)
         type: boolean
