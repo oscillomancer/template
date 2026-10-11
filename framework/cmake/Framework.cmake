@@ -194,6 +194,10 @@ if (SUPPLE_BUILD_PLUGIN)
     # clapwrapper/vst3.h: the extension that tells the VST3 wrapper about
     # note expressions and MIDI channels.
     target_include_directories(product-impl PRIVATE ${clap-wrapper_SOURCE_DIR}/include)
+    if (TARGET supple-mts)
+        target_link_libraries(product-impl PRIVATE supple-mts)
+        target_compile_definitions(product-impl PRIVATE SUPPLE_TUNING_MTS=1)
+    endif()
     if (SUPPLE_BUILD_GUI)
         target_link_libraries(product-impl PUBLIC product-gui)
         target_compile_definitions(product-impl PUBLIC SUPPLE_WITH_GUI=1)
@@ -255,6 +259,12 @@ if (SUPPLE_BUILD_PLUGIN)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SUPPLE_FRAMEWORK}/NOTICES.txt)
     # The glob, rechecked at every build, notices the file being created or
     # deleted; the configure dependency notices an edit.
+    # PRODUCT_TUNING compiles in the MTS-ESP client, which brings its notice.
+    if (TARGET supple-mts)
+        file(READ ${mts-esp_SOURCE_DIR}/LICENSE mts_license)
+        string(APPEND notices_text "\n\n--------------------------------------------------------------------------------\n"
+               "MTS-ESP client library (https://github.com/ODDSound/MTS-ESP), 0BSD\n\n${mts_license}")
+    endif()
     file(GLOB product_notices_file CONFIGURE_DEPENDS ${SUPPLE_PRODUCT}/NOTICES.txt)
     if (product_notices_file)
         file(READ ${SUPPLE_PRODUCT}/NOTICES.txt product_notices)

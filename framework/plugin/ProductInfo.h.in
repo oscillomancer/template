@@ -35,6 +35,8 @@ inline constexpr bool kNoteOutput = @PRODUCT_NOTE_OUTPUT_C@;
 inline constexpr uint32_t kNoteExpressions = @PRODUCT_NOTE_EXPRESSIONS_C@;
 // Presets: factory (product/Presets.h), user, CLAP discovery, the preset bar.
 inline constexpr bool kPresets = @PRODUCT_PRESETS_C@;
+// Microtuning: MTS-ESP and the host's CLAP tuning, through retuning().
+inline constexpr bool kTuning = @PRODUCT_TUNING_C@;
 
 // Main bus layouts offered to the host; the first is the default. A note
 // effect has one, of no channels.

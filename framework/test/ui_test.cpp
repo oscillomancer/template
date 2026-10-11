@@ -105,6 +105,24 @@ struct MockHost : EditorHost, StateAccess {
         open[slot(id)] = false;
         --openCount;
     }
+    // A host's context menu, when a test gives it one.
+    bool hasHostMenu = false, canPopup = false;
+    HostMenu hostItems;
+    int popups = 0;
+    std::vector<std::pair<uint32_t, uint32_t>> performed;  // parameter, action
+    bool hostPopup(uint32_t, float, float) override {
+        if (canPopup) ++popups;
+        return canPopup;
+    }
+    bool hostMenu(uint32_t, HostMenu& menu) override {
+        if (hasHostMenu) menu = hostItems;
+        return hasHostMenu;
+    }
+    bool performHostMenu(uint32_t param, uint32_t action) override {
+        performed.push_back({param, action});
+        return true;
+    }
+
     bool popTelemetry(TelemetryFrame& f) override { return ring.pop(f); }
     int latencySamples() const override { return 0; }
     double sampleRate() const override { return 48000.0; }
@@ -503,6 +521,65 @@ TEST(a_popup_skips_what_cannot_be_chosen_and_scrolls) {
     ui.popup({10, 10, 100, 20}, items, [&](int row) { chosen = row; });
     ui.key(key::kEscape, 0);
     CHECK(!ui.menu().open && chosen < 0);
+}
+
+TEST(a_right_click_opens_the_context_menu_with_the_hosts_items) {
+    Bench b;
+    if (b.knob < 0) {
+        std::puts("      (no continuous parameter in this product)");
+        return;
+    }
+    const Rect r = b.c(b.knob).bounds;
+    const Ui::Menu& m = b.ui.menu();
+    auto rightClick = [&] { CHECK(b.ui.pointerDown(r.cx(), r.cy(), 1, 0, false)); };
+    auto choose = [&](const char* label) {
+        for (int row = 0; row < m.count(); ++row)
+            if (m.items[static_cast<size_t>(row)].label == label) {
+                const Rect at = m.row(row);
+                b.ui.pointerDown(at.cx(), at.cy(), 0, 0, false);
+                return;
+            }
+        CHECK_MSG(false, "no '%s' in the menu", label);
+    };
+
+    // Without a host menu: reset (nothing to do at the default) and enter.
+    rightClick();
+    CHECK(m.open && m.count() == 2 && !m.items[0].enabled && m.items[1].selectable());
+    CHECK(b.host.begins == 0);
+    b.ui.key(key::kEscape, 0);
+
+    // The host's items follow a separator, flattened: a submenu's label is a
+    // header over its items, and no separator doubles up or ends the menu.
+    b.host.hasHostMenu = true;
+    b.host.hostItems.items = {MenuItem::item("Automate"),      MenuItem::header("MIDI"),
+                              MenuItem::item("Learn", true),   MenuItem::separator(),
+                              MenuItem::separator(),           MenuItem::item("Forget", false, false),
+                              MenuItem::separator()};
+    b.host.hostItems.actions = {10, 0, 11, 0, 0, 12, 0};
+    b.host.values[params::indexOf(b.knobParam)] = params::find(b.knobParam)->hostMax();
+    rightClick();
+    CHECK(m.open && m.count() == 8 && m.items[0].selectable() && m.items[2].kind == MenuItem::Kind::Separator);
+    CHECK(m.items[4].kind == MenuItem::Kind::Header && m.items[5].checked && !m.items[7].selectable());
+    CHECK(m.hover < 0);  // the checked item is not preselected
+    choose("Learn");
+    CHECK(!m.open && b.host.performed.size() == 1 && b.host.performed[0].first == b.knobParam &&
+          b.host.performed[0].second == 11);
+
+    // Reset is one whole gesture; Enter Value opens the text field.
+    rightClick();
+    CHECK(m.items[0].label.rfind("Reset to ", 0) == 0);
+    choose(m.items[0].label.c_str());
+    CHECK(b.host.value(b.knobParam) == hostDefault(*params::find(b.knobParam)));
+    CHECK(b.host.begins == 1 && b.host.ends == 1 && b.host.clean());
+    rightClick();
+    choose("Enter Value\xE2\x80\xA6");
+    CHECK(b.ui.textEdit().open && b.ui.textEdit().control == b.knob);
+    b.ui.key(key::kEscape, 0);
+
+    // A host that shows its own menu shows it instead.
+    b.host.canPopup = true;
+    rightClick();
+    CHECK(b.host.popups == 1 && !m.open);
 }
 
 TEST(a_prompt_can_refuse_or_hand_over_to_a_confirmation) {

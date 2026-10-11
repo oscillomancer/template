@@ -62,6 +62,9 @@ class Window : public Clipboard {
     bool startFallbackTimer(double seconds);
     void stopFallbackTimer();
     bool realized() const { return view_ && realized_; }
+    // A point in design units, in host units from the window's top left: where
+    // a host shows a menu the editor asks for.
+    void designToHost(float x, float y, int32_t& hostX, int32_t& hostY) const;
 
     // Called from the pugl event thunk; not part of the API.
     void handleEvent(const void* event);

@@ -41,16 +41,24 @@
 // effect) arrive through note(), midi(), noteExpression() and
 // noteModulation(), each at its exact sample between splits; notes and MIDI
 // go out (PRODUCT_NOTE_OUTPUT) through sendNote() and sendMidi().
+//
+// What the host says about the session reaches the processor too: whether it
+// is rendering offline (kOfflineMode), the names of its keys (noteNames), and
+// microtuning (PRODUCT_TUNING, retuning()).
 #pragma once
 
 #include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/Layout.h"
 #include "core/ParamTable.h"
+#include "core/ParamValues.h"
+#include "core/Tuning.h"
 #include "ProductInfo.h"
 
 namespace supple {
@@ -60,6 +68,10 @@ struct ProcessSetup {
     int maxBlockSize = 512;  // no Block is longer than this
     int channels = 2;        // main bus width, fixed until the next prepare; 0 for a note effect
     Layout layout = Layout::Stereo;  // which channel is which speaker (core/Layout.h)
+    // The host renders without real-time pressure (a bounce), for a processor
+    // that declares kOfflineMode. It may change while active: block.offline
+    // says what holds now.
+    bool offline = false;
 };
 
 // Host transport at the start of the current Block, when the host sent one.
@@ -84,6 +96,9 @@ struct Block {
     // reports only when this is set; nobody is looking otherwise.
     bool metering = false;
     const Transport* transport = nullptr;  // null when the host sent none
+    // Rendering offline, for a processor that declares kOfflineMode: spend
+    // what the better algorithm costs.
+    bool offline = false;
 
     double* channel(int c) const { return data[c]; }
 
@@ -253,6 +268,46 @@ class NoteOutput {
     uint32_t dropped_ = 0;
 };
 
+// Names for keys, which hosts show in piano rolls and drum maps (CLAP
+// note-name). Main thread only.
+struct NoteName {
+    int key = 0;       // 0..127
+    int channel = -1;  // -1: every channel
+    int port = -1;     // -1: every port
+    std::string name;  // up to 255 bytes of UTF-8
+};
+
+class NoteNames {
+  public:
+    void add(int key, std::string_view name, int channel = -1, int port = -1) {
+        if (key < 0 || key > 127 || name.empty()) return;
+        names_.push_back(NoteName{key, channel, port, std::string(name.substr(0, 255))});
+    }
+    size_t size() const { return names_.size(); }
+    const NoteName& operator[](size_t i) const { return names_[i]; }
+    bool operator==(const NoteNames& o) const {
+        if (names_.size() != o.names_.size()) return false;
+        for (size_t i = 0; i < names_.size(); ++i) {
+            const NoteName &a = names_[i], &b = o.names_[i];
+            if (a.key != b.key || a.channel != b.channel || a.port != b.port || a.name != b.name) return false;
+        }
+        return true;
+    }
+
+  private:
+    std::vector<NoteName> names_;
+};
+
+// Whether a processor names its keys (ProcessorBase: noteNames).
+template <class P>
+concept NamesNotes = requires(const ParamValues& v, NoteNames& n) { P::noteNames(v, n); };
+
+// P's note names, or none.
+template <class P>
+void noteNamesOf(const ParamValues& v, NoteNames& names) {
+    if constexpr (NamesNotes<P>) P::noteNames(v, names);
+}
+
 struct NoTelemetry {};
 
 template <class Derived>
@@ -279,6 +334,12 @@ class ProcessorBase {
     // (spectra, waveforms): the queue holds this many whole frames.
     static constexpr int kTelemetryQueueLog2 = 9;
 
+    // A processor that renders differently offline -- a costlier, better
+    // algorithm for bounces -- says so here. Hosts then tell it when they
+    // render without real-time pressure (CLAP render; VST3's offline process
+    // mode), which setup.offline and block.offline report. Others never ask.
+    static constexpr bool kOfflineMode = false;
+
     // Reported to the host at activation. If it changes while active the
     // framework asks the host to restart; until then the old value stands.
     int latencySamples() const { return 0; }
@@ -301,6 +362,34 @@ class ProcessorBase {
     // valid until that property's next delivery; copy or parse what is
     // needed, without allocating.
     void property(uint32_t id, std::string_view value) { (void)id, (void)value; }
+
+    // Names for keys (CLAP note-name), for a product with note input: a drum
+    // map's "Kick" on 36. A processor that has them defines
+    //
+    //   static void noteNames(const supple::ParamValues& v, supple::NoteNames& names);
+    //
+    // called on the main thread with the current parameter values, whenever a
+    // host asks (NamesNotes says whether it does). Names that follow a
+    // parameter call noteNamesChanged() from update() as it changes.
+    //
+    // The names noteNames() gives have changed; hosts are told to read them
+    // again. From update() or process().
+    void noteNamesChanged() {
+        if (namesChanged_) *namesChanged_ = true;
+    }
+    // The engine's; a processor never calls it.
+    void bindNoteNamesChanged(bool* flag) { namesChanged_ = flag; }
+
+    // PRODUCT_TUNING: how far `key` on MIDI `channel` sits from equal
+    // temperament at A4 = 440 Hz, in semitones (core/Tuning.h), at `frame`
+    // of the current Block. 0 without a tuning. From process() or note().
+    double retuning(int key, int channel, int frame = 0) const {
+        if (!tuning_) return 0.0;
+        const uint32_t at = (noteOutput_ ? noteOutput_->offset() : 0) + static_cast<uint32_t>(frame < 0 ? 0 : frame);
+        return tuning_->retuning(key, channel, at);
+    }
+    // The engine's; a processor never calls it.
+    void bindTuning(TuningSource* source) { tuning_ = source; }
 
     // Reports an output parameter's value, in plain units, from update() or
     // process(). The framework passes it to the host (about 30 times a
@@ -353,6 +442,8 @@ class ProcessorBase {
 
     NoteOutput* noteOutput_ = nullptr;
     double* outputs_ = nullptr;
+    bool* namesChanged_ = nullptr;
+    TuningSource* tuning_ = nullptr;
 };
 
 }  // namespace supple

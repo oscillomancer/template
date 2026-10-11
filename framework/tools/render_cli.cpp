@@ -47,6 +47,7 @@ void usage() {
         "  --block <frames>                host block size (default 512); repeat to cycle sizes\n"
         "  --bits <24|32>                  24-bit PCM or 32-bit float (default)\n"
         "  --sidechain <key.wav>           the sidechain input (silence after it ends)\n"
+        "  --offline                       render as a host bounces (a processor's kOfflineMode)\n"
         "Aux outputs are written beside the output as <output>-<bus name>.wav.\n",
         product::info::kName, product::info::kVersion);
 }
@@ -123,6 +124,7 @@ int main(int argc, char** argv) {
     int preset = -1;
     std::vector<int> blocks;
     int bits = 32;
+    bool offline = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") return usage(), 0;
@@ -156,6 +158,8 @@ int main(int argc, char** argv) {
             bits = std::atoi(argv[++i]);
         } else if (arg == "--sidechain" && i + 1 < argc) {
             sidechainFile = argv[++i];
+        } else if (arg == "--offline") {
+            offline = true;
         } else if (!arg.empty() && arg[0] != '-' && input.empty()) {
             input = arg;
         } else if (!arg.empty() && arg[0] != '-' && output.empty()) {
@@ -230,6 +234,7 @@ int main(int argc, char** argv) {
         ++next;
     }
     const int maxBlock = *std::max_element(blocks.begin(), blocks.end());
+    engine->setOffline(offline);
     engine->activate(audio.sampleRate, maxBlock, product::info::kAudioInput ? channels : 0, channels);
 
     struct Source {

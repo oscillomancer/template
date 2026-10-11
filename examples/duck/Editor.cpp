@@ -90,7 +90,24 @@ void Editor::paint(NVGcontext* vg) {
     w::caption(vg, 27, 47, info::kVendor, rgb(t.textFaint), w::Align::Left, 9.0f);
     char version[32];
     std::snprintf(version, sizeof(version), "v%s", info::kVersion);
-    w::label(vg, width() - 24, 30, version, 10.5f, rgb(t.textFaint), w::Align::Right);
+    // The track it sits on, as the host tells it: a ducker's key comes from
+    // another track, so which one this is matters. Hosts that say nothing
+    // leave the version alone there.
+    const TrackInfo track = this->track();
+    if (!track.name.empty() || track.hasColour) {
+        const char* name = track.name.empty() ? "Track" : track.name.c_str();
+        const float right = width() - 24, nameWidth = w::textWidth(vg, name, 12.0f, font::kUi);
+        w::label(vg, right, 26, name, 12.0f, rgb(t.text), w::Align::Right);
+        if (track.hasColour) {
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, right - nameWidth - 18, 20, 10, 12, 2.5f);
+            nvgFillColor(vg, nvgRGBA(track.red, track.green, track.blue, 255));
+            nvgFill(vg);
+        }
+        w::label(vg, right, 45, version, 10.0f, rgb(t.textFaint), w::Align::Right);
+    } else {
+        w::label(vg, width() - 24, 30, version, 10.5f, rgb(t.textFaint), w::Align::Right);
+    }
 
     w::panel(vg, t, kKeyPanel, "Key");
     drawKey(vg, {kKeyPanel.right() - 60, kKeyPanel.y + 52, 28, 196});

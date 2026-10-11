@@ -139,4 +139,17 @@ TEST(notes_beyond_the_keyboard_are_left_out_of_the_chord) {
     CHECK(ons.size() == 2 && ons[0].note.key == 120 && ons[0].note.noteId == 4 && ons[1].note.key == 124);
 }
 
+TEST(every_key_is_named_by_the_chord_it_plays) {
+    ParamValues v;
+    NoteNames names;
+    Processor::noteNames(v, names);
+    CHECK(names.size() == 128);
+    CHECK(names[60].key == 60 && names[60].name == "C4 Major" && names[60].channel == -1);
+    CHECK(names[0].name == "C-1 Major" && names[127].name == "G9 Major");
+    v.setIndex(static_cast<size_t>(params::indexOf(kShape)), 5.0);
+    NoteNames sevenths;
+    Processor::noteNames(v, sevenths);
+    CHECK(sevenths[69].name == "A4 7th" && !(sevenths == names));
+}
+
 SUPPLE_TEST_MAIN

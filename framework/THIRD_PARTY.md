@@ -18,6 +18,7 @@ whenever a pinned dependency moves.
 | nanovg_metal (wjakob fork) | MIT | macOS only |
 | IBM Plex Mono, Plex Sans Condensed | SIL OFL 1.1 | subsets in `gui/fonts`, compiled in |
 | Inter | SIL OFL 1.1 | subsets in `gui/fonts`, compiled in |
+| MTS-ESP client | 0BSD | only with `PRODUCT_TUNING ON`; its notice is added to the product's NOTICES.txt then |
 
 The framework itself is MIT ([LICENSE](LICENSE)). A product adds notices for
 its own dependencies in `product/NOTICES.txt`, which the build appends.

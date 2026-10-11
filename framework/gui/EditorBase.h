@@ -103,6 +103,10 @@ class EditorBase {
     const Ui& ui() const { return ui_; }
     const Theme& theme() const { return theme_; }
 
+    // The track the plugin is on (name, colour), as the host last said;
+    // the editor repaints when it changes.
+    TrackInfo track() const { return host_.track(); }
+
     // A parameter's plain value, for drawing. An output's is what the
     // processor last reported.
     double plain(uint32_t id) const;
@@ -134,6 +138,7 @@ class EditorBase {
     std::vector<double> shownModulation_;
     std::vector<bool> watched_;
     uint64_t shownProperties_ = 0;
+    uint64_t shownTrack_ = 0;
     PeakMeter input_[kMeterChannels];
     PeakMeter output_[kMeterChannels];
     int meterChannels_ = kMeterChannels;

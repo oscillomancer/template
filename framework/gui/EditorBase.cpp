@@ -73,6 +73,7 @@ bool EditorBase::needsRepaint() {
     if (ui_.takeDirty()) dirty_ = true;
     if (dirty_) return true;
     if (host_.propertiesVersion() != shownProperties_) return dirty_ = true;
+    if (host_.trackVersion() != shownTrack_) return dirty_ = true;
     for (size_t i = 0; i < params::kCount; ++i) {
         const uint32_t id = params::at(i).id;
         if (params::at(i).isOutput() && !watched_[i]) {
@@ -94,6 +95,7 @@ void EditorBase::render(NVGcontext* vg) {
     if (!attached_) return;
     // Recorded before drawing, so a change that lands mid-frame repaints again.
     shownProperties_ = host_.propertiesVersion();
+    shownTrack_ = host_.trackVersion();
     for (size_t i = 0; i < params::kCount; ++i) {
         const uint32_t id = params::at(i).id;
         shownValue_[i] = host_.value(id);

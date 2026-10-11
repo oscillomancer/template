@@ -15,8 +15,10 @@
 //   audio thread  process, reset, and params.flush while active. The only
 //                 thread that touches the processor while it is active.
 //
-// Host-facing requests made from the audio thread (restart, flush retries)
-// go through request_callback and are made from on_main_thread.
+// Host-facing requests made from the audio thread (restart, flush retries,
+// what goes in the host's log) go through request_callback and are made from
+// on_main_thread. A debug build checks every entry point's thread against
+// CLAP's rules and logs a host that breaks them.
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -25,11 +27,17 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
 #include <clap/clap.h>
+#include <clap/ext/draft/tuning.h>
 #include <clapwrapper/vst3.h>
+
+#if SUPPLE_TUNING_MTS
+#include <libMTSClient.h>
+#endif
 
 #include "core/Engine.h"
 #include "core/ParamTable.h"
@@ -57,6 +65,20 @@ namespace info = product::info;
 constexpr uint32_t kStateMagic = state::fourcc(info::kStateTag);
 constexpr uint32_t kTimerMs = 16;  // ~60 Hz editor ticks
 
+#ifdef NDEBUG
+constexpr bool kDebugBuild = false;
+#else
+constexpr bool kDebugBuild = true;
+#endif
+
+// What the product asked for beyond the basics.
+constexpr bool kRender = product::Processor::kOfflineMode;
+constexpr bool kNoteNames = info::kNoteInput && NamesNotes<product::Processor>;
+static_assert(info::kNoteInput || !NamesNotes<product::Processor>,
+              "noteNames() names keys for notes the plugin takes: it needs note input");
+constexpr bool kTuning = info::kTuning;
+static_assert(!kTuning || info::kNoteInput, "PRODUCT_TUNING needs note input");
+
 const clap_plugin_descriptor_t kDescriptor = {
     CLAP_VERSION_INIT, info::kId, info::kName, info::kVendor, info::kUrl, "", "",
     info::kVersion,    info::kDescription, info::kFeatures};
@@ -75,12 +97,27 @@ static_assert(!params::kAnyPolyMod || info::kNoteInput,
 // product with note input; the rest drop them.
 class ClapEvents {
   public:
-    explicit ClapEvents(const clap_input_events_t* in) : in_(in), count_(in ? in->size(in) : 0) {}
+    // `tuningSpace`: where the host puts CLAP tuning events, for a product
+    // with PRODUCT_TUNING; UINT16_MAX for none.
+    explicit ClapEvents(const clap_input_events_t* in, uint16_t tuningSpace = UINT16_MAX)
+        : in_(in), count_(in ? in->size(in) : 0), tuningSpace_(tuningSpace) {}
 
     bool next(EngineEvent& e) {
         while (index_ < count_) {
             const clap_event_header_t* h = in_->get(in_, index_++);
-            if (!h || h->space_id != CLAP_CORE_EVENT_SPACE_ID) continue;
+            if (!h) continue;
+            if (h->space_id == tuningSpace_ && h->space_id != CLAP_CORE_EVENT_SPACE_ID) {
+                if (h->size < sizeof(clap_event_tuning_t)) continue;
+                const auto* t = reinterpret_cast<const clap_event_tuning_t*>(h);
+                e = EngineEvent{};
+                e.time = h->time;
+                e.type = EngineEvent::Type::Tuning;
+                e.address.port = t->port_index;
+                e.address.channel = t->channel;
+                e.tuning = t->tunning_id;
+                return true;
+            }
+            if (h->space_id != CLAP_CORE_EVENT_SPACE_ID) continue;
             e = EngineEvent{};
             e.time = h->time;
             switch (h->type) {
@@ -163,6 +200,98 @@ class ClapEvents {
     const clap_input_events_t* in_;
     uint32_t count_;
     uint32_t index_ = 0;
+    uint16_t tuningSpace_;
+};
+
+// --- diagnostics --------------------------------------------------------------------
+
+// Every entry point whose thread CLAP fixes, for the debug build's checks.
+enum class Site : uint8_t {
+    Init, Destroy, Activate, Deactivate, StartProcessing, StopProcessing, Reset, Process, OnMainThread,
+    ParamsCount, ParamsInfo, ParamsValue, ParamsToText, ParamsFromText, ParamsFlush,
+    StateSave, StateLoad, PortsConfig, Latency, PresetLoad,
+    GuiCreate, GuiDestroy, GuiSize, GuiParent, GuiShow, GuiHide, Timer,
+    Render, TrackInfo, ContextMenu, NoteNames, Tuning, kCount
+};
+constexpr const char* kSiteNames[] = {
+    "init", "destroy", "activate", "deactivate", "start_processing", "stop_processing", "reset", "process",
+    "on_main_thread", "params.count", "params.get_info", "params.get_value", "params.value_to_text",
+    "params.text_to_value", "params.flush", "state.save", "state.load", "audio-ports-config", "latency.get",
+    "preset-load", "gui.create", "gui.destroy", "gui size", "gui.set_parent", "gui.show", "gui.hide",
+    "timer-support.on_timer", "render", "track-info.changed", "context-menu", "note-name", "tuning.changed"};
+static_assert(std::size(kSiteNames) == static_cast<size_t>(Site::kCount));
+enum class Thread : uint8_t { Main, Audio, AudioWhileActive };
+
+// What the audio thread finds wrong, logged from the main thread, once each
+// per instance.
+enum Report : uint32_t {
+    kNonFinite = 1u << 0,     // the guard silenced a NaN or infinity
+    kNotesDropped = 1u << 1,  // more notes in one block than NoteOutput holds
+    kBadBuses = 1u << 2,      // process() without the buses the plugin declared
+};
+
+// --- tuning -------------------------------------------------------------------------
+
+// Where retuning() comes from (PRODUCT_TUNING): an MTS-ESP master while one
+// is running, else the tuning the host chose for the note's channel (CLAP
+// tuning), else none. Only the audio thread calls it; the host's tuning is
+// valid only during process(), which is the only time a processor asks.
+class PluginTuning final : public TuningSource {
+  public:
+    void attach(const clap_host_t* host, const clap_host_tuning_t* tuning) {
+        host_ = host;
+        tuning_ = tuning && tuning->get_relative && tuning->should_play ? tuning : nullptr;
+#if SUPPLE_TUNING_MTS
+        if (!mts_) mts_ = MTS_RegisterClient();
+#endif
+    }
+    void detach() {
+#if SUPPLE_TUNING_MTS
+        if (mts_) MTS_DeregisterClient(mts_);
+        mts_ = nullptr;
+#endif
+    }
+
+    double retuning(int key, int channel, uint32_t frame) override {
+        key = std::clamp(key, 0, 127);
+#if SUPPLE_TUNING_MTS
+        if (mts_ && MTS_HasMaster(mts_))
+            return MTS_RetuningInSemitones(mts_, static_cast<char>(key), static_cast<signed char>(channel));
+#endif
+        const clap_id id = chosen(channel);
+        return tuning_ && id != CLAP_INVALID_ID ? tuning_->get_relative(host_, id, channel, key, frame) : 0.0;
+    }
+    bool plays(int key, int channel) override {
+        key = std::clamp(key, 0, 127);
+#if SUPPLE_TUNING_MTS
+        if (mts_ && MTS_HasMaster(mts_))
+            return !MTS_ShouldFilterNote(mts_, static_cast<char>(key), static_cast<signed char>(channel));
+#endif
+        const clap_id id = chosen(channel);
+        return !tuning_ || id == CLAP_INVALID_ID || tuning_->should_play(host_, id, channel, key);
+    }
+    // The plugin has one note port, so a tuning for any other is not ours.
+    void select(int port, int channel, uint32_t id) override {
+        if (port > 0) return;
+        if (channel < 0 || channel > 15) {
+            for (clap_id& c : channels_) c = id;
+        } else {
+            channels_[channel] = id;
+        }
+    }
+
+  private:
+    clap_id chosen(int channel) const { return channels_[channel >= 0 && channel < 16 ? channel : 0]; }
+
+    const clap_host_t* host_ = nullptr;
+    const clap_host_tuning_t* tuning_ = nullptr;
+    clap_id channels_[16] = {CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID,
+                             CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID,
+                             CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID,
+                             CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID};
+#if SUPPLE_TUNING_MTS
+    MTSClient* mts_ = nullptr;
+#endif
 };
 
 // --- the plugin -------------------------------------------------------------------
@@ -182,6 +311,15 @@ struct Plugin : StateAccess
     const clap_host_voice_info_t* hostVoiceInfo = nullptr;
     const clap_host_state_t* hostState = nullptr;
     const clap_host_preset_load_t* hostPresetLoad = nullptr;
+    const clap_host_log_t* hostLog = nullptr;
+    const clap_host_thread_check_t* hostThreadCheck = nullptr;
+    const clap_host_context_menu_t* hostContextMenu = nullptr;
+    const clap_host_track_info_t* hostTrackInfo = nullptr;
+    const clap_host_note_name_t* hostNoteName = nullptr;
+    uint16_t tuningSpace = UINT16_MAX;  // where the host's tuning events are, if anywhere
+    // The host creates the plugin on its main thread; without thread-check,
+    // that is how a debug build knows it.
+    std::thread::id mainThread = std::this_thread::get_id();
 
     Engine engine;
     EditBridge edits;
@@ -200,10 +338,115 @@ struct Plugin : StateAccess
 
     // The preset library (main thread), for a product with presets.
     std::unique_ptr<PresetLibrary> presets;
+    PluginTuning tuning;  // PRODUCT_TUNING
+    NoteNames noteNameList;  // main thread: the note names as the host last read them
 
     Plugin() {
         for (size_t k = 0; k < params::kOutputCount; ++k)
             heardOutputs[k].store(hostDefault(params::at(params::kOutputIndices[k])), std::memory_order_relaxed);
+    }
+
+    // --- diagnostics ---------------------------------------------------------------
+
+    // Main thread.
+    void log(clap_log_severity severity, const char* text) const {
+        if (hostLog && hostLog->log)
+            hostLog->log(host, severity, text);
+        else if (kDebugBuild)
+            std::fprintf(stderr, "%s: %s\n", info::kName, text);
+    }
+
+    bool onMainThread() const {
+        if (hostThreadCheck && hostThreadCheck->is_main_thread) return hostThreadCheck->is_main_thread(host);
+        return std::this_thread::get_id() == mainThread;
+    }
+    // Without thread-check there is no telling: hosts may process on any
+    // thread, the main one included.
+    bool onAudioThread() const {
+        return !(hostThreadCheck && hostThreadCheck->is_audio_thread) || hostThreadCheck->is_audio_thread(host);
+    }
+
+    // Debug builds: notes a call on a thread CLAP does not allow, for the
+    // main thread to log. Any thread, and real-time safe.
+    std::atomic<uint64_t> wrongThreads{0};  // every site seen called wrongly
+    uint64_t loggedThreads = 0;             // main thread: those logged
+    void expect(Thread thread, Site site) {
+        if constexpr (!kDebugBuild) return;
+        const bool ok = thread == Thread::Main    ? onMainThread()
+                        : thread == Thread::Audio ? onAudioThread()
+                        : active                  ? onAudioThread()
+                                                  : onMainThread();
+        if (ok) return;
+        const uint64_t bit = uint64_t{1} << static_cast<unsigned>(site);
+        // Nothing is asked of a host destroying the plugin: no callback could
+        // reach it.
+        if (!(wrongThreads.fetch_or(bit, std::memory_order_acq_rel) & bit) && site != Site::Destroy) requestCallback();
+    }
+
+    // What the audio thread found (Report bits), for the main thread to log.
+    std::atomic<uint32_t> reports{0};
+    uint32_t loggedReports = 0;   // main thread
+    uint32_t safetyResetsSeen = 0;  // audio thread
+    void report(uint32_t what) {
+        if (!(reports.fetch_or(what, std::memory_order_acq_rel) & what)) requestCallback();
+    }
+
+    // Main thread: everything noted since the last time, once each.
+    void logReports() {
+        const uint32_t found = reports.load(std::memory_order_acquire) & ~loggedReports;
+        loggedReports |= found;
+        if (found & kNonFinite)
+            log(CLAP_LOG_WARNING, "the processor produced a non-finite sample (NaN or infinity): the block was "
+                                  "silenced and the processor reset");
+        if (found & kNotesDropped)
+            log(CLAP_LOG_WARNING, "more notes and MIDI in one block than the plugin can send: the rest were dropped");
+        if (found & kBadBuses)
+            log(CLAP_LOG_HOST_MISBEHAVING, "process() was called without the audio buses the plugin declared, or "
+                                           "with one narrower than the selected layout");
+        const uint64_t threads = wrongThreads.load(std::memory_order_acquire) & ~loggedThreads;
+        loggedThreads |= threads;
+        for (size_t k = 0; k < static_cast<size_t>(Site::kCount); ++k) {
+            if (!(threads & (uint64_t{1} << k))) continue;
+            char text[160];
+            std::snprintf(text, sizeof(text), "%s was called on a thread CLAP does not allow for it", kSiteNames[k]);
+            log(CLAP_LOG_HOST_MISBEHAVING, text);
+        }
+    }
+
+    // --- whole edits, note names (main thread) ----------------------------------------
+
+    // One complete edit of parameter i, as a menu item asks for: the host
+    // hears a gesture around it, as from the editor.
+    void editWhole(size_t i, double hostValue) {
+        if (params::at(i).isOutput()) return;
+        edits.begin(i);
+        engine.store().set(i, hostValue);
+        edits.value(i);
+        edits.end(i);
+        if (params::at(i).is(pflag::kRestart)) requestRestart();
+        requestFlush();
+        checkNoteNames();
+    }
+
+    NoteNames currentNoteNames() const {
+        NoteNames names;
+        if constexpr (kNoteNames) {
+            ParamValues values;
+            for (size_t i = 0; i < params::kCount; ++i)
+                values.setIndex(i, toPlain(params::at(i), engine.store().get(i)));
+            noteNamesOf<product::Processor>(values, names);
+        }
+        return names;
+    }
+    // Tells the host when the names moved since it last read them.
+    void checkNoteNames() {
+        if constexpr (kNoteNames) {
+            if (!hostNoteName || !hostNoteName->changed) return;
+            NoteNames now = currentNoteNames();
+            if (now == noteNameList) return;
+            noteNameList = std::move(now);
+            hostNoteName->changed(host);
+        }
     }
 
     // --- state (main thread) -------------------------------------------------------
@@ -232,14 +475,20 @@ struct Plugin : StateAccess
     bool load(const uint8_t* data, size_t size, state::Context context) {
         state::Snapshot snapshot;
         const state::LoadResult result = state::load(data, size, kStateMagic, snapshot);
-        if (result == state::LoadResult::Corrupt) return false;
+        if (result == state::LoadResult::Corrupt) {
+            log(CLAP_LOG_WARNING, "the state to load is damaged; nothing was loaded");
+            return false;
+        }
         if (result == state::LoadResult::NotOurs) {
             const bool legacy = product::Processor::loadLegacyState(data, size, [&](uint32_t id, double plainValue) {
                 const int i = params::indexOf(id);
                 if (i >= 0 && std::isfinite(plainValue))
                     snapshot.host[i] = toHost(params::at(static_cast<size_t>(i)), plainValue);
             });
-            if (!legacy) return false;
+            if (!legacy) {
+                log(CLAP_LOG_WARNING, "the state to load is not this plugin's; nothing was loaded");
+                return false;
+            }
         }
         apply(snapshot, context);
         return true;
@@ -267,6 +516,7 @@ struct Plugin : StateAccess
         // A stopped host would otherwise apply the new values only when it
         // next processes; a flush applies them now.
         if (active) requestFlush();
+        checkNoteNames();
     }
 
     void restoreEditorScale(double scale) {
@@ -321,6 +571,7 @@ struct Plugin : StateAccess
     std::atomic<bool> flushWanted{false};
     std::atomic<bool> flushRequested{false};
     std::atomic<bool> voicesChanged{false};
+    std::atomic<bool> namesChanged{false};
 
     template <class T>
     T* hostExtension(const char* id) const {
@@ -398,7 +649,16 @@ struct Plugin : StateAccess
             voicesChanged.store(true, std::memory_order_release);
             requestCallback();
         }
+        if (kNoteNames && engine.takeNoteNamesChange()) {  // so is note_name.changed
+            namesChanged.store(true, std::memory_order_release);
+            requestCallback();
+        }
+        if (const uint32_t resets = engine.safetyResets(); resets != safetyResetsSeen) {
+            safetyResetsSeen = resets;
+            report(kNonFinite);
+        }
         const NoteOutput& sent = engine.noteOutput();
+        if (sent.dropped() > 0) report(kNotesDropped);
         for (int i = 0; out && i < sent.count(); ++i) {
             const NoteOutput::Entry& entry = sent[i];
             const uint32_t time = frames ? std::min(entry.time, frames - 1) : 0;
@@ -512,6 +772,7 @@ struct Plugin : StateAccess
         if (i < 0) return;
         edits.end(static_cast<size_t>(i));
         requestFlush();
+        checkNoteNames();
     }
     std::string_view property(uint32_t id) const override {
         const int i = properties::indexOf(id);
@@ -530,6 +791,103 @@ struct Plugin : StateAccess
     }
     uint64_t propertiesVersion() const override { return engine.properties().version(); }
     PresetLibrary* presetLibrary() override { return presets.get(); }
+
+    gui::TrackInfo trackInfo;
+    uint64_t trackChanges = 0;
+    gui::TrackInfo track() const override { return trackInfo; }
+    uint64_t trackVersion() const override { return trackChanges; }
+    // Asks the host again, at start-up and whenever it says the track changed.
+    void refreshTrack() {
+        clap_track_info_t t{};
+        if (!hostTrackInfo || !hostTrackInfo->get || !hostTrackInfo->get(host, &t)) return;
+        gui::TrackInfo next;
+        if (t.flags & CLAP_TRACK_INFO_HAS_TRACK_NAME) next.name.assign(t.name, strnlen(t.name, sizeof(t.name)));
+        if (t.flags & CLAP_TRACK_INFO_HAS_TRACK_COLOR) {
+            next.hasColour = true;
+            next.red = t.color.red;
+            next.green = t.color.green;
+            next.blue = t.color.blue;
+            next.alpha = t.color.alpha;
+        }
+        next.returnTrack = (t.flags & CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK) != 0;
+        next.bus = (t.flags & CLAP_TRACK_INFO_IS_FOR_BUS) != 0;
+        next.master = (t.flags & CLAP_TRACK_INFO_IS_FOR_MASTER) != 0;
+        trackInfo = std::move(next);
+        ++trackChanges;
+    }
+
+    bool hostPopup(uint32_t param, float x, float y) override {
+        if (!editor || !hostContextMenu || !hostContextMenu->can_popup || !hostContextMenu->popup ||
+            !hostContextMenu->can_popup(host))
+            return false;
+        int32_t hx = 0, hy = 0;
+        editor->window().designToHost(x, y, hx, hy);
+        const clap_context_menu_target_t target{CLAP_CONTEXT_MENU_TARGET_KIND_PARAM, param};
+        return hostContextMenu->popup(host, &target, 0, hx, hy);
+    }
+    bool hostMenu(uint32_t param, gui::HostMenu& menu) override {
+        if (!hostContextMenu || !hostContextMenu->populate) return false;
+        // Every kind is accepted and flattened: a submenu's label becomes a
+        // header over its items, and its end a separator.
+        clap_context_menu_builder_t builder{};
+        builder.ctx = &menu;
+        builder.supports = [](const clap_context_menu_builder_t*, clap_context_menu_item_kind_t kind) {
+            return kind <= CLAP_CONTEXT_MENU_ITEM_TITLE;
+        };
+        builder.add_item = [](const clap_context_menu_builder_t* b, clap_context_menu_item_kind_t kind,
+                              const void* data) {
+            auto& m = *static_cast<gui::HostMenu*>(b->ctx);
+            auto text = [](const char* t) { return std::string(t ? t : ""); };
+            switch (kind) {
+                case CLAP_CONTEXT_MENU_ITEM_ENTRY: {
+                    const auto* e = static_cast<const clap_context_menu_entry_t*>(data);
+                    if (!e) return false;
+                    m.items.push_back(gui::MenuItem::item(text(e->label), false, e->is_enabled));
+                    m.actions.push_back(e->action_id);
+                    return true;
+                }
+                case CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY: {
+                    const auto* e = static_cast<const clap_context_menu_check_entry_t*>(data);
+                    if (!e) return false;
+                    m.items.push_back(gui::MenuItem::item(text(e->label), e->is_checked, e->is_enabled));
+                    m.actions.push_back(e->action_id);
+                    return true;
+                }
+                case CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU: {
+                    const auto* e = static_cast<const clap_context_menu_submenu_t*>(data);
+                    m.items.push_back(gui::MenuItem::header(text(e ? e->label : nullptr)));
+                    break;
+                }
+                case CLAP_CONTEXT_MENU_ITEM_TITLE: {
+                    const auto* e = static_cast<const clap_context_menu_item_title_t*>(data);
+                    m.items.push_back(gui::MenuItem::header(text(e ? e->title : nullptr)));
+                    break;
+                }
+                case CLAP_CONTEXT_MENU_ITEM_SEPARATOR:
+                case CLAP_CONTEXT_MENU_ITEM_END_SUBMENU: m.items.push_back(gui::MenuItem::separator()); break;
+                default: return false;
+            }
+            m.actions.push_back(CLAP_INVALID_ID);
+            return true;
+        };
+        const clap_context_menu_target_t target{CLAP_CONTEXT_MENU_TARGET_KIND_PARAM, param};
+        return hostContextMenu->populate(host, &target, &builder);
+    }
+    bool performHostMenu(uint32_t param, uint32_t action) override {
+        if (!hostContextMenu || !hostContextMenu->perform || action == CLAP_INVALID_ID) return false;
+        const clap_context_menu_target_t target{CLAP_CONTEXT_MENU_TARGET_KIND_PARAM, param};
+        return hostContextMenu->perform(host, &target, action);
+    }
+
+    void log(gui::LogLevel level, std::string_view message) override {
+        const clap_log_severity severity = level == gui::LogLevel::Debug     ? CLAP_LOG_DEBUG
+                                           : level == gui::LogLevel::Info    ? CLAP_LOG_INFO
+                                           : level == gui::LogLevel::Warning ? CLAP_LOG_WARNING
+                                                                             : CLAP_LOG_ERROR;
+        const std::string text(message);
+        log(severity, text.c_str());
+    }
+
     bool popTelemetry(TelemetryFrame& frame) override { return engine.telemetry().pop(frame); }
     int latencySamples() const override { return engine.latency(); }
     double sampleRate() const override { return engine.sampleRate(); }
@@ -643,6 +1001,7 @@ bool CLAP_ABI configsGet(const clap_plugin_t*, uint32_t index, clap_audio_ports_
 
 bool CLAP_ABI configsSelect(const clap_plugin_t* p, clap_id id) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::PortsConfig);
     if (s->active) return false;
     for (int channels : info::kChannelLayouts) {
         if (static_cast<clap_id>(channels) == id) {
@@ -698,6 +1057,7 @@ bool CLAP_ABI configurableCanApply(const clap_plugin_t* p, const clap_audio_port
 bool CLAP_ABI configurableApply(const clap_plugin_t* p, const clap_audio_port_configuration_request_t* requests,
                                 uint32_t count) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::PortsConfig);
     int channels = 0;
     if (s->active || !layoutRequested(requests, count, channels)) return false;
     s->channels = channels;
@@ -778,7 +1138,10 @@ const clap_plugin_as_vst3_t kAsVst3 = {vst3MidiChannels, vst3NoteExpressions};
 // --- latency and tail ---------------------------------------------------------------------
 
 // The value from the last activation: latency may only change across one.
-uint32_t CLAP_ABI latencyGet(const clap_plugin_t* p) { return static_cast<uint32_t>(self(p)->engine.latency()); }
+uint32_t CLAP_ABI latencyGet(const clap_plugin_t* p) {
+    self(p)->expect(Thread::Main, Site::Latency);
+    return static_cast<uint32_t>(self(p)->engine.latency());
+}
 const clap_plugin_latency_t kLatency = {latencyGet};
 
 uint32_t CLAP_ABI tailGet(const clap_plugin_t* p) { return self(p)->engine.tail(); }
@@ -786,9 +1149,13 @@ const clap_plugin_tail_t kTail = {tailGet};
 
 // --- params ----------------------------------------------------------------------------------
 
-uint32_t CLAP_ABI paramsCount(const clap_plugin_t*) { return static_cast<uint32_t>(params::kCount); }
+uint32_t CLAP_ABI paramsCount(const clap_plugin_t* p) {
+    self(p)->expect(Thread::Main, Site::ParamsCount);
+    return static_cast<uint32_t>(params::kCount);
+}
 
-bool CLAP_ABI paramsInfo(const clap_plugin_t*, uint32_t index, clap_param_info_t* out) {
+bool CLAP_ABI paramsInfo(const clap_plugin_t* plugin, uint32_t index, clap_param_info_t* out) {
+    self(plugin)->expect(Thread::Main, Site::ParamsInfo);
     if (index >= params::kCount) return false;
     const ParamDef& p = params::at(index);
     std::memset(out, 0, sizeof(*out));
@@ -810,6 +1177,7 @@ bool CLAP_ABI paramsInfo(const clap_plugin_t*, uint32_t index, clap_param_info_t
 }
 
 bool CLAP_ABI paramsValue(const clap_plugin_t* p, clap_id id, double* out) {
+    self(p)->expect(Thread::Main, Site::ParamsValue);
     const int i = params::indexOf(id);
     if (i < 0) return false;
     if (params::at(static_cast<size_t>(i)).isOutput()) {
@@ -821,14 +1189,16 @@ bool CLAP_ABI paramsValue(const clap_plugin_t* p, clap_id id, double* out) {
     return true;
 }
 
-bool CLAP_ABI paramsValueToText(const clap_plugin_t*, clap_id id, double value, char* out, uint32_t size) {
+bool CLAP_ABI paramsValueToText(const clap_plugin_t* plugin, clap_id id, double value, char* out, uint32_t size) {
+    self(plugin)->expect(Thread::Main, Site::ParamsToText);
     const ParamDef* p = params::find(id);
     if (!p || !out || size == 0) return false;
     formatValue(*p, value, out, size);
     return true;
 }
 
-bool CLAP_ABI paramsTextToValue(const clap_plugin_t*, clap_id id, const char* text, double* out) {
+bool CLAP_ABI paramsTextToValue(const clap_plugin_t* plugin, clap_id id, const char* text, double* out) {
+    self(plugin)->expect(Thread::Main, Site::ParamsFromText);
     const ParamDef* p = params::find(id);
     return p && out && parseValue(*p, text, *out);
 }
@@ -836,7 +1206,8 @@ bool CLAP_ABI paramsTextToValue(const clap_plugin_t*, clap_id id, const char* te
 void CLAP_ABI paramsFlush(const clap_plugin_t* p, const clap_input_events_t* in,
                           const clap_output_events_t* out) SUPPLE_REALTIME {
     Plugin* s = self(p);
-    ClapEvents events(in);
+    s->expect(Thread::AudioWhileActive, Site::ParamsFlush);
+    ClapEvents events(in, s->tuningSpace);
     s->engine.flush(events);
     s->drainEdits(out);
     s->afterAudioWork(out, 0);
@@ -869,10 +1240,12 @@ bool readAll(const clap_istream_t* stream, std::vector<uint8_t>& bytes) {
 }
 
 bool CLAP_ABI stateSave(const clap_plugin_t* p, const clap_ostream_t* stream) {
+    self(p)->expect(Thread::Main, Site::StateSave);
     return writeAll(stream, self(p)->save(state::Context::Project));
 }
 
 bool CLAP_ABI stateLoad(const clap_plugin_t* p, const clap_istream_t* stream) {
+    self(p)->expect(Thread::Main, Site::StateLoad);
     std::vector<uint8_t> bytes;
     return readAll(stream, bytes) && self(p)->load(bytes.data(), bytes.size(), state::Context::Project);
 }
@@ -882,10 +1255,12 @@ state::Context contextOf(uint32_t type) {
 }
 
 bool CLAP_ABI stateContextSave(const clap_plugin_t* p, const clap_ostream_t* stream, uint32_t type) {
+    self(p)->expect(Thread::Main, Site::StateSave);
     return writeAll(stream, self(p)->save(contextOf(type)));
 }
 
 bool CLAP_ABI stateContextLoad(const clap_plugin_t* p, const clap_istream_t* stream, uint32_t type) {
+    self(p)->expect(Thread::Main, Site::StateLoad);
     std::vector<uint8_t> bytes;
     return readAll(stream, bytes) && self(p)->load(bytes.data(), bytes.size(), contextOf(type));
 }
@@ -896,6 +1271,7 @@ const clap_plugin_state_context_t kStateContext = {stateContextSave, stateContex
 
 bool CLAP_ABI presetFromLocation(const clap_plugin_t* p, uint32_t kind, const char* location, const char* loadKey) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::PresetLoad);
     bool ok = false;
     if (s->presets) {
         if (kind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN) {
@@ -911,6 +1287,90 @@ bool CLAP_ABI presetFromLocation(const clap_plugin_t* p, uint32_t kind, const ch
 }
 
 const clap_plugin_preset_load_t kPresetLoad = {presetFromLocation};
+
+// --- what the host says about the session (main thread) ------------------------------------
+
+// Offline rendering, for a processor that declared kOfflineMode.
+bool CLAP_ABI renderHardRealtime(const clap_plugin_t* p) {
+    self(p)->expect(Thread::Main, Site::Render);
+    return false;
+}
+
+bool CLAP_ABI renderSet(const clap_plugin_t* p, clap_plugin_render_mode mode) {
+    Plugin* s = self(p);
+    s->expect(Thread::Main, Site::Render);
+    if (mode != CLAP_RENDER_REALTIME && mode != CLAP_RENDER_OFFLINE) return false;
+    s->engine.setOffline(mode == CLAP_RENDER_OFFLINE);
+    return true;
+}
+
+const clap_plugin_render_t kRenderExt = {renderHardRealtime, renderSet};
+
+// The plugin's own items in a host's context menu for a parameter: what the
+// editor's menu offers too.
+constexpr clap_id kMenuReset = 1;
+
+bool CLAP_ABI menuPopulate(const clap_plugin_t* p, const clap_context_menu_target_t* target,
+                           const clap_context_menu_builder_t* builder) {
+    self(p)->expect(Thread::Main, Site::ContextMenu);
+    if (!target || target->kind != CLAP_CONTEXT_MENU_TARGET_KIND_PARAM || !builder) return true;
+    const int i = params::indexOf(target->id);
+    if (i < 0 || params::at(static_cast<size_t>(i)).isOutput()) return true;
+    if (builder->supports && !builder->supports(builder, CLAP_CONTEXT_MENU_ITEM_ENTRY)) return true;
+    const clap_context_menu_entry_t reset{"Reset to Default", true, kMenuReset};
+    return builder->add_item(builder, CLAP_CONTEXT_MENU_ITEM_ENTRY, &reset);
+}
+
+bool CLAP_ABI menuPerform(const clap_plugin_t* p, const clap_context_menu_target_t* target, clap_id action) {
+    Plugin* s = self(p);
+    s->expect(Thread::Main, Site::ContextMenu);
+    if (!target || target->kind != CLAP_CONTEXT_MENU_TARGET_KIND_PARAM || action != kMenuReset) return false;
+    const int i = params::indexOf(target->id);
+    if (i < 0 || params::at(static_cast<size_t>(i)).isOutput()) return false;
+    s->editWhole(static_cast<size_t>(i), hostDefault(params::at(static_cast<size_t>(i))));
+    return true;
+}
+
+const clap_plugin_context_menu_t kContextMenu = {menuPopulate, menuPerform};
+
+#if SUPPLE_WITH_GUI
+void CLAP_ABI trackChanged(const clap_plugin_t* p) {
+    Plugin* s = self(p);
+    s->expect(Thread::Main, Site::TrackInfo);
+    s->refreshTrack();
+}
+
+const clap_plugin_track_info_t kTrackInfo = {trackChanged};
+#endif
+
+// Note names (Processor::noteNames), read fresh each time a host counts them.
+uint32_t CLAP_ABI noteNameCount(const clap_plugin_t* p) {
+    Plugin* s = self(p);
+    s->expect(Thread::Main, Site::NoteNames);
+    s->noteNameList = s->currentNoteNames();
+    return static_cast<uint32_t>(s->noteNameList.size());
+}
+
+bool CLAP_ABI noteNameGet(const clap_plugin_t* p, uint32_t index, clap_note_name_t* out) {
+    Plugin* s = self(p);
+    s->expect(Thread::Main, Site::NoteNames);
+    if (!out || index >= s->noteNameList.size()) return false;
+    const NoteName& n = s->noteNameList[index];
+    std::memset(out, 0, sizeof(*out));
+    std::snprintf(out->name, sizeof(out->name), "%s", n.name.c_str());
+    out->port = static_cast<int16_t>(n.port);
+    out->key = static_cast<int16_t>(n.key);
+    out->channel = static_cast<int16_t>(n.channel);
+    return true;
+}
+
+const clap_plugin_note_name_t kNoteName = {noteNameCount, noteNameGet};
+
+// The host's tunings are read as they are needed; nothing to do when the
+// pool changes.
+void CLAP_ABI tuningChanged(const clap_plugin_t* p) { self(p)->expect(Thread::Main, Site::Tuning); }
+
+const clap_plugin_tuning_t kTuningExt = {tuningChanged};
 
 const clap_plugin_state_t kState = {stateSave, stateLoad};
 
@@ -938,6 +1398,7 @@ bool CLAP_ABI guiPreferredApi(const clap_plugin_t*, const char** api, bool* isFl
 
 bool CLAP_ABI guiCreate(const clap_plugin_t* p, const char* api, bool isFloating) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::GuiCreate);
     if (!guiIsApiSupported(p, api, isFloating)) return false;
     if (!s->editor) {
         s->editor = std::make_unique<gui::Gui>(*s, info::kName);
@@ -954,7 +1415,10 @@ bool CLAP_ABI guiCreate(const clap_plugin_t* p, const char* api, bool isFloating
     return true;
 }
 
-void CLAP_ABI guiDestroy(const clap_plugin_t* p) { self(p)->closeEditor(); }
+void CLAP_ABI guiDestroy(const clap_plugin_t* p) {
+    self(p)->expect(Thread::Main, Site::GuiDestroy);
+    self(p)->closeEditor();
+}
 
 bool CLAP_ABI guiSetScale(const clap_plugin_t* p, double scale) {
 #if defined(__APPLE__)
@@ -1000,11 +1464,13 @@ bool CLAP_ABI guiAdjustSize(const clap_plugin_t* p, uint32_t* w, uint32_t* h) {
 
 bool CLAP_ABI guiSetSize(const clap_plugin_t* p, uint32_t w, uint32_t h) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::GuiSize);
     return s->editor && s->editor->setSize(w, h);
 }
 
 bool CLAP_ABI guiSetParent(const clap_plugin_t* p, const clap_window_t* window) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::GuiParent);
     if (!s->editor || !window) return false;
 #if defined(_WIN32) || defined(__APPLE__)
     const uintptr_t parent = reinterpret_cast<uintptr_t>(window->ptr);
@@ -1023,6 +1489,7 @@ void CLAP_ABI guiSuggestTitle(const clap_plugin_t*, const char*) {}
 
 bool CLAP_ABI guiShow(const clap_plugin_t* p) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::GuiShow);
     if (!s->editor) return false;
     s->engine.telemetry().clear();
     const bool shown = s->editor->show();
@@ -1036,6 +1503,7 @@ bool CLAP_ABI guiShow(const clap_plugin_t* p) {
 
 bool CLAP_ABI guiHide(const clap_plugin_t* p) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::GuiHide);
     s->engine.setMetering(false);
     s->stopTimer();
     if (!s->editor) return false;
@@ -1051,6 +1519,7 @@ const clap_plugin_gui_t kGui = {guiIsApiSupported, guiPreferredApi, guiCreate,  
 
 void CLAP_ABI timerTick(const clap_plugin_t* p, clap_id id) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::Timer);
     if (s->editor && id == s->timerId) s->editor->tick();
 }
 
@@ -1071,12 +1540,33 @@ bool CLAP_ABI pluginInit(const clap_plugin_t* p) {
     s->hostState = s->hostExtension<const clap_host_state_t>(CLAP_EXT_STATE);
     s->hostPresetLoad = s->hostExtension<const clap_host_preset_load_t>(CLAP_EXT_PRESET_LOAD);
     if (!s->hostPresetLoad) s->hostPresetLoad = s->hostExtension<const clap_host_preset_load_t>(CLAP_EXT_PRESET_LOAD_COMPAT);
+    s->hostLog = s->hostExtension<const clap_host_log_t>(CLAP_EXT_LOG);
+    s->hostThreadCheck = s->hostExtension<const clap_host_thread_check_t>(CLAP_EXT_THREAD_CHECK);
+    s->expect(Thread::Main, Site::Init);
+    s->hostContextMenu = s->hostExtension<const clap_host_context_menu_t>(CLAP_EXT_CONTEXT_MENU);
+    if (!s->hostContextMenu)
+        s->hostContextMenu = s->hostExtension<const clap_host_context_menu_t>(CLAP_EXT_CONTEXT_MENU_COMPAT);
+    s->hostTrackInfo = s->hostExtension<const clap_host_track_info_t>(CLAP_EXT_TRACK_INFO);
+    if (!s->hostTrackInfo) s->hostTrackInfo = s->hostExtension<const clap_host_track_info_t>(CLAP_EXT_TRACK_INFO_COMPAT);
+    if constexpr (kNoteNames) s->hostNoteName = s->hostExtension<const clap_host_note_name_t>(CLAP_EXT_NOTE_NAME);
+    if constexpr (kTuning) {
+        const auto* registry = s->hostExtension<const clap_host_event_registry_t>(CLAP_EXT_EVENT_REGISTRY);
+        uint16_t space = UINT16_MAX;
+        if (registry && registry->query && registry->query(s->host, CLAP_EXT_TUNING, &space)) s->tuningSpace = space;
+        s->tuning.attach(s->host, s->hostExtension<const clap_host_tuning_t>(CLAP_EXT_TUNING));
+        s->engine.setTuning(&s->tuning);
+    }
+#if SUPPLE_WITH_GUI
+    s->refreshTrack();  // the host may never say it changed
+#endif
     s->createPresets();
     return true;
 }
 
 void CLAP_ABI pluginDestroy(const clap_plugin_t* p) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::Destroy);
+    s->tuning.detach();
 #if SUPPLE_WITH_GUI
     // A host should destroy the editor first; not all do, and a timer left
     // pointing at freed memory is not survivable.
@@ -1087,6 +1577,7 @@ void CLAP_ABI pluginDestroy(const clap_plugin_t* p) {
 
 bool CLAP_ABI pluginActivate(const clap_plugin_t* p, double sampleRate, uint32_t, uint32_t maxFrames) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::Activate);
     if (!s->engine.activate(sampleRate, static_cast<int>(std::max<uint32_t>(1, maxFrames)),
                             info::kAudioInput ? s->channels : 0, s->channels))
         return false;
@@ -1105,14 +1596,23 @@ bool CLAP_ABI pluginActivate(const clap_plugin_t* p, double sampleRate, uint32_t
 
 void CLAP_ABI pluginDeactivate(const clap_plugin_t* p) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::Deactivate);
     s->engine.deactivate();
     s->active = false;
 }
 
-bool CLAP_ABI pluginStartProcessing(const clap_plugin_t*) { return true; }
-void CLAP_ABI pluginStopProcessing(const clap_plugin_t*) {}
+bool CLAP_ABI pluginStartProcessing(const clap_plugin_t* p) SUPPLE_REALTIME {
+    self(p)->expect(Thread::Audio, Site::StartProcessing);
+    return true;
+}
+void CLAP_ABI pluginStopProcessing(const clap_plugin_t* p) SUPPLE_REALTIME {
+    self(p)->expect(Thread::Audio, Site::StopProcessing);
+}
 
-void CLAP_ABI pluginReset(const clap_plugin_t* p) SUPPLE_REALTIME { self(p)->engine.reset(); }
+void CLAP_ABI pluginReset(const clap_plugin_t* p) SUPPLE_REALTIME {
+    self(p)->expect(Thread::Audio, Site::Reset);
+    self(p)->engine.reset();
+}
 
 template <class T>
 T* const* channelsOf(const clap_audio_buffer_t& b) {
@@ -1157,7 +1657,8 @@ bool processAs(Plugin* s, const clap_process_t* process, Source& events, const T
 
 clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_process_t* process) SUPPLE_REALTIME {
     Plugin* s = self(p);
-    ClapEvents events(process->in_events);
+    s->expect(Thread::Audio, Site::Process);
+    ClapEvents events(process->in_events, s->tuningSpace);
     // Edits first, so the host records them in the block that plays them.
     s->drainEdits(process->out_events);
 
@@ -1180,12 +1681,16 @@ clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_pr
         AudioBuses<double> none;
         s->engine.process(none, static_cast<int>(process->frames_count), events, t);
     } else if (process->audio_outputs_count < 1 || (info::kAudioInput && process->audio_inputs_count < 1)) {
+        s->report(kBadBuses);
         s->engine.flush(events);
     } else {
         clap_audio_buffer_t& out = process->audio_outputs[0];
         // Bus widths are fixed by the selected configuration and activate();
         // a mismatch is a host contract violation, not a cue to reallocate.
-        if (static_cast<int>(out.channel_count) < s->channels) return CLAP_PROCESS_ERROR;
+        if (static_cast<int>(out.channel_count) < s->channels) {
+            s->report(kBadBuses);
+            return CLAP_PROCESS_ERROR;
+        }
         // Every sample is written, and nothing establishes that they are
         // equal: a stale hint would have the host read sample 0 throughout.
         out.constant_mask = 0;
@@ -1197,7 +1702,10 @@ clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_pr
             ok = processAs<double>(s, process, events, t);
         else
             s->engine.flush(events);
-        if (!ok) return CLAP_PROCESS_ERROR;
+        if (!ok) {
+            s->report(kBadBuses);
+            return CLAP_PROCESS_ERROR;
+        }
     }
     s->afterAudioWork(process->out_events, process->frames_count);
     return CLAP_PROCESS_CONTINUE;
@@ -1226,17 +1734,25 @@ const void* CLAP_ABI pluginExtension(const clap_plugin_t*, const char* id) {
         return &kPresetLoad;
     if (!std::strcmp(id, CLAP_EXT_LATENCY)) return &kLatency;
     if (!std::strcmp(id, CLAP_EXT_TAIL)) return &kTail;
+    if (kRender && !std::strcmp(id, CLAP_EXT_RENDER)) return &kRenderExt;
+    if (!std::strcmp(id, CLAP_EXT_CONTEXT_MENU) || !std::strcmp(id, CLAP_EXT_CONTEXT_MENU_COMPAT)) return &kContextMenu;
+    if (kNoteNames && !std::strcmp(id, CLAP_EXT_NOTE_NAME)) return &kNoteName;
+    if (kTuning && !std::strcmp(id, CLAP_EXT_TUNING)) return &kTuningExt;
 #if SUPPLE_WITH_GUI
     if (!std::strcmp(id, CLAP_EXT_GUI)) return &kGui;
     if (!std::strcmp(id, CLAP_EXT_TIMER_SUPPORT)) return &kTimer;
+    if (!std::strcmp(id, CLAP_EXT_TRACK_INFO) || !std::strcmp(id, CLAP_EXT_TRACK_INFO_COMPAT)) return &kTrackInfo;
 #endif
     return nullptr;
 }
 
 void CLAP_ABI pluginOnMainThread(const clap_plugin_t* p) {
     Plugin* s = self(p);
+    s->expect(Thread::Main, Site::OnMainThread);
     s->callbackRequested.store(false, std::memory_order_release);
     s->engine.properties().collect();
+    s->logReports();
+    if (s->namesChanged.exchange(false, std::memory_order_acq_rel)) s->checkNoteNames();
     if (s->restartWanted.exchange(false, std::memory_order_acq_rel)) s->requestRestart();
     if (s->voicesChanged.exchange(false, std::memory_order_acq_rel) && s->hostVoiceInfo && s->hostVoiceInfo->changed)
         s->hostVoiceInfo->changed(s->host);
@@ -1289,6 +1805,22 @@ supple::gui::EditorHost* supple_test_editor_host(const clap_plugin_t* plugin) {
 
 void supple_test_set_metering(const clap_plugin_t* plugin, bool on) {
     if (plugin) supple::plugin::self(plugin)->engine.setMetering(on);
+}
+
+uint64_t supple_test_wrong_threads(const clap_plugin_t* plugin) {
+    return plugin ? supple::plugin::self(plugin)->wrongThreads.load() : 0;
+}
+
+uint32_t supple_test_reports(const clap_plugin_t* plugin) {
+    return plugin ? supple::plugin::self(plugin)->reports.load() : 0;
+}
+
+bool supple_test_offline(const clap_plugin_t* plugin) {
+    return plugin && supple::plugin::self(plugin)->engine.offline();
+}
+
+double supple_test_retuning(const clap_plugin_t* plugin, int key, int channel) {
+    return plugin ? supple::plugin::self(plugin)->tuning.retuning(key, channel, 0) : 0.0;
 }
 
 bool supple_entry_init(const char*) { return true; }

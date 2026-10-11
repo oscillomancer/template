@@ -87,15 +87,36 @@ int64_t CLAP_ABI memRead(const clap_istream* s, void* p, uint64_t n) {
 int g_restarts = 0;
 const clap_plugin_t* g_plug = nullptr;
 
-const void* CLAP_ABI hostGetExtension(const clap_host*, const char*) { return nullptr; }
+// What the plugin said was wrong. This host keeps every rule, so a debug
+// build checking each call's thread must find nothing to report.
+std::vector<std::string> g_misbehaviour;
+void CLAP_ABI hostLog(const clap_host*, clap_log_severity severity, const char* message) {
+    if (severity == CLAP_LOG_HOST_MISBEHAVING || severity == CLAP_LOG_PLUGIN_MISBEHAVING)
+        g_misbehaviour.push_back(message ? message : "");
+}
+const clap_host_log_t g_log = {hostLog};
+
+const void* CLAP_ABI hostGetExtension(const clap_host*, const char* id) {
+    return !std::strcmp(id, CLAP_EXT_LOG) ? &g_log : nullptr;
+}
 void CLAP_ABI hostRequestRestart(const clap_host*) { ++g_restarts; }
 void CLAP_ABI hostRequestProcess(const clap_host*) {}
 
-// Real hosts service this on the main thread; doing it inline is enough to let
-// the plugin reach its on_main_thread path, which is where the restart request
-// is actually made.
-void CLAP_ABI hostRequestCallback(const clap_host*) {
-    if (g_plug) g_plug->on_main_thread(g_plug);
+// Real hosts service this later, on the main thread; this one does after
+// each block and flush (served()), never inside the call that asked, which
+// may be process() -- where on_main_thread's work is not allowed. It is where
+// the plugin makes its restart request.
+bool g_callbackPending = false;
+void CLAP_ABI hostRequestCallback(const clap_host*) { g_callbackPending = true; }
+void serve() {
+    if (g_callbackPending && g_plug) {
+        g_callbackPending = false;
+        g_plug->on_main_thread(g_plug);
+    }
+}
+clap_process_status served(clap_process_status status) {
+    serve();
+    return status;
 }
 
 // An event list holding a single parameter change at frame 0.
@@ -286,7 +307,7 @@ int main(int argc, char** argv) {
             for (uint32_t c = 0; c < channels; ++c)
                 for (uint32_t i = 0; i < block; ++i)
                     in[c][i] = (float)(0.3 * std::sin(2.0 * 3.14159265358979323846 * 220.0 * (double)(b * block + i) / 48000.0));
-        if (plug->process(plug, &proc) == CLAP_PROCESS_ERROR) finite = false;
+        if (served(plug->process(plug, &proc)) == CLAP_PROCESS_ERROR) finite = false;
         buses.forEachOutput([&](float* c) {
             for (uint32_t i = 0; i < block; ++i) {
                 if (!std::isfinite(c[i])) finite = false;
@@ -330,7 +351,10 @@ int main(int argc, char** argv) {
     clap_input_events_t emptyEv{nullptr, [](const clap_input_events*) -> uint32_t { return 0; },
                                 [](const clap_input_events*, uint32_t)
                                     -> const clap_event_header_t* { return nullptr; }};
-    for (int i = 0; i < 50; ++i) params->flush(plug, &emptyEv, &outEv);
+    for (int i = 0; i < 50; ++i) {
+        params->flush(plug, &emptyEv, &outEv);
+        serve();
+    }
     check(g_restarts == 0, "50 idle parameter flushes request no restart");
 
     // Ordinary automation of a parameter that cannot change latency. Swept
@@ -346,7 +370,7 @@ int main(int argc, char** argv) {
         setParamEvent(idPlain, plainInfo.min_value +
                                    t * (plainInfo.max_value - plainInfo.min_value));
         quiet();
-        plug->process(plug, &proc);
+        served(plug->process(plug, &proc));
     }
     check(g_restarts == 0,
           "50 blocks of " HOST_SMOKE_PLAIN_PARAM " automation request no restart");
@@ -366,7 +390,7 @@ int main(int argc, char** argv) {
     auto applyAndProcess = [&](clap_id id, double v) {
         setParamEvent(id, v);
         quiet();
-        plug->process(plug, &proc);
+        served(plug->process(plug, &proc));
         g_events.active = false;
     };
     auto restart = [&] {
@@ -400,7 +424,7 @@ int main(int argc, char** argv) {
     g_restarts = 0;
     for (int i = 0; i < 50; ++i) {
         quiet();
-        plug->process(plug, &proc);
+        served(plug->process(plug, &proc));
     }
     check(g_restarts == 0, "a settled latency asks for no restart");
 #endif
@@ -415,7 +439,7 @@ int main(int argc, char** argv) {
         double v = info.min_value + 0.7 * (info.max_value - info.min_value);
         if (info.flags & CLAP_PARAM_IS_STEPPED) v = std::round(v);
         setParamEvent(info.id, v);
-        plug->process(plug, &proc);
+        served(plug->process(plug, &proc));
         double now = 0.0;
         params->get_value(plug, info.id, &now);
         expected.push_back({info.id, now});
@@ -462,7 +486,7 @@ int main(int argc, char** argv) {
                 if (info.flags & CLAP_PARAM_IS_BYPASS) v = info.min_value;
                 setParamEvent(info.id, v);
                 quiet();
-                plug->process(plug, &proc);
+                served(plug->process(plug, &proc));
             }
             g_events.active = false;
         };
@@ -500,7 +524,7 @@ int main(int argc, char** argv) {
         setAll(0.8);
         for (int b = 0; b < 40; ++b) {
             feed();
-            plug->process(plug, &proc);
+            served(plug->process(plug, &proc));
         }
         clap_istream_t iw{&wanted, memRead};
         check(state->load(plug, &iw), "a state loads into the active instance");
@@ -530,6 +554,46 @@ int main(int argc, char** argv) {
             std::printf("     first difference at sample %zu: %g vs %g\n", first, reused[first], clean[first]);
         check(reused.size() == clean.size() && first == reused.size(),
               "after state + reset(), output equals a fresh instance's");
+    }
+
+    // --- what the host says about the session ---
+    if (auto* render = (const clap_plugin_render_t*)plug->get_extension(plug, CLAP_EXT_RENDER)) {
+        const bool offline = render->set(plug, CLAP_RENDER_OFFLINE);
+        bool finite = true;
+        for (int b = 0; b < 4; ++b) {
+            quiet();
+            finite = finite && served(plug->process(plug, &proc)) != CLAP_PROCESS_ERROR;
+            buses.forEachOutput([&](float* c) {
+                for (uint32_t k = 0; k < block; ++k) finite = finite && std::isfinite(c[k]);
+            });
+        }
+        check(offline && finite && render->set(plug, CLAP_RENDER_REALTIME), "render: offline, then real time");
+    }
+    if (auto* menu = (const clap_plugin_context_menu_t*)plug->get_extension(plug, CLAP_EXT_CONTEXT_MENU)) {
+        int items = 0;
+        clap_context_menu_builder_t builder{&items,
+                                            [](const clap_context_menu_builder_t* b, clap_context_menu_item_kind_t,
+                                               const void*) {
+                                                ++*static_cast<int*>(b->ctx);
+                                                return true;
+                                            },
+                                            [](const clap_context_menu_builder_t*, clap_context_menu_item_kind_t) {
+                                                return true;
+                                            }};
+        clap_param_info_t info{};
+        params->get_info(plug, 0, &info);
+        const clap_context_menu_target_t target{CLAP_CONTEXT_MENU_TARGET_KIND_PARAM, info.id};
+        check(menu->populate(plug, &target, &builder) && items > 0, "context menu: items for a parameter");
+    }
+    if (auto* names = (const clap_plugin_note_name_t*)plug->get_extension(plug, CLAP_EXT_NOTE_NAME)) {
+        const uint32_t count = names->count(plug);
+        bool valid = count > 0;
+        for (uint32_t k = 0; k < count; ++k) {
+            clap_note_name_t n{};
+            valid = valid && names->get(plug, k, &n) && n.name[0] && n.key >= -1 && n.key <= 127;
+        }
+        std::printf("     %u note names\n", count);
+        check(valid, "note names: each with a name and a key");
     }
 
     // --- presets, as a host's browser finds and loads them ---
@@ -582,7 +646,7 @@ int main(int argc, char** argv) {
                 loaded = loaded && load && load->from_location(plug, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, key.c_str());
                 for (int b = 0; b < 4; ++b) {
                     quiet();
-                    stillFinite = stillFinite && plug->process(plug, &proc) != CLAP_PROCESS_ERROR;
+                    stillFinite = stillFinite && served(plug->process(plug, &proc)) != CLAP_PROCESS_ERROR;
                     buses.forEachOutput([&](float* c) {
                         for (uint32_t k = 0; k < block; ++k) stillFinite = stillFinite && std::isfinite(c[k]);
                     });
@@ -600,6 +664,8 @@ int main(int argc, char** argv) {
     plug->destroy(plug);
     entry->deinit();
     check(true, "clean shutdown");
+    for (const std::string& m : g_misbehaviour) std::printf("     the plugin logged: %s\n", m.c_str());
+    check(g_misbehaviour.empty(), "the plugin found nothing wrong with this host");
 
     std::printf("\n%s\n", g_fail == 0 ? "all checks passed" : "FAILURES PRESENT");
     return g_fail == 0 ? 0 : 1;

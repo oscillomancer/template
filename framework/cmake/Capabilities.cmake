@@ -15,6 +15,9 @@
 #   PRODUCT_PRESETS          ON: presets -- factory ones from product/Presets.h,
 #                            the user's own in a per-platform folder, listed
 #                            to CLAP hosts, and the editor's preset bar
+#   PRODUCT_TUNING           ON: microtuning for a product with note input --
+#                            an MTS-ESP client and the host's CLAP tuning,
+#                            through ProcessorBase::retuning()
 
 function(supple_bool out value)
     if (value)
@@ -167,6 +170,13 @@ if (NOT PRODUCT_PRESETS AND EXISTS "${SUPPLE_PRODUCT}/Presets.h")
     message(FATAL_ERROR "product/Presets.h lists factory presets: set PRODUCT_PRESETS ON in product.cmake")
 endif()
 
+# --- tuning ------------------------------------------------------------------------------------
+
+if (PRODUCT_TUNING AND NOT note_input)
+    message(FATAL_ERROR "PRODUCT_TUNING needs note input (an instrument, a note effect, or PRODUCT_NOTE_INPUT ON)")
+endif()
+supple_bool(PRODUCT_TUNING_C "${PRODUCT_TUNING}")
+
 set(summary "${PRODUCT_KIND}")
 if (PRODUCT_CHANNELS)
     list(JOIN PRODUCT_CHANNELS "/" layouts_text)
@@ -186,5 +196,8 @@ if (note_output)
 endif()
 if (PRODUCT_PRESETS)
     string(APPEND summary ", presets")
+endif()
+if (PRODUCT_TUNING)
+    string(APPEND summary ", tuning")
 endif()
 message(STATUS "${PRODUCT_NAME}: ${summary}")

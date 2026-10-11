@@ -10,15 +10,37 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/Telemetry.h"
+#include "gui/Menu.h"
 
 namespace supple {
 class PresetLibrary;
 }  // namespace supple
 
 namespace supple::gui {
+
+// The track the plugin sits on, as far as the host says (CLAP track-info;
+// VST3 channel context). Everything is optional.
+struct TrackInfo {
+    std::string name;  // empty when the host gave none
+    bool hasColour = false;
+    uint8_t red = 0, green = 0, blue = 0, alpha = 255;
+    bool returnTrack = false, bus = false, master = false;
+};
+
+// A host's own items for a parameter's context menu (automation, MIDI
+// learn...), flattened: a submenu becomes a header and its items. actions[i]
+// is what performing items[i] asks of the host.
+struct HostMenu {
+    std::vector<MenuItem> items;
+    std::vector<uint32_t> actions;
+};
+
+enum class LogLevel : uint8_t { Debug, Info, Warning, Error };
 
 class EditorHost {
   public:
@@ -52,6 +74,33 @@ class EditorHost {
 
     // The preset library, for a product with presets (core/PresetLibrary.h).
     virtual PresetLibrary* presetLibrary() { return nullptr; }
+
+    // The track, and a number that changes whenever it does, so an editor
+    // that shows it knows to repaint.
+    virtual TrackInfo track() const { return {}; }
+    virtual uint64_t trackVersion() const { return 0; }
+
+    // The host's context menu for a parameter's control (CLAP
+    // context-menu). hostPopup() asks the host to show its own, which also
+    // carries the plugin's items, at (x, y) in design units: false when it
+    // cannot, and then hostMenu() collects the host's items for the editor's
+    // menu and performHostMenu() runs the one chosen.
+    virtual bool hostPopup(uint32_t param, float x, float y) {
+        (void)param, (void)x, (void)y;
+        return false;
+    }
+    virtual bool hostMenu(uint32_t param, HostMenu& menu) {
+        (void)param, (void)menu;
+        return false;
+    }
+    virtual bool performHostMenu(uint32_t param, uint32_t action) {
+        (void)param, (void)action;
+        return false;
+    }
+
+    // A line in the host's log (CLAP log), or on stderr in a debug build of
+    // a host that has none. Never from the audio thread.
+    virtual void log(LogLevel level, std::string_view message) { (void)level, (void)message; }
 
     virtual bool popTelemetry(TelemetryFrame& frame) = 0;
     virtual int latencySamples() const = 0;

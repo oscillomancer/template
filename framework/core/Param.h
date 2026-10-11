@@ -219,6 +219,8 @@ void formatValue(const ParamDef& p, double host, char* out, size_t size);
 // this parameter does not use. Clamps to the range. "-inf" is accepted only
 // by a level marked offAtMinimum(), and means its minimum.
 bool parseValue(const ParamDef& p, const char* text, double& host);
+// A MIDI key's name, as midiNote() parameters show it: 60 is "C4".
+void keyName(int key, char* out, size_t size);
 
 // --- tempo --------------------------------------------------------------------
 

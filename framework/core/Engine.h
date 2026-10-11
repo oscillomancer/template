@@ -34,6 +34,9 @@
 //   - output parameters: what the processor reports with setOutput() goes
 //     to the store after every block (the editor and get_value read it) and
 //     is due for the host about kOutputHz times a second.
+//   - what the host says about the session: offline rendering (setOffline),
+//     a tuning (setTuning: unmapped keys never reach the processor), and
+//     when the processor's note names changed.
 #pragma once
 
 #include <algorithm>
@@ -51,21 +54,23 @@
 #include "core/ProcessorBase.h"
 #include "core/Realtime.h"
 #include "core/Telemetry.h"
+#include "core/Tuning.h"
 #include "Processor.h"
 
 namespace supple {
 
 // One event for the engine, supplied in time order by whatever drives it.
 struct EngineEvent {
-    enum class Type : uint8_t { Value, Modulation, Note, Midi, Expression, NoteModulation };
+    enum class Type : uint8_t { Value, Modulation, Note, Midi, Expression, NoteModulation, Tuning };
     Type type = Type::Value;
     uint32_t time = 0;   // frame offset within the block
     int index = -1;      // parameter table index, for Value, Modulation and NoteModulation
     double value = 0.0;  // host value; a modulation offset in host units; an expression's value
     NoteEvent note{};    // Note
     MidiMessage midi{};  // Midi
-    NoteAddress address{};  // Expression and NoteModulation: the notes it applies to
+    NoteAddress address{};  // Expression and NoteModulation: the notes it applies to; Tuning: port and channel
     NoteExpression::Type expression = NoteExpression::Type::Volume;
+    uint32_t tuning = 0;    // Tuning: the tuning the host chose
 };
 
 // One host block's audio. Any pointer may be null where the host connected
@@ -133,6 +138,7 @@ class BasicEngine {
         for (size_t i = 0; i < params::kCount; ++i) outputs_[i] = params::at(i).def;
         processor_.bindNoteOutput(&noteOutput_);
         processor_.bindOutputs(outputs_);
+        processor_.bindNoteNamesChanged(&namesChanged_);
     }
 
     ParamStore& store() { return store_; }
@@ -145,6 +151,13 @@ class BasicEngine {
     const Processor& processor() const { return processor_; }
 
     // --- main thread, while inactive -----------------------------------------
+
+    // Where retuning() comes from, for PRODUCT_TUNING; null for none. It
+    // outlives the engine's use of it.
+    void setTuning(TuningSource* source) {
+        tuning_ = source;
+        processor_.bindTuning(source);
+    }
 
     // channelsIn is 0 for an instrument, and both are 0 for a note effect.
     // The sidechain and every aux output are channelsOut wide.
@@ -195,7 +208,8 @@ class BasicEngine {
         }
         values_.markAll();
         values_.setInitial(true);
-        processor_.prepare(ProcessSetup{sampleRate_, maxBlock_, channelsOut_, layout_}, values_);
+        offlineNow_ = offline_.load(std::memory_order_relaxed);
+        processor_.prepare(ProcessSetup{sampleRate_, maxBlock_, channelsOut_, layout_, offlineNow_}, values_);
         properties_.deliverAll(
             [this](size_t i, std::string_view value) { processor_.property(properties::at(i).id, value); });
         retargetGlides(true);
@@ -229,6 +243,10 @@ class BasicEngine {
 
     // Telemetry is produced only while this is on: an editor is open.
     void setMetering(bool on) { metering_.store(on, std::memory_order_relaxed); }
+    // Any thread: the host renders without real-time pressure. Heard at the
+    // next activation (setup.offline) and the next block (block.offline).
+    void setOffline(bool on) { offline_.store(on, std::memory_order_relaxed); }
+    bool offline() const { return offline_.load(std::memory_order_relaxed); }
     TelemetryRing& telemetry() { return telemetry_; }
 
     // Latency reported to the host at the last activation. It may not change
@@ -257,6 +275,12 @@ class BasicEngine {
     bool takeTailChange() {
         const bool changed = tailChanged_;
         tailChanged_ = false;
+        return changed;
+    }
+    // Audio thread: true once after the processor called noteNamesChanged().
+    bool takeNoteNamesChange() {
+        const bool changed = namesChanged_;
+        namesChanged_ = false;
         return changed;
     }
     // What the processor sent during the last process() or flush(): note
@@ -314,6 +338,7 @@ class BasicEngine {
         if (!active_ || frames <= 0 || (!io.out && channelsOut_ > 0)) return;
         ScopedFlushDenormals noDenormals;
         syncStore();
+        offlineNow_ = offline_.load(std::memory_order_relaxed);
 
         const bool metering = metering_.load(std::memory_order_relaxed);
         if (metering != wasMetering_) {
@@ -388,10 +413,20 @@ class BasicEngine {
 
     void apply(const EngineEvent& e) {
         using Type = EngineEvent::Type;
+        if (e.type == Type::Tuning) {
+            if (tuning_) tuning_->select(e.address.port, e.address.channel, e.tuning);
+            return;
+        }
         if (e.type == Type::Note || e.type == Type::Midi || e.type == Type::Expression) {
             if (!active_) return;
             commit();  // a note sees every parameter change stamped before it
             if (e.type == Type::Note) {
+                // A key the tuning leaves unmapped is not played, and the
+                // host hears at once that the note is over.
+                if (tuning_ && e.note.type == NoteEvent::Type::On && !tuning_->plays(e.note.key, e.note.channel)) {
+                    processor_.noteEnded(e.note);
+                    return;
+                }
                 processor_.note(e.note);
             } else if (e.type == Type::Midi) {
                 processor_.midi(e.midi);
@@ -562,6 +597,7 @@ class BasicEngine {
         block.channels = channelsOut_;
         block.frames = n;
         block.metering = metering;
+        block.offline = offlineNow_;
         block.glides = glidePointers_;
         block.moving = moving_;
         block.sidechain = sidechainPointers_.data();
@@ -750,6 +786,10 @@ class BasicEngine {
 
     std::atomic<bool> metering_{false};
     bool wasMetering_ = false;
+    std::atomic<bool> offline_{false};
+    bool offlineNow_ = false;  // audio thread: offline_ as this block began
+    bool namesChanged_ = false;
+    TuningSource* tuning_ = nullptr;
     int period_ = 400;
     int countdown_ = 400;
     double inputPeak_[kMeterChannels]{};

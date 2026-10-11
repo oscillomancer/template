@@ -14,11 +14,14 @@
 //   - other MIDI (controllers, pitch bend) passes straight through midi();
 //   - the Custom shape is text, a property, parsed on the audio thread in
 //     property() without allocating;
+//   - each key is named by the chord it plays (noteNames, CLAP note-name), so
+//     a host's piano roll reads "C4 Major"; changing Shape renames them;
 //   - everything is fixed storage, so nothing allocates.
 #pragma once
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <string_view>
 
 #include "core/ParamValues.h"
@@ -84,7 +87,19 @@ class Processor : public supple::ProcessorBase<Processor> {
         for (auto& k : last_) k = -1;
     }
 
+    // Every key, by the chord it plays: "C4 Major". Main thread.
+    static void noteNames(const supple::ParamValues& v, supple::NoteNames& names) {
+        const char* shape = kShapeLabels[v.choice(kShape)];
+        char key[8], text[32];
+        for (int k = 0; k < 128; ++k) {
+            supple::keyName(k, key, sizeof(key));
+            std::snprintf(text, sizeof(text), "%s %s", key, shape);
+            names.add(k, text);
+        }
+    }
+
     void update(const supple::ParamValues& v) {
+        if (v.changed(kShape)) noteNamesChanged();
         shape_ = v.choice(kShape);
         strum_ = static_cast<int64_t>(std::llround(v[kStrum] * 0.001 * sampleRate_));
     }

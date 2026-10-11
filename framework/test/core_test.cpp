@@ -1180,6 +1180,123 @@ TEST(the_processor_hears_every_property_after_prepare_and_each_change_before_the
     CHECK(p.lastValue() == "499");
 }
 
+// --- what the host says about the session ----------------------------------------------------
+
+namespace {
+
+// Records offline mode, retuning as a processor asks for it, and the notes
+// it is given; says its note names changed when told to.
+class SessionProbe : public ProcessorBase<SessionProbe> {
+  public:
+    void prepare(const ProcessSetup& setup, const ParamValues&) { preparedOffline = setup.offline; }
+    void update(const ParamValues&) {
+        if (renameNext) noteNamesChanged();
+        renameNext = false;
+    }
+    void note(const NoteEvent& e) {
+        if (notes < 8) keys[notes++] = e.key;
+        atNote = retuning(e.key, e.channel);
+    }
+    void process(Block& b) {
+        blockOffline = b.offline;
+        if (splits < 8) heard[splits++] = retuning(60, 0, 1);
+    }
+    bool preparedOffline = false, blockOffline = false, renameNext = false;
+    int keys[8] = {}, notes = 0, splits = 0;
+    double atNote = 0.0, heard[8] = {};
+};
+
+// Retuning that says where it was asked: the key in hundredths, the frame in
+// millionths, plus the tuning the host chose. Key 61 is unmapped.
+struct ScriptedTuning : TuningSource {
+    uint32_t chosen = 0;
+    double retuning(int key, int, uint32_t frame) override { return key * 0.01 + frame * 1e-6 + chosen; }
+    bool plays(int key, int) override { return key != 61; }
+    void select(int, int, uint32_t id) override { chosen = id; }
+};
+
+struct SessionEvents {
+    std::vector<EngineEvent> list;
+    size_t k = 0;
+    bool next(EngineEvent& e) {
+        if (k == list.size()) return false;
+        e = list[k++];
+        return true;
+    }
+    void note(uint32_t time, int key) {
+        EngineEvent e;
+        e.type = EngineEvent::Type::Note;
+        e.time = time;
+        e.note.key = static_cast<int16_t>(key);
+        list.push_back(e);
+    }
+    void tuning(uint32_t time, uint32_t id) {
+        EngineEvent e;
+        e.type = EngineEvent::Type::Tuning;
+        e.time = time;
+        e.address.channel = -1;
+        e.tuning = id;
+        list.push_back(e);
+    }
+};
+
+}  // namespace
+
+TEST(offline_rendering_reaches_prepare_and_the_next_block) {
+    auto e = std::make_unique<BasicEngine<SessionProbe>>();
+    e->setOffline(true);
+    e->activate(48000.0, 64, 2, 2);
+    CHECK(e->processor().preparedOffline);
+    std::vector<double> l(64), r(64);
+    double* io[] = {l.data(), r.data()};
+    e->process<double>(io, io, 64);
+    CHECK(e->processor().blockOffline);
+    e->setOffline(false);  // while active: heard from the next block
+    e->process<double>(io, io, 64);
+    CHECK(!e->processor().blockOffline);
+}
+
+TEST(a_tuning_is_read_where_asked_and_unmapped_keys_never_sound) {
+    auto e = std::make_unique<BasicEngine<SessionProbe>>();
+    ScriptedTuning tuning;
+    e->setTuning(&tuning);
+    e->activate(48000.0, 256, 2, 2);
+    SessionEvents events;
+    events.note(10, 60);
+    events.note(20, 61);       // unmapped: retired at once, never heard
+    events.tuning(30, 7);      // from frame 30 on
+    std::vector<double> l(100), r(100);
+    double* io[] = {l.data(), r.data()};
+    e->process<double>(io, io, 100, events, nullptr);
+    const SessionProbe& p = e->processor();
+    CHECK(p.notes == 1 && p.keys[0] == 60);
+    CHECK_NEAR(p.atNote, 0.60 + 10e-6, 1e-12);  // at the note's own frame
+    const NoteOutput& out = e->noteOutput();
+    CHECK(out.count() == 1 && out[0].kind == NoteOutput::Kind::End && out[0].note.key == 61 && out[0].time == 20);
+    // Splits at 0, 10, 20 and 30; each asks one frame in, and the last after
+    // the host chose tuning 7.
+    CHECK(p.splits == 4);
+    CHECK_NEAR(p.heard[0], 0.60 + 1e-6, 1e-12);
+    CHECK_NEAR(p.heard[2], 0.60 + 21e-6, 1e-12);
+    CHECK_NEAR(p.heard[3], 7.60 + 31e-6, 1e-12);
+}
+
+TEST(a_processor_says_when_its_note_names_change) {
+    auto e = std::make_unique<BasicEngine<SessionProbe>>();
+    e->activate(48000.0, 64, 2, 2);
+    CHECK(!e->takeNoteNamesChange());
+    e->processor().renameNext = true;
+    // Any update will do: move the first parameter the processor reads.
+    size_t i = 0;
+    while (params::at(i).isOutput()) ++i;
+    const ParamDef& p = params::at(i);
+    const double moved = fromNormalized(p, 0.37) != e->store().get(i) ? fromNormalized(p, 0.37) : fromNormalized(p, 0.71);
+    e->store().set(i, moved);
+    NoEvents none;
+    e->flush(none);
+    CHECK(e->takeNoteNamesChange() && !e->takeNoteNamesChange());
+}
+
 // --- presets ---------------------------------------------------------------------------------
 
 namespace {

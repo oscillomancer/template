@@ -32,6 +32,7 @@ set(PRODUCT_CHANNELS    2 1)
 #   set(PRODUCT_NOTE_OUTPUT ON)                  sends notes and MIDI (examples/chord)
 #   set(PRODUCT_NOTE_EXPRESSIONS tuning volume)  per-note expressions used (examples/instrument)
 #   set(PRODUCT_PRESETS ON)                      presets: product/Presets.h, the user's, a preset bar (examples/pulse)
+#   set(PRODUCT_TUNING ON)                       microtuning: MTS-ESP and CLAP tuning (examples/instrument)
 
 # CLAP features after the main category (audio-effect or instrument, which is
 # implied by PRODUCT_KIND). clap-wrapper maps them onto VST3 subcategories.

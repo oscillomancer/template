@@ -11,11 +11,14 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <random>
 #include <thread>
 #include <vector>
+
+#include <clap/ext/draft/tuning.h>
 
 #include "Check.h"
 #include "core/Engine.h"
@@ -34,6 +37,22 @@ namespace {
 
 // --- a scripted host ----------------------------------------------------------------
 
+// Set around the calls a test makes as the host's audio thread, for a host
+// with thread-check.
+thread_local bool tAudioThread = false;
+struct AudioScope {
+    AudioScope() { tAudioThread = true; }
+    ~AudioScope() { tAudioThread = false; }
+};
+
+#ifdef NDEBUG
+constexpr bool kThreadChecks = false;
+#else
+constexpr bool kThreadChecks = true;
+#endif
+
+constexpr uint16_t kTuningSpace = 0x2345;  // where this host puts tuning events
+
 struct Host {
     clap_host_t clap{};
     std::atomic<int> callbacks{0}, restarts{0}, flushRequests{0}, latencyChanges{0}, rescans{0}, tailChanges{0};
@@ -44,6 +63,23 @@ struct Host {
     std::atomic<bool> callbackPending{false};
     std::atomic<std::thread::id> mainThread{std::this_thread::get_id()};
     std::atomic<bool> requestFlushOffMain{false};
+    // What the plugin logged (main thread only, as it must).
+    std::vector<std::pair<clap_log_severity, std::string>> logged;
+    // Extensions a test switches on before init.
+    bool threadCheck = false, contextMenu = false, tuning = false;
+    // The track (track-info).
+    std::string trackName = "Lead";
+    bool trackColour = true;
+    clap_color_t colour{255, 30, 160, 90};
+    // Context menu: what perform() was asked.
+    clap_id performedParam = CLAP_INVALID_ID, performedAction = CLAP_INVALID_ID;
+    int noteNamesChanged = 0;
+
+    size_t loggedContaining(const char* text) const {
+        size_t n = 0;
+        for (const auto& line : logged) n += line.second.find(text) != std::string::npos;
+        return n;
+    }
 
     Host() {
         clap.clap_version = CLAP_VERSION;
@@ -61,7 +97,7 @@ struct Host {
         };
     }
     static Host& self(const clap_host_t* h) { return *static_cast<Host*>(h->host_data); }
-    static const void* CLAP_ABI extension(const clap_host_t*, const char* id) {
+    static const void* CLAP_ABI extension(const clap_host_t* h, const char* id) {
         static const clap_host_params_t params{
             [](const clap_host_t* h, clap_param_rescan_flags) { self(h).rescans++; },
             [](const clap_host_t*, clap_id, clap_param_clear_flags) {},
@@ -86,6 +122,73 @@ struct Host {
                 self(h).loadedKey = key ? key : "";
             }};
         if (!std::strcmp(id, CLAP_EXT_PRESET_LOAD)) return &presetLoad;
+        static const clap_host_log_t log{[](const clap_host_t* h, clap_log_severity severity, const char* text) {
+            self(h).logged.push_back({severity, text ? text : ""});
+        }};
+        if (!std::strcmp(id, CLAP_EXT_LOG)) return &log;
+        static const clap_host_thread_check_t threads{
+            [](const clap_host_t* h) { return std::this_thread::get_id() == self(h).mainThread.load() && !tAudioThread; },
+            [](const clap_host_t* h) { return tAudioThread || std::this_thread::get_id() != self(h).mainThread.load(); }};
+        if (!std::strcmp(id, CLAP_EXT_THREAD_CHECK)) return self(h).threadCheck ? &threads : nullptr;
+        static const clap_host_track_info_t track{[](const clap_host_t* h, clap_track_info_t* info) {
+            const Host& host = self(h);
+            *info = clap_track_info_t{};
+            info->flags = CLAP_TRACK_INFO_HAS_TRACK_NAME | CLAP_TRACK_INFO_IS_FOR_BUS;
+            std::snprintf(info->name, sizeof(info->name), "%s", host.trackName.c_str());
+            if (host.trackColour) {
+                info->flags |= CLAP_TRACK_INFO_HAS_TRACK_COLOR;
+                info->color = host.colour;
+            }
+            return true;
+        }};
+        if (!std::strcmp(id, CLAP_EXT_TRACK_INFO)) return &track;
+        static const clap_host_context_menu_t menu{
+            [](const clap_host_t*, const clap_context_menu_target_t* target, const clap_context_menu_builder_t* b) {
+                if (!target || target->kind != CLAP_CONTEXT_MENU_TARGET_KIND_PARAM) return false;
+                for (uint32_t kind = CLAP_CONTEXT_MENU_ITEM_ENTRY; kind <= CLAP_CONTEXT_MENU_ITEM_TITLE; ++kind)
+                    if (!b->supports(b, kind)) return false;
+                const clap_context_menu_entry_t automate{"Automate", true, 10};
+                const clap_context_menu_submenu_t midi{"MIDI", true};
+                const clap_context_menu_check_entry_t learn{"Learn", true, true, 11};
+                const clap_context_menu_item_title_t title{"Title", true};
+                return b->add_item(b, CLAP_CONTEXT_MENU_ITEM_ENTRY, &automate) &&
+                       b->add_item(b, CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU, &midi) &&
+                       b->add_item(b, CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY, &learn) &&
+                       b->add_item(b, CLAP_CONTEXT_MENU_ITEM_END_SUBMENU, nullptr) &&
+                       b->add_item(b, CLAP_CONTEXT_MENU_ITEM_SEPARATOR, nullptr) &&
+                       b->add_item(b, CLAP_CONTEXT_MENU_ITEM_TITLE, &title);
+            },
+            [](const clap_host_t* h, const clap_context_menu_target_t* target, clap_id action) {
+                self(h).performedParam = target ? target->id : CLAP_INVALID_ID;
+                self(h).performedAction = action;
+                return true;
+            },
+            [](const clap_host_t*) { return false; },
+            [](const clap_host_t*, const clap_context_menu_target_t*, int32_t, int32_t, int32_t) { return false; }};
+        if (!std::strcmp(id, CLAP_EXT_CONTEXT_MENU)) return self(h).contextMenu ? &menu : nullptr;
+        static const clap_host_note_name_t names{[](const clap_host_t* h) { self(h).noteNamesChanged++; }};
+        if (!std::strcmp(id, CLAP_EXT_NOTE_NAME)) return &names;
+        // Tuning 7 is a quarter tone sharp with key 61 unmapped; any other
+        // is equal temperament.
+        static const clap_host_event_registry_t registry{
+            [](const clap_host_t*, const char* space, uint16_t* out) {
+                if (std::strcmp(space, CLAP_EXT_TUNING) != 0) return false;
+                *out = kTuningSpace;
+                return true;
+            }};
+        static const clap_host_tuning_t tunings{
+            [](const clap_host_t*, clap_id tuning, int32_t, int32_t, uint32_t) { return tuning == 7 ? 0.5 : 0.0; },
+            [](const clap_host_t*, clap_id tuning, int32_t, int32_t key) { return !(tuning == 7 && key == 61); },
+            [](const clap_host_t*) -> uint32_t { return 1; },
+            [](const clap_host_t*, uint32_t index, clap_tuning_info_t* info) {
+                if (index != 0) return false;
+                info->tuning_id = 7;
+                std::snprintf(info->name, sizeof(info->name), "Quarter tone up");
+                info->is_dynamic = false;
+                return true;
+            }};
+        if (!std::strcmp(id, CLAP_EXT_EVENT_REGISTRY)) return self(h).tuning ? &registry : nullptr;
+        if (!std::strcmp(id, CLAP_EXT_TUNING)) return self(h).tuning ? &tunings : nullptr;
         return nullptr;
     }
 };
@@ -101,7 +204,9 @@ struct Instance {
     const clap_plugin_state_t* state = nullptr;
     bool active = false;
 
-    Instance() {
+    // `setup` prepares the host before the plugin is created.
+    explicit Instance(const std::function<void(Host&)>& setup = {}) {
+        if (setup) setup(host);
         plugin = factory()->create_plugin(factory(), &host.clap, product::info::kId);
         plugin->init(plugin);
         params = static_cast<const clap_plugin_params_t*>(plugin->get_extension(plugin, CLAP_EXT_PARAMS));
@@ -1128,6 +1233,266 @@ TEST(voice_info_reports_the_processors_voices) {
     CHECK(info.voice_capacity == static_cast<uint32_t>(product::Processor::kVoices));
     CHECK(info.voice_count >= 1 && info.voice_count <= info.voice_capacity);
     CHECK(((info.flags & CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES) != 0) == product::Processor::kOverlappingNotes);
+}
+
+// --- what the host says, and what the plugin tells it ----------------------------------------
+
+template <class T>
+const T* extension(const Instance& i, const char* id) {
+    return static_cast<const T*>(i.plugin->get_extension(i.plugin, id));
+}
+
+// A parameter a host could set: not an output, not bypass.
+size_t settable() {
+    for (size_t k = 0; k < params::kCount; ++k)
+        if (!params::at(k).isOutput() && !params::at(k).is(pflag::kBypass)) return k;
+    return 0;
+}
+
+TEST(each_call_on_a_thread_clap_does_not_allow_is_logged_once) {
+    if (!kThreadChecks) {
+        std::printf("      (a release build checks no threads)\n");
+        return;
+    }
+    Instance i([](Host& h) { h.threadCheck = true; });
+    // A whole session where every call is on its thread: nothing to say.
+    CHECK(i.plugin->activate(i.plugin, 48000.0, 1, 256));
+    i.active = true;
+    Audio a(i.channels());
+    OutEvents out;
+    {
+        AudioScope audio;
+        i.plugin->start_processing(i.plugin);
+        for (int k = 0; k < 4; ++k) a.run(i.plugin, noEvents(), &out);
+        i.params->flush(i.plugin, noEvents(), out.fresh());
+        i.plugin->reset(i.plugin);
+        i.plugin->stop_processing(i.plugin);
+    }
+    saveState(i);
+    i.pumpMain();
+    CHECK(supple_test_wrong_threads(i.plugin) == 0 && i.host.logged.empty());
+
+    // A main-thread call from another thread, twice: one line, naming it.
+    for (int k = 0; k < 2; ++k) {
+        std::thread other([&] { i.params->count(i.plugin); });
+        other.join();
+        i.pumpMain();
+    }
+    CHECK(supple_test_wrong_threads(i.plugin) != 0);
+    CHECK(i.host.logged.size() == 1 && i.host.logged[0].first == CLAP_LOG_HOST_MISBEHAVING &&
+          i.host.loggedContaining("params.count") == 1);
+    // And process() on the main thread.
+    a.run(i.plugin, noEvents(), &out);
+    i.pumpMain();
+    CHECK(i.host.logged.size() == 2 && i.host.loggedContaining("process") == 1);
+}
+
+TEST(trouble_on_the_audio_thread_is_logged_from_the_main_thread_once) {
+    if (!product::info::kAudioOutput) {
+        std::printf("      (no audio in this product)\n");
+        return;
+    }
+    Instance i;
+    i.activate();
+    Audio a(i.channels());
+    a.outs[0].channel_count = static_cast<uint32_t>(i.channels() - 1);  // narrower than the layout
+    for (int k = 0; k < 3; ++k) {
+        CHECK(a.run(i.plugin, noEvents(), nullptr) == CLAP_PROCESS_ERROR);
+        i.pumpMain();
+    }
+    CHECK(supple_test_reports(i.plugin) != 0);
+    CHECK(i.host.logged.size() == 1 && i.host.logged[0].first == CLAP_LOG_HOST_MISBEHAVING);
+    // Damaged state is refused, and said so.
+    std::vector<uint8_t> bytes = saveState(i);
+    bytes.resize(bytes.size() / 2);
+    ByteReader r{&bytes};
+    CHECK(!i.state->load(i.plugin, &r.stream));
+    CHECK(i.host.logged.size() == 2 && i.host.logged[1].first == CLAP_LOG_WARNING);
+}
+
+TEST(an_offline_mode_hears_the_hosts_render_mode_and_no_other_product_claims_one) {
+    Instance i;
+    const auto* render = extension<clap_plugin_render_t>(i, CLAP_EXT_RENDER);
+    CHECK((render != nullptr) == product::Processor::kOfflineMode);
+    if (!render) {
+        std::printf("      (no offline mode in this product)\n");
+        return;
+    }
+    CHECK(!render->has_hard_realtime_requirement(i.plugin));
+    CHECK(render->set(i.plugin, CLAP_RENDER_OFFLINE) && supple_test_offline(i.plugin));
+    CHECK(render->set(i.plugin, CLAP_RENDER_REALTIME) && !supple_test_offline(i.plugin));
+    CHECK(!render->set(i.plugin, 7) && !supple_test_offline(i.plugin));
+}
+
+TEST(a_hosts_context_menu_offers_reset_as_one_whole_edit) {
+    Instance i;
+    i.activate();
+    const auto* menu = extension<clap_plugin_context_menu_t>(i, CLAP_EXT_CONTEXT_MENU);
+    CHECK(menu != nullptr);
+    if (!menu) return;
+    struct Collected {
+        std::vector<std::string> labels;
+        std::vector<clap_id> actions;
+    } got;
+    clap_context_menu_builder_t builder{&got,
+                                        [](const clap_context_menu_builder_t* b, clap_context_menu_item_kind_t kind,
+                                           const void* data) {
+                                            auto& c = *static_cast<Collected*>(b->ctx);
+                                            if (kind != CLAP_CONTEXT_MENU_ITEM_ENTRY) return false;
+                                            const auto* e = static_cast<const clap_context_menu_entry_t*>(data);
+                                            c.labels.push_back(e->label);
+                                            c.actions.push_back(e->action_id);
+                                            return true;
+                                        },
+                                        [](const clap_context_menu_builder_t*, clap_context_menu_item_kind_t) {
+                                            return true;
+                                        }};
+    const size_t k = settable();
+    const ParamDef& p = params::at(k);
+    const clap_context_menu_target_t target{CLAP_CONTEXT_MENU_TARGET_KIND_PARAM, p.id};
+    CHECK(menu->populate(i.plugin, &target, &builder) && got.labels.size() == 1 && got.labels[0] == "Reset to Default");
+    const clap_context_menu_target_t global{CLAP_CONTEXT_MENU_TARGET_KIND_GLOBAL, 0};
+    CHECK(menu->populate(i.plugin, &global, &builder) && got.labels.size() == 1);
+    if (got.actions.empty()) return;
+
+    const double away = fromNormalized(p, 0.37) != hostDefault(p) ? fromNormalized(p, 0.37) : fromNormalized(p, 0.71);
+    InEvents move;
+    move.add(0, p.id, away);
+    OutEvents out;
+    i.params->flush(i.plugin, &move.list, out.fresh());
+    CHECK(i.value(k) == away);
+    CHECK(menu->perform(i.plugin, &target, got.actions[0]) && i.value(k) == hostDefault(p));
+    CHECK(!menu->perform(i.plugin, &global, got.actions[0]));
+    i.params->flush(i.plugin, noEvents(), out.fresh());
+    CHECK(out.sawValue[k] && out.lastValue[k] == hostDefault(p) && out.balanced());
+}
+
+TEST(the_editor_gets_the_hosts_context_menu_flattened) {
+    Instance i([](Host& h) { h.contextMenu = true; });
+    gui::EditorHost* editor = supple_test_editor_host(i.plugin);
+    if (!editor) {
+        std::printf("      (no editor in this build)\n");
+        return;
+    }
+    const uint32_t id = params::at(settable()).id;
+    gui::HostMenu m;
+    CHECK(editor->hostMenu(id, m));
+    using Kind = gui::MenuItem::Kind;
+    CHECK(m.items.size() == 6 && m.actions.size() == 6);
+    if (m.items.size() != 6 || m.actions.size() != 6) return;
+    CHECK(m.items[0].label == "Automate" && m.items[0].kind == Kind::Item && m.actions[0] == 10);
+    CHECK(m.items[1].label == "MIDI" && m.items[1].kind == Kind::Header);
+    CHECK(m.items[2].label == "Learn" && m.items[2].checked && m.actions[2] == 11);
+    CHECK(m.items[3].kind == Kind::Separator && m.items[4].kind == Kind::Separator);
+    CHECK(m.items[5].label == "Title" && m.items[5].kind == Kind::Header);
+    CHECK(editor->performHostMenu(id, 11) && i.host.performedParam == id && i.host.performedAction == 11);
+    CHECK(!editor->hostPopup(id, 10.0f, 10.0f));  // no window, and this host cannot
+}
+
+TEST(the_editor_knows_the_track_and_hears_when_it_changes) {
+    Instance i;
+    gui::EditorHost* editor = supple_test_editor_host(i.plugin);
+    if (!editor) {
+        std::printf("      (no editor in this build)\n");
+        return;
+    }
+    gui::TrackInfo t = editor->track();
+    CHECK(t.name == "Lead" && t.hasColour && t.alpha == 255 && t.red == 30 && t.green == 160 && t.blue == 90);
+    CHECK(t.bus && !t.master && !t.returnTrack);
+    const uint64_t before = editor->trackVersion();
+    i.host.trackName = "Bass";
+    i.host.trackColour = false;
+    const auto* track = extension<clap_plugin_track_info_t>(i, CLAP_EXT_TRACK_INFO);
+    CHECK(track != nullptr);
+    if (!track) return;
+    track->changed(i.plugin);
+    t = editor->track();
+    CHECK(editor->trackVersion() != before && t.name == "Bass" && !t.hasColour);
+}
+
+TEST(note_names_are_the_processors_and_the_host_hears_each_change) {
+    Instance i;
+    const auto* names = extension<clap_plugin_note_name_t>(i, CLAP_EXT_NOTE_NAME);
+    if (!names) {
+        std::printf("      (no note names in this product)\n");
+        return;
+    }
+    CHECK(product::info::kNoteInput);
+    // What a host reads, against the processor's own list at these values.
+    auto expected = [&] {
+        ParamValues v;
+        for (size_t k = 0; k < params::kCount; ++k) v.setIndex(k, toPlain(params::at(k), i.value(k)));
+        NoteNames n;
+        noteNamesOf<product::Processor>(v, n);
+        return n;
+    };
+    auto read = [&] {
+        NoteNames n;
+        const uint32_t count = names->count(i.plugin);
+        for (uint32_t k = 0; k < count; ++k) {
+            clap_note_name_t nn{};
+            CHECK(names->get(i.plugin, k, &nn));
+            n.add(nn.key, nn.name, nn.channel, nn.port);
+        }
+        return n;
+    };
+    NoteNames seen = read();
+    CHECK(seen.size() > 0 && seen == expected());
+    clap_note_name_t none{};
+    CHECK(!names->get(i.plugin, static_cast<uint32_t>(seen.size()), &none));
+
+    // Move each parameter in turn, as automation: whenever the names change,
+    // the host hears so (after a main-thread callback), and reads them again.
+    i.activate();
+    Audio a(i.channels());
+    OutEvents out;
+    for (size_t k = 0; k < params::kCount; ++k) {
+        const ParamDef& p = params::at(k);
+        if (p.isOutput()) continue;
+        for (double normal : {0.37, 0.71, 0.0}) {
+            InEvents move;
+            move.add(0, p.id, fromNormalized(p, normal));
+            const int told = i.host.noteNamesChanged;
+            a.run(i.plugin, &move.list, &out);
+            i.pumpMain();
+            const bool changed = !(expected() == seen);
+            CHECK_MSG(changed == (i.host.noteNamesChanged > told), "%s at %g: names %s, host %s", p.name, normal,
+                      changed ? "changed" : "unchanged", i.host.noteNamesChanged > told ? "told" : "not told");
+            if (i.host.noteNamesChanged > told) seen = read();
+        }
+    }
+}
+
+TEST(the_hosts_tuning_retunes_and_its_unmapped_keys_end_at_once) {
+    Instance i([](Host& h) { h.tuning = true; });
+    const auto* ext = extension<clap_plugin_tuning_t>(i, CLAP_EXT_TUNING);
+    CHECK((ext != nullptr) == product::info::kTuning);
+    if (!ext) {
+        std::printf("      (no tuning in this product)\n");
+        return;
+    }
+    i.activate();
+    CHECK(supple_test_retuning(i.plugin, 60, 0) == 0.0);  // nothing chosen yet
+    Audio a(i.channels());
+    OutEvents out;
+    MixedEvents m;
+    auto& choose = m.add<clap_event_tuning_t>(0, 0);
+    choose.header.space_id = kTuningSpace;
+    choose.port_index = -1;
+    choose.channel = -1;
+    choose.tunning_id = 7;
+    for (int16_t key : {60, 61}) {
+        auto& on = m.add<clap_event_note_t>(CLAP_EVENT_NOTE_ON, static_cast<uint32_t>(key - 50));
+        on.note_id = key;
+        on.port_index = 0;
+        on.channel = 0;
+        on.key = key;
+        on.velocity = 0.8;
+    }
+    m.finish();
+    CHECK(a.run(i.plugin, &m.events, &out) == CLAP_PROCESS_CONTINUE);
+    CHECK(out.noteEnds.size() == 1 && out.noteEnds[0].key == 61 && out.noteEnds[0].header.time == 11);
+    CHECK(supple_test_retuning(i.plugin, 60, 0) == 0.5);
 }
 
 SUPPLE_TEST_MAIN

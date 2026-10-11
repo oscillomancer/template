@@ -490,6 +490,8 @@ void formatValue(const ParamDef& p, double host, char* out, size_t size) {
         std::snprintf(out, size, "%s %s", t.number, t.unit);
 }
 
+void keyName(int key, char* out, size_t size) { noteName(key, out, size); }
+
 bool parseValue(const ParamDef& p, const char* text, double& host) {
     if (!text) return false;
 

@@ -23,6 +23,10 @@ set(PRODUCT_CHANNELS    2 1)
 # (CLAP hosts may send any; noteExpression() ignores the rest).
 set(PRODUCT_NOTE_EXPRESSIONS tuning volume)
 
+# Microtuning: an MTS-ESP master's tuning, or the host's (CLAP tuning),
+# through retuning().
+set(PRODUCT_TUNING      ON)
+
 # CLAP features after the main category (instrument, implied by PRODUCT_KIND).
 set(PRODUCT_FEATURES    "synthesizer" "stereo")
 

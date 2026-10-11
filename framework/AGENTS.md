@@ -13,7 +13,7 @@ Read this file, then `docs/CONVENTIONS.md` for the reasons behind the rules.
 
 | You want to change | Edit |
 | --- | --- |
-| Name, plugin ID, version, AU codes, kind, layouts, capabilities (sidechain, aux outputs, notes, presets), sources | `product/product.cmake` |
+| Name, plugin ID, version, AU codes, kind, layouts, capabilities (sidechain, aux outputs, notes, presets, tuning), sources | `product/product.cmake` |
 | Parameters: names, ranges, tapers, units, defaults, flags | `product/Params.h` |
 | State that is not a parameter: text, a label, a curve (optional) | `product/Properties.h` |
 | Factory presets (optional, with `PRODUCT_PRESETS ON`) | `product/Presets.h` |
@@ -103,6 +103,10 @@ effect is switched on there (checked by `cmake/Capabilities.cmake`):
   the user's own in a per-platform folder, both listed to CLAP hosts
   (preset discovery, preset-load), and the editor's preset bar. The pulse
   and chord examples.
+- `PRODUCT_TUNING ON`: microtuning, for a product with note input. An
+  MTS-ESP client (its master's tuning, in every format) and CLAP's tuning
+  extension; the processor reads `retuning()` (see DSP). The instrument
+  example.
 
 Framework tests follow these: a product is tested on the buses and notes it
 has, and the examples have them all.
@@ -275,6 +279,25 @@ contract is at the top of `core/ProcessorBase.h`. In short:
   playback starts. `block.tempo()` is the host's tempo, or 120 when it
   sent none; `beatsToSeconds(beats, bpm)` converts. The pulse example does
   all of this.
+- Rendering offline: a processor with a costlier, better algorithm for
+  bounces declares `static constexpr bool kOfflineMode = true;` and reads
+  `block.offline` (and `setup.offline` in `prepare()`). Hosts say so through
+  CLAP render, and VST3's offline process mode; AU hosts never do. Without
+  the declaration hosts are not offered the choice. Measure both paths. The
+  instrument example's offline triangle is band-limited.
+- `PRODUCT_TUNING`: `retuning(key, channel, frame)` is how far a key sits
+  from equal temperament at A4 = 440 Hz, in semitones, at that frame of the
+  block; add it to the pitch. Ask while a note sounds, once a block, not only
+  at note-on: a master may retune live. A key the tuning leaves unmapped
+  never reaches `note()`; the framework retires it at once. Without an
+  MTS-ESP master or a host tuning it is 0. The instrument example.
+- Note names: a product with note input that names its keys (a drum map, a
+  keyswitch, the chord each key plays) defines
+  `static void noteNames(const ParamValues& v, NoteNames& names)`, called on
+  the main thread with the current values, and calls `noteNamesChanged()`
+  from `update()` when a parameter it names them by changes. Hosts show them
+  in their piano rolls (CLAP note-name; VST3 and AU have no equivalent
+  through the wrapper). The chord example.
 - Properties arrive through `property(id, std::string_view value)` on the
   audio thread: every one after `prepare()`, then each as it changes, before
   the next block. The view stays valid until that property's next delivery;
@@ -307,6 +330,16 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 - A control bound to an output parameter only displays it. An output
   repaints the editor only while a visible control shows it; drawing of the
   product's own that reads one calls `watch(id)` in the constructor.
+- A right-click on a control opens its context menu: where the host can show
+  its own (CLAP context-menu popup), it does, with the plugin's "Reset to
+  Default" in it; otherwise the editor's, with reset and Enter Value first
+  and the host's items (automation, MIDI learn: CLAP context-menu, VST3's
+  IComponentHandler3 through the wrapper) after them. Nothing to write.
+- The track the plugin is on: `track()` (name, colour, return/bus/master),
+  as far as the host says (CLAP track-info, VST3 channel context); the
+  editor repaints when it changes. The duck example shows it.
+- `host().log(level, text)` writes a line to the host's log (CLAP log), from
+  the main thread only; a debug build with no host log prints it.
 - A control that does not apply right now (a free rate while synced) is
   `enabled = false`: dimmed and left alone. Set it from `animate`.
 - `paint(vg)`: background, `widgets::panel(...)`, the product's centrepiece,
@@ -334,6 +367,10 @@ and must not overlap.
 ## Rules that are not negotiable
 
 - The audio thread does not allocate, lock, log, wait, do I/O or call the GUI.
+  The framework logs what it finds there later, from the main thread: a
+  non-finite sample silenced, notes dropped, buses a host did not provide.
+  A debug build also checks every CLAP call's thread against the spec and
+  logs a host that breaks it, once per call.
 - Only the audio thread touches the processor while it is active. Other
   threads write the `ParamStore`; `Engine` applies it.
 - Host events are applied at their sample offsets.

@@ -79,6 +79,23 @@ if (SUPPLE_BUILD_PLUGIN)
     supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-midi-out.patch)
 endif()
 
+# --- MTS-ESP: the microtuning client, for PRODUCT_TUNING -----------------------------------
+
+# The client half only (0BSD). It finds the shared library an MTS-ESP master
+# installs -- if there is one -- when the plugin loads, and reads the master's
+# tuning tables from it; without one it answers equal temperament.
+if (SUPPLE_BUILD_PLUGIN AND PRODUCT_TUNING)
+    FetchContent_Declare(mts-esp
+        GIT_REPOSITORY https://github.com/ODDSound/MTS-ESP.git
+        GIT_TAG f214739b8832e7f297cb9970d0c0efbf783f1462
+        GIT_SHALLOW OFF)
+    FetchContent_MakeAvailable(mts-esp)
+    add_library(supple-mts STATIC ${mts-esp_SOURCE_DIR}/Client/libMTSClient.cpp)
+    target_include_directories(supple-mts SYSTEM PUBLIC ${mts-esp_SOURCE_DIR}/Client)
+    target_link_libraries(supple-mts PRIVATE ${CMAKE_DL_LIBS})
+    supple_vendored(supple-mts)
+endif()
+
 # --- pugl, NanoVG, nanovg_metal ------------------------------------------------------------
 
 if (SUPPLE_BUILD_GUI)

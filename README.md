@@ -50,14 +50,16 @@ beside `framework/`, not in it, so products do not carry them.
 
 | Example | What it shows |
 | --- | --- |
-| `instrument` (Tone) | Notes at their exact sample, voices and voice info, note ends for the host, pitch bend and the mod wheel, tuning and volume note expressions, per-note modulation of a parameter |
+| `instrument` (Tone) | Notes at their exact sample, voices and voice info, note ends for the host, pitch bend and the mod wheel, tuning and volume note expressions, per-note modulation of a parameter, microtuning (MTS-ESP, CLAP tuning), a better oscillator for offline bounces |
 | `pulse` (Pulse) | A tempo-synced rate, framework-smoothed parameters, a level off at its minimum (-inf dB), an output parameter the host displays, factory presets in categories and the preset bar |
-| `duck` (Duck) | A sidechain input, a named aux output, surround (5.1, 7.1.4) and ambisonic layouts |
-| `chord` (Chord) | A note effect: notes and MIDI in and out, no audio, notes sent at exact frames; properties (a chord typed as text, a per-project label) and presets that set them |
+| `duck` (Duck) | A sidechain input, a named aux output, surround (5.1, 7.1.4) and ambisonic layouts, the track's name and colour |
+| `chord` (Chord) | A note effect: notes and MIDI in and out, no audio, notes sent at exact frames; properties (a chord typed as text, a per-project label) and presets that set them; keys named by the chord they play |
 
 Bigger capabilities are switched on in `product.cmake` (`PRODUCT_SIDECHAIN ON`,
-`PRODUCT_AUX_OUTPUTS "Kick" "Snare"`, `PRODUCT_NOTE_OUTPUT ON`, `PRODUCT_PRESETS ON`, ...); a product
-that switches nothing on is a plain effect or instrument.
+`PRODUCT_AUX_OUTPUTS "Kick" "Snare"`, `PRODUCT_NOTE_OUTPUT ON`, `PRODUCT_PRESETS ON`, `PRODUCT_TUNING ON`, ...); a product
+that switches nothing on is a plain effect or instrument. Every product gets
+the host's context menu on a right-click, the host's log, and in a debug
+build a check of every CLAP call's thread.
 
 ## Read next
 

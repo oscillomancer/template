@@ -18,6 +18,10 @@
 //   - Double-click resets to the default. Ctrl- or Cmd-click, or Enter on a
 //     focused knob or slider, opens a text field that accepts anything the
 //     parameter's parser does ("1.2k", "-6", "50%").
+//   - A right-click opens the control's context menu: the host's own, with
+//     the plugin's items in it, where the host can show one; otherwise the
+//     editor's, with reset and enter-value first and the host's items
+//     (automation, MIDI learn) after them.
 //   - Tab and Shift-Tab move focus in the order controls were added; arrows
 //     adjust (Shift: fine), Page Up/Down in tenths, Home/End to the limits,
 //     Backspace/Delete to the default, Enter toggles or opens, Escape backs
@@ -41,6 +45,7 @@
 
 #include "core/Param.h"
 #include "gui/EditorHost.h"
+#include "gui/Menu.h"
 
 namespace supple::gui {
 
@@ -66,22 +71,6 @@ class Clipboard {
     virtual bool copy(std::string_view text) = 0;
     // The text arrives later, from the window's event loop, or never.
     virtual bool paste(std::function<void(std::string_view)> done) = 0;
-};
-
-// One row of a popup menu.
-struct MenuItem {
-    enum class Kind : uint8_t { Item, Header, Separator };
-    std::string label;
-    Kind kind = Kind::Item;
-    bool checked = false;
-    bool enabled = true;
-
-    static MenuItem item(std::string text, bool checked = false, bool enabled = true) {
-        return {std::move(text), Kind::Item, checked, enabled};
-    }
-    static MenuItem header(std::string text) { return {std::move(text), Kind::Header, false, false}; }
-    static MenuItem separator() { return {"", Kind::Separator, false, false}; }
-    bool selectable() const { return kind == Kind::Item && enabled; }
 };
 
 // The parts of a preset bar, left to right.
@@ -239,6 +228,8 @@ class Ui {
 
     void setFocus(int control);
     void openMenu(int control);
+    // A parameter control's context menu, as a right-click at (x, y) opens it.
+    void openContextMenu(int control, float x, float y);
     void openTextEdit(int control);
 
     // A menu below (or above) `anchor`; chosen(index) runs for the item

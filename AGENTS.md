@@ -37,8 +37,10 @@ builds and tests under any preset. Keep each small, measured
 name, ID and codes, which `new_product` then refuses to reuse.
 
 - `instrument` (Tone): notes, voices, note ends, voice info, MIDI pitch
-  bend and mod wheel, `PRODUCT_NOTE_EXPRESSIONS tuning volume`, and a
-  `polyModulatable()` Level.
+  bend and mod wheel, `PRODUCT_NOTE_EXPRESSIONS tuning volume`, a
+  `polyModulatable()` Level, microtuning (`PRODUCT_TUNING`: MTS-ESP and CLAP
+  tuning through `retuning()`), and `kOfflineMode`: bounces get a
+  band-limited triangle, measured against the live, naive one.
 - `pulse` (Pulse): a tremolo and auto-pan. Tempo sync (`noteValue`, the
   song position when playing), `smoothed()` parameters read from
   `Block::smoothed`, an `offAtMinimum()` level, degrees, an `output()`
@@ -46,11 +48,13 @@ name, ID and codes, which `new_product` then refuses to reuse.
   factory presets in categories and the preset bar.
 - `duck` (Duck): a ducker keyed from `PRODUCT_SIDECHAIN`, with what it
   removes on an aux output (`PRODUCT_AUX_OUTPUTS "Ducked"`), in stereo,
-  mono, 5.1, 7.1.4 and first-order ambisonics.
+  mono, 5.1, 7.1.4 and first-order ambisonics. Its header shows the track's
+  name and colour, as the host gives them.
 - `chord` (Chord): a `note-effect`. Notes and MIDI in and out, no audio, a
   strum that sends notes at exact frames, every input note retired.
   Properties: a Custom chord typed as text and parsed in `property()`, and
-  a `perProject()` label; presets that set them.
+  a `perProject()` label; presets that set them. Note names: each key is
+  named by the chord it plays, renamed when Shape changes.
 
 ## The starter product
 

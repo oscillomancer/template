@@ -166,6 +166,8 @@ struct RenderOptions {
     std::vector<Sent>* sent = nullptr;   // receives what the processor sent
     int frames = 0;                    // a note effect's length (it has no input to measure)
     bool activate = true;              // false: carry on with an engine already active
+    bool offline = false;              // render as a host does a bounce (Processor::kOfflineMode)
+    TuningSource* tuning = nullptr;    // PRODUCT_TUNING: where retuning() comes from
 };
 
 // Renders an effect's input (an instrument's or note effect's length)
@@ -190,6 +192,8 @@ inline Signal render(const Signal& input, const RenderOptions& o, Engine* engine
             const int i = properties::indexOf(id);
             if (i >= 0) engine->properties().set(static_cast<size_t>(i), value);
         }
+        engine->setTuning(o.tuning);
+        engine->setOffline(o.offline);
         engine->activate(o.sampleRate, maxBlock, product::info::kAudioInput ? channels : 0, channels);
     }
     engine->setMetering(o.metering);

@@ -11,6 +11,8 @@
 //   gui-preview menu.png --menu "Slope"
 //   gui-preview presets.png --preset "Wide Pan" --menu Presets
 //   gui-preview text.png --property "Label=Strings" --text "Label"
+//   gui-preview context.png --context "Depth"
+//   gui-preview track.png --track "Drum Bus" --track-colour E5484D
 //
 // This proves drawing only. It cannot validate embedding, host timers,
 // resizing in a host or teardown; clap-probe and x11-probe do that.
@@ -60,6 +62,17 @@ class PreviewHost : public EditorHost, public StateAccess {
     }
     uint64_t propertiesVersion() const override { return properties_.version(); }
     PresetLibrary* presetLibrary() override { return presets_.get(); }
+
+    // The track, as a host would say it.
+    TrackInfo trackInfo;
+    TrackInfo track() const override { return trackInfo; }
+    // A context menu's host items, as a CLAP host might offer them.
+    bool hostMenu(uint32_t, HostMenu& menu) override {
+        menu.items = {MenuItem::item("Show Automation"), MenuItem::header("Modulation"), MenuItem::item("Modulate"),
+                      MenuItem::item("MIDI Learn", true)};
+        menu.actions = {1, 0, 2, 3};
+        return true;
+    }
 
     std::vector<uint8_t> saveState(state::Context context) override {
         state::Snapshot s;
@@ -276,7 +289,7 @@ void usage() {
     std::printf(
         "gui-preview <out.png> [--scale N] [--set \"Name=value\"]... [--property \"Name=text\"]...\n"
         "            [--preset NAME] [--hover NAME] [--focus NAME] [--menu NAME|Presets] [--text NAME]\n"
-        "            [--seconds S]\n");
+        "            [--context NAME] [--track NAME] [--track-colour RRGGBB] [--seconds S]\n");
 }
 
 }  // namespace
@@ -285,7 +298,7 @@ int main(int argc, char** argv) {
     if (argc < 2 || argv[1][0] == '-') return usage(), 2;
     const char* output = argv[1];
     double scale = 1.0, seconds = 3.0;
-    const char *hover = nullptr, *focus = nullptr, *menu = nullptr, *text = nullptr;
+    const char *hover = nullptr, *focus = nullptr, *menu = nullptr, *text = nullptr, *context = nullptr;
     PreviewHost host;
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -298,6 +311,15 @@ int main(int argc, char** argv) {
         else if (arg == "--focus") focus = next;
         else if (arg == "--menu") menu = next;
         else if (arg == "--text") text = next;
+        else if (arg == "--context") context = next;
+        else if (arg == "--track") host.trackInfo.name = next;
+        else if (arg == "--track-colour") {
+            const unsigned long rgb = std::strtoul(next, nullptr, 16);
+            host.trackInfo.hasColour = true;
+            host.trackInfo.red = static_cast<uint8_t>(rgb >> 16);
+            host.trackInfo.green = static_cast<uint8_t>(rgb >> 8);
+            host.trackInfo.blue = static_cast<uint8_t>(rgb);
+        }
         else if (arg == "--preset") {
             const int index = presets::findFactory(next);
             if (!host.presetLibrary() || index < 0 || !host.presetLibrary()->loadFactory(static_cast<size_t>(index))) {
@@ -387,6 +409,7 @@ int main(int argc, char** argv) {
         editor.pointerUp(x, y, 0, 0);
     }
     if (menu && centre(menu, x, y)) editor.pointerDown(x, y, 0, 0, false);
+    if (context && centre(context, x, y)) editor.pointerDown(x, y, 1, 0, false);
     if (text && centre(text, x, y)) {
         editor.pointerDown(x, y, 0, mod::kCtrl, false);
         if (propertyByName(text) >= 0) editor.key(key::kEnd, 0);  // the caret, not a selection

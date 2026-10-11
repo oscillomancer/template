@@ -248,6 +248,13 @@ float Window::toDesignY(double y) const {
     return (static_cast<float>(y) - f.offsetY) / f.scale;
 }
 
+void Window::designToHost(float x, float y, int32_t& hostX, int32_t& hostY) const {
+    const Fit f = fit();
+    const double perUnit = pixelsPerUnit();
+    hostX = static_cast<int32_t>(std::lround((x * f.scale + f.offsetX) / perUnit));
+    hostY = static_cast<int32_t>(std::lround((y * f.scale + f.offsetY) / perUnit));
+}
+
 bool Window::copy(std::string_view text) {
     return view_ && realized_ &&
            puglSetClipboard(view_, PUGL_CLIPBOARD_GENERAL, "text/plain", text.data(), text.size()) == PUGL_SUCCESS;

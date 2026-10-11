@@ -17,10 +17,12 @@
 //   - voices are fixed storage sized in the class, so nothing allocates;
 //   - the envelope is per sample, so output does not depend on block splits;
 //   - tailSamples() tells the host how long sound continues after input stops;
-//   - Telemetry carries what the editor shows (the sounding voices).
-//
-// The triangle is naive and aliases mildly at high notes; a product claiming
-// alias-free oscillators would band-limit it and measure the result.
+//   - Telemetry carries what the editor shows (the sounding voices);
+//   - microtuning (PRODUCT_TUNING): each voice asks retuning() at every block,
+//     so a tuning that moves while a note is held moves the note;
+//   - kOfflineMode: a bounce gets the costly triangle. Live, the triangle is
+//     the naive one, which aliases at high notes; offline it is summed from
+//     its harmonics below Nyquist, band-limited, which the tests measure.
 #pragma once
 
 #include <algorithm>
@@ -40,6 +42,9 @@ class Processor : public supple::ProcessorBase<Processor> {
     // A second note on a held key gets a voice of its own, and a release by
     // note ID ends only its own.
     static constexpr bool kOverlappingNotes = true;
+    // Bounces (CLAP render, VST3 offline processing) get the band-limited
+    // triangle: block.offline.
+    static constexpr bool kOfflineMode = true;
     static constexpr double kVibratoHz = 5.5;
     static constexpr double kVibratoSemitones = 0.5;  // at full mod wheel
 
@@ -126,6 +131,10 @@ class Processor : public supple::ProcessorBase<Processor> {
 
     void process(supple::Block& b) {
         const double vibratoStep = kVibratoHz / sampleRate_;
+        // The tuning, once a block: often enough to follow one that moves.
+        for (Voice& v : voices_)
+            if (v.stage != Stage::Off) v.retune = retuning(v.address.key, v.address.channel);
+        const bool bandLimited = b.offline && triangle_;
         for (int i = 0; i < b.frames; ++i) {
             const double vibrato = wheel_ * kVibratoSemitones * std::sin(2.0 * supple::dsp::kPi * vibratoPhase_);
             vibratoPhase_ += vibratoStep;
@@ -142,13 +151,17 @@ class Processor : public supple::ProcessorBase<Processor> {
                     noteEnded(v.address, i);
                     continue;
                 }
-                const double pitch = v.address.key - 69 + v.tuning + bendRange_ * bend_[v.address.channel & 15] + vibrato;
+                const double pitch =
+                    v.address.key - 69 + v.retune + v.tuning + bendRange_ * bend_[v.address.channel & 15] + vibrato;
                 const double phase = v.phase;
-                v.phase += 440.0 * std::exp2(pitch / 12.0) / sampleRate_;
+                const double hz = 440.0 * std::exp2(pitch / 12.0);
+                v.phase += hz / sampleRate_;
                 v.phase -= std::floor(v.phase);
                 // The per-voice level glides like the global one (about 20 ms).
                 v.levelGain += (v.levelTarget - v.levelGain) * levelStep_;
-                const double osc = triangle_ ? 1.0 - 4.0 * std::fabs(phase - 0.5) : std::sin(2.0 * supple::dsp::kPi * phase);
+                const double osc = bandLimited ? bandLimitedTriangle(phase, hz)
+                                   : triangle_ ? 1.0 - 4.0 * std::fabs(phase - 0.5)
+                                               : std::sin(2.0 * supple::dsp::kPi * phase);
                 sum += osc * v.envelope * v.velocity * v.volume * v.levelGain;
             }
             const double y = sum * level_.next() * 0.5;
@@ -164,12 +177,31 @@ class Processor : public supple::ProcessorBase<Processor> {
     }
 
   private:
+    // The triangle above as its Fourier series, -8/pi^2 * sum cos(2 pi k phase)
+    // / k^2 over odd k, stopping below Nyquist: nothing to alias. The cosines
+    // come from a recurrence, one multiply-add per harmonic, but a low note
+    // still has hundreds of them; that is what offline is for.
+    double bandLimitedTriangle(double phase, double hz) const {
+        const double theta = 2.0 * supple::dsp::kPi * phase;
+        const double c2 = 2.0 * std::cos(2.0 * theta);
+        double previous = std::cos(theta), current = previous;  // cos(-theta), cos(theta)
+        double sum = 0.0;
+        for (int k = 1; k * hz < 0.5 * sampleRate_; k += 2) {
+            sum += current / (k * k);
+            const double next = c2 * current - previous;
+            previous = current;
+            current = next;
+        }
+        return -8.0 / (supple::dsp::kPi * supple::dsp::kPi) * sum;
+    }
+
     enum class Stage : uint8_t { Off, Attack, Sustain, Release };
     struct Voice {
         Stage stage = Stage::Off;
         supple::NoteEvent address{};  // as the note arrived
         double velocity = 0.0, phase = 0.0, envelope = 0.0;
         double tuning = 0.0, volume = 1.0;  // note expressions
+        double retune = 0.0;                // microtuning, semitones
         double levelMod = 0.0;              // per-note modulation of Level, host units
         double levelTarget = 1.0, levelGain = 1.0;  // its gain relative to Level
         uint64_t age = 0;

@@ -253,6 +253,14 @@ bool Ui::pointerDown(float x, float y, int button, uint32_t mods, bool doubleCli
         }
         return true;
     }
+    if (button == 1) {  // secondary: the context menu
+        const int i = controlAt(x, y);
+        if (i < 0 || !def(i)) return false;
+        endGesture();
+        setFocus(i);
+        openContextMenu(i, x, y);
+        return true;
+    }
     if (button != 0) return false;
 
     const int i = controlAt(x, y);
@@ -697,6 +705,66 @@ void Ui::popup(Rect anchor, std::vector<MenuItem> items, std::function<void(int)
     revealMenuHover();
     if (control >= 0) focus_ = control;
     dirty_ = true;
+}
+
+void Ui::openContextMenu(int i, float x, float y) {
+    const ParamDef* p = def(i);
+    if (!p) return;
+    const uint32_t id = controls_[static_cast<size_t>(i)].param;
+    // A host that can show its own menu does, with ours in it.
+    if (host_.hostPopup(id, x, y)) return;
+
+    // Each row's action: the framework's own (negative), or an index into
+    // the host's actions.
+    constexpr int kReset = -1, kType = -2, kNone = -3;
+    std::vector<MenuItem> items;
+    std::vector<int> actions;
+    char text[64];
+    formatValue(*p, hostDefault(*p), text, sizeof(text));
+    items.push_back(MenuItem::item(std::string("Reset to ") + text, false, currentValue(i) != hostDefault(*p)));
+    actions.push_back(kReset);
+    if (textEditable(i)) {
+        items.push_back(MenuItem::item("Enter Value\xE2\x80\xA6"));
+        actions.push_back(kType);
+    }
+    HostMenu fromHost;
+    if (host_.hostMenu(id, fromHost)) {
+        bool separated = false;
+        for (size_t k = 0; k < fromHost.items.size(); ++k) {
+            const MenuItem& item = fromHost.items[k];
+            // No separator leads, follows another, or ends the menu.
+            if (item.kind == MenuItem::Kind::Separator &&
+                (!separated || items.back().kind == MenuItem::Kind::Separator))
+                continue;
+            if (!separated) {
+                items.push_back(MenuItem::separator());
+                actions.push_back(kNone);
+                separated = true;
+            }
+            items.push_back(item);
+            actions.push_back(item.kind == MenuItem::Kind::Item && k < fromHost.actions.size() ? static_cast<int>(k)
+                                                                                               : kNone);
+        }
+        if (items.back().kind == MenuItem::Kind::Separator) {
+            items.pop_back();
+            actions.pop_back();
+        }
+    }
+    popup(
+        Rect{x, y, 0.0f, 0.0f}, std::move(items),
+        [this, i, id, actions, hostActions = std::move(fromHost.actions)](int row) {
+            const int action = actions[static_cast<size_t>(row)];
+            if (action == kReset) {
+                if (const ParamDef* d = def(i)) oneShot(i, hostDefault(*d));
+            } else if (action == kType) {
+                openTextEdit(i);
+            } else if (action >= 0) {
+                host_.performHostMenu(id, hostActions[static_cast<size_t>(action)]);
+            }
+        },
+        180.0f, i);
+    // Nothing is preselected: a checked host item is a state, not a choice.
+    menu_.hover = -1;
 }
 
 void Ui::closeMenu() {

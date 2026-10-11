@@ -4,6 +4,44 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.9.0
+
+Host integration. Nothing for a product to do: every addition is offered
+only to a product that uses it, or works without a line of product code.
+
+- **Context menu**: a right-click on a control opens the host's own menu
+  where it can show one (CLAP context-menu popup), with the plugin's "Reset
+  to Default" in it; otherwise the editor's, with reset and Enter Value
+  first and the host's items (automation, MIDI learn; VST3 hosts' through
+  the wrapper) after them. `MenuItem` moved to `gui/Menu.h`.
+- **Offline rendering**: a processor declaring `kOfflineMode = true` is told
+  when a host bounces (CLAP render; VST3's offline process mode) in
+  `setup.offline` and `block.offline`. `render-cli --offline`.
+- **Microtuning** (`PRODUCT_TUNING ON`, needs note input): an MTS-ESP client
+  (fetched, pinned, 0BSD, its notice added to the product's) and CLAP's
+  tuning extension. The processor reads `retuning(key, channel, frame)`;
+  unmapped keys never reach `note()` and are retired at once.
+- **Note names**: `static void noteNames(const ParamValues&, NoteNames&)` on
+  the processor names keys for hosts' piano rolls (CLAP note-name), and
+  `noteNamesChanged()` from `update()` tells them to read again.
+  `supple::keyName(60, ...)` is "C4".
+- **Track info**: `track()` in the editor (name, colour, return, bus,
+  master), from CLAP track-info or VST3's channel context, repainting when it
+  changes. `gui-preview --track "Name" --track-colour RRGGBB`.
+- **Log and thread checks**: `host().log(level, text)` writes to the host's
+  log. The framework logs a damaged or foreign state it refused, and, from
+  the main thread, what the audio thread found: a non-finite sample
+  silenced, notes dropped, buses a host did not provide. A debug build checks
+  every CLAP entry point's thread (the host's thread-check, or the thread
+  that created the plugin) and logs each call on the wrong one, once.
+- `host-smoke` answers `request_callback` after the block or flush that
+  asked, as hosts do, not inside it: run inside `process()`, the plugin's
+  main-thread work tripped RealtimeSanitizer.
+- MIDI controllers and pitch bend through VST3 were already checked by
+  `vst3-host` (1.7.0): they reach the processor and render as in the CLAP.
+- Not done: AU hosts get no offline mode, note names or host context menu
+  (clap-wrapper's AUv2 maps none of them); VST3 hosts get no note names.
+
 ## 1.8.0
 
 State and presets. Nothing for a product to do: one that uses none of it

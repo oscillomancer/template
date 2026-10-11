@@ -237,4 +237,71 @@ TEST(the_mod_wheel_adds_vibrato_around_the_note) {
     CHECK_NEAR(hertz(wobbling), 440.0, 2.0);
 }
 
+// --- offline, tuning --------------------------------------------------------------------------
+
+namespace {
+
+// The level of one frequency in a signal, relative to full scale, Hann
+// windowed so neighbours do not leak into it.
+double levelDb(const test::Signal& s, double hz) {
+    const size_t n = s[0].size();
+    double re = 0.0, im = 0.0, window = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const double w = 0.5 - 0.5 * std::cos(2.0 * dsp::kPi * static_cast<double>(i) / static_cast<double>(n));
+        const double phase = 2.0 * dsp::kPi * hz * static_cast<double>(i) / kSecond;
+        re += s[0][i] * w * std::cos(phase);
+        im += s[0][i] * w * std::sin(phase);
+        window += w;
+    }
+    return dsp::gainToDb(2.0 * std::hypot(re, im) / window, -300.0);
+}
+
+test::Signal triangle(int key, bool offline) {
+    test::RenderOptions o;
+    o.blocks = {64, 512, 1000};
+    o.initial = {{kWaveform, 1.0}};
+    o.events = {test::noteOn(0, key)};
+    o.offline = offline;
+    const test::Signal out = test::render(test::silence(2, kSecond + 4800), o);
+    return {{out[0].begin() + 4800, out[0].end()}};
+}
+
+// Every key a semitone sharp, except key 61, which is unmapped.
+struct SemitoneUp : TuningSource {
+    double retuning(int, int, uint32_t) override { return 1.0; }
+    bool plays(int key, int) override { return key != 61; }
+};
+
+}  // namespace
+
+TEST(offline_the_triangle_is_band_limited_and_otherwise_the_same) {
+    // C8, 4186 Hz: its 7th and 9th harmonics lie above Nyquist and fold back
+    // to 18698 Hz and 10326 Hz. Live, they are there; offline, they are not.
+    const double f = 440.0 * std::exp2((108 - 69) / 12.0);
+    const test::Signal live = triangle(108, false), bounce = triangle(108, true);
+    const double fundamental = levelDb(live, f);
+    for (int k : {7, 9}) {
+        const double folded = kSecond - k * f;
+        const double liveAlias = levelDb(live, folded) - fundamental, bounceAlias = levelDb(bounce, folded) - fundamental;
+        CHECK_MSG(liveAlias > -50.0, "live: harmonic %d folds back at %.3g dB", k, liveAlias);
+        CHECK_MSG(bounceAlias < -100.0, "offline: harmonic %d folds back at %.3g dB", k, bounceAlias);
+    }
+    CHECK_NEAR(levelDb(bounce, f), fundamental, 0.01);
+    CHECK_NEAR(levelDb(bounce, 3.0 * f), levelDb(live, 3.0 * f), 0.01);
+    // A low note has nothing above Nyquist worth hearing: the two agree.
+    CHECK(test::maxDifference(triangle(33, false), triangle(33, true)) < 2e-3);
+}
+
+TEST(a_tuning_moves_every_note_and_an_unmapped_key_stays_silent) {
+    SemitoneUp tuning;
+    test::RenderOptions o;
+    o.tuning = &tuning;
+    o.blocks = {64, 512, 1000};
+    o.events = {test::noteOn(0, 69)};
+    const test::Signal out = test::render(test::silence(2, kSecond + 4800), o);
+    CHECK_NEAR(hertz({{out[0].begin() + 4800, out[0].end()}}), 440.0 * std::exp2(1.0 / 12.0), 1.0);
+    o.events = {test::noteOn(0, 61)};
+    CHECK(test::peak(test::render(test::silence(2, 9600), o)) == 0.0);
+}
+
 SUPPLE_TEST_MAIN
