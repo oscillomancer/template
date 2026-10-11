@@ -83,7 +83,11 @@ builds never touch those folders.
 
 ## Tests
 
-`ctest` runs all of these. A product keeps every one and adds its own.
+`ctest` runs all of these. A product keeps every one and adds its own:
+claims in `product/test/` (one `processor-tests` executable), and anything
+that needs its own program -- a long measurement, a command-line tool for
+analysis scripts -- in `product/targets.cmake`, which the framework includes
+last when it exists.
 
 | Test | Proves |
 | --- | --- |

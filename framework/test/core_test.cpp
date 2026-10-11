@@ -149,6 +149,34 @@ TEST(tapers_are_monotonic_and_invert) {
     }
 }
 
+TEST(plain_host_value_keeps_the_knob_on_its_taper) {
+    // The same frequency parameter, with the host storing position or Hz.
+    const ParamDef position = frequency(0, "F", 20.0, 20000.0, 1000.0);
+    const ParamDef plainHost = position.plainHostValue();
+    CHECK(plainHost.hostMin() == 20.0 && plainHost.hostMax() == 20000.0);
+    CHECK(plainHost.hostTapered() == false && plainHost.tapered());
+    CHECK(hostDefault(plainHost) == 1000.0);
+    CHECK(toPlain(plainHost, 440.0) == 440.0 && toHost(plainHost, 440.0) == 440.0);
+    CHECK(sanitizeHost(plainHost, 1e9) == 20000.0);
+    // The knob is where it would be with a position-valued host.
+    for (int k = 0; k <= 10; ++k) {
+        const double n = k / 10.0;
+        CHECK_NEAR(toPlain(plainHost, fromNormalized(plainHost, n)), toPlain(position, fromNormalized(position, n)),
+                   1e-9 * 20000.0);
+        CHECK_NEAR(toNormalized(plainHost, fromNormalized(plainHost, n)), n, 1e-12);
+    }
+    CHECK_NEAR(toNormalized(plainHost, 632.455532), 0.5, 1e-6);  // the geometric middle
+    // Text is unchanged: it is formatted from the plain value either way.
+    CHECK(text(plainHost, 440.0) == text(position, toHost(position, 440.0)));
+    bool ok = false;
+    CHECK_NEAR(parsed(plainHost, "1.2k", &ok), 1200.0, 1e-9);
+    CHECK(ok);
+    // A power taper too.
+    const ParamDef square = continuous(1, "S", 0.0, 1.0, 0.02, Unit::None, Taper::Power, 2.0).plainHostValue();
+    CHECK_NEAR(toNormalized(square, 0.25), 0.5, 1e-12);
+    CHECK_NEAR(fromNormalized(square, 0.5), 0.25, 1e-12);
+}
+
 // --- DSP building blocks ------------------------------------------------------------
 
 TEST(smoother_settles_exactly) {
@@ -369,7 +397,24 @@ TEST(non_finite_output_never_reaches_the_host) {
     o.blocks = {256};
     const test::Signal out = test::render(in, o, engine.get());
     CHECK(test::allFinite(out));
-    CHECK(engine->safetyResets() >= 1);
+    // A processor that cleans its own input never trips the safety net; one
+    // that passes the NaN on (the template's starter does) must have been
+    // caught by it. Either way nothing non-finite left.
+    if (engine->safetyResets() == 0) {
+        auto bare = std::make_unique<product::Processor>();
+        ProcessSetup setup;
+        ParamValues values;
+        bare->prepare(setup, values);
+        bare->update(values);
+        std::vector<double> l(in[0].begin(), in[0].begin() + 256), r(in[1].begin(), in[1].begin() + 256);
+        double* io[] = {l.data(), r.data()};
+        Block block;
+        block.data = io;
+        block.channels = 2;
+        block.frames = 256;
+        bare->process(block);
+        CHECK_MSG(test::allFinite({l, r}), "the processor emitted non-finite output and no reset caught it");
+    }
 }
 
 TEST(non_finite_input_never_passes_through_bypass_or_overflows_a_float) {

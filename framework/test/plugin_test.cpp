@@ -488,7 +488,7 @@ TEST(a_restart_parameter_asks_once_from_the_main_thread) {
     i.plugin->deactivate(i.plugin);
     i.activate();
     InEvents again;
-    again.add(0, p.id, fromNormalized(p, 0.5));
+    again.add(0, p.id, fromNormalized(p, 0.0));  // the loop left it at the top
     audio.run(i.plugin, &again.list, &out.list);
     i.pumpMain();
     CHECK(i.host.restarts == 2);  // a fresh activation may ask again

@@ -109,6 +109,9 @@ class EditorBase {
     // fall back to this for the rest.
     virtual void drawControl(NVGcontext* vg, const Control& c, const ControlState& s);
 
+    // A product that does not draw inputMeters() and outputMeters() turns
+    // them off, or meters nobody sees keep the editor repainting.
+    void usePeakMeters(bool on) { peakMeters_ = on; }
     const PeakMeter* inputMeters() const { return input_; }
     const PeakMeter* outputMeters() const { return output_; }
     int meterChannels() const { return meterChannels_; }
@@ -123,6 +126,7 @@ class EditorBase {
     PeakMeter input_[kMeterChannels];
     PeakMeter output_[kMeterChannels];
     int meterChannels_ = kMeterChannels;
+    bool peakMeters_ = true;
     bool dirty_ = true;
     bool attached_ = false;
 };

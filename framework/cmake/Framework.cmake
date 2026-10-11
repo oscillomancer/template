@@ -371,3 +371,12 @@ endif()
 if (SUPPLE_BUILD_TESTS)
     include(${SUPPLE_FRAMEWORK}/cmake/Tests.cmake)
 endif()
+
+# A product's own targets, when it has any: tools, measurement programs,
+# extra test executables. Everything above is defined by now, so it can link
+# product-core and call supple_defaults(); supple_test() and add_test() exist
+# only when SUPPLE_BUILD_TESTS is on, so test targets go inside that check.
+# It must not change any framework target.
+if (EXISTS ${SUPPLE_PRODUCT}/targets.cmake)
+    include(${SUPPLE_PRODUCT}/targets.cmake)
+endif()

@@ -4,6 +4,37 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.4.0
+
+What the first product moved onto the framework (Ferric) needed. Nothing
+breaks an existing product; delete `build/` and run every preset.
+
+- **`.plainHostValue()`** for a tapered parameter whose sessions and
+  automation were saved with plain values before the product moved onto the
+  framework: the host keeps Hz (or ips, or kA/m), the knob keeps its taper.
+  New parameters do not use it. `hostTapered()` says which a parameter is.
+- **`product/targets.cmake`**, included last when it exists, for a product's
+  own programs: measurement suites, command-line tools for analysis scripts,
+  further test executables.
+- **`EditorBase::usePeakMeters(false)`** for an editor that does not draw the
+  framework's peak meters. They otherwise keep the editor repainting for
+  levels nobody sees: a product with a noise floor never idled.
+- **gui-preview runs programme through the real engine**, so a product's own
+  telemetry (a scope, a needle, a trace) is previewed as the DSP produces it,
+  not as one resting frame. It also re-asks for the requested scale once the
+  window is mapped (KWin puts a new XWayland window back to its first size)
+  and refuses to write an image at a scale it did not get.
+- Test assumptions that only the starter satisfied:
+  - `non_finite_output_never_reaches_the_host` no longer requires a safety
+    reset from a processor that cleans its own input; it checks that such a
+    processor's output is finite on its own.
+  - `a_restart_parameter_asks_once_from_the_main_thread` changes a
+    two-option restart parameter to a value that differs, not to "0.5".
+  - `silence_does_not_repaint_and_signal_does` feeds real silence (it
+    processed in place without re-zeroing, so the second block's input was
+    the first block's output), takes a steady-state frame rather than the
+    first, and makes its loud frame from signal through the engine.
+
 ## 1.3.2
 
 - `update_framework.cmake` replaces `framework/` and nothing else. The

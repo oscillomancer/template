@@ -51,6 +51,11 @@ the editor draws a true minus sign.
 **IDs, ranges and tapers are ABI.** State and automation are stored by ID as
 host values. Appending is free; everything else breaks someone's session.
 
+A product that moved onto this framework after shipping with plain host
+values (Hz, not the position) keeps them with `.plainHostValue()`: changing
+what the host stores would move every automation lane it had saved. The
+knob still follows the taper; only the host's view is plain.
+
 ## State
 
 A chunked little-endian format (`core/StateFormat.h`): the product's tag,

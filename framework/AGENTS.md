@@ -20,6 +20,7 @@ Read this file, then `docs/CONVENTIONS.md` for the reasons behind the rules.
 | Colours | `product/Theme.h` |
 | Claims about the DSP, measured | `product/test/` |
 | Notices for a dependency the product adds | `product/NOTICES.txt` |
+| The product's own tools and measurement programs (optional) | `product/targets.cmake` |
 | Anything in `framework/` | **the template**, never a product (see the end of this file) |
 
 Nothing outside `product/` names the product. The CLAP descriptor, bundle
@@ -41,8 +42,9 @@ cmake --preset tsan   && cmake --build --preset tsan   && ctest --preset tsan   
 cmake --build build/release --target product-install    # every format into the user's plugin folders
 ```
 
-`gui-preview` writes a PNG of the real editor. Look at it after every editor
-change. It proves drawing only, not embedding in a host.
+`gui-preview` writes a PNG of the real editor, with programme running through
+the real DSP so the product's own telemetry shows. Look at it after every
+editor change. It proves drawing only, not embedding in a host.
 
 ## Starting a product
 
@@ -84,6 +86,9 @@ supple::choice(kQuality, "Quality", kQualityLabels, 1).restartOnChange(),
   may be sparse (`kBand0 + band * 32 + field`).
 - **Range and taper are ABI too** once released: saved state and host
   automation are stored as host values, and moving the range moves them.
+- A product that already shipped with plain values for a tapered
+  parameter marks it `.plainHostValue()`: the knob keeps its taper and the
+  host keeps the values it saved. New parameters do not use it.
 - The table is checked when it compiles: duplicate IDs or names, a default
   outside its range, a log taper from zero, or a wrong label count are build
   errors.
@@ -161,7 +166,8 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 - Restyle a control by overriding `drawControl` for its `variant`.
 - Animation: `animate(seconds)` plus `markDirty()`. Never count frames.
 - Telemetry: `onTelemetry(frame)`, then `markDirty()` only if what is shown
-  changed. An idle editor must draw nothing.
+  changed. An idle editor must draw nothing. An editor that does not draw
+  the framework's peak meters calls `usePeakMeters(false)`.
 
 `ui-tests` fuzzes the real editor with random input and fails on a nested or
 unclosed gesture, and lints the layout: controls must stay inside the panel

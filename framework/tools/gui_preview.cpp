@@ -38,51 +38,72 @@ class PreviewHost : public EditorHost {
   public:
     PreviewHost() {
         for (size_t i = 0; i < params::kCount; ++i) values_[i] = hostDefault(params::at(i));
-        // The product's own telemetry at rest comes from a real engine; only
-        // the framework's meters are synthesised below.
-        auto engine = std::make_unique<Engine>();
-        engine->activate(48000.0, 512, product::info::kInstrument ? 0 : 2, 2);
-        engine->setMetering(true);
-        std::vector<double> l(512), r(512);
-        double* io[] = {l.data(), r.data()};
-        for (int b = 0; b < 4; ++b) engine->process<double>(io, io, 512);
-        engine->telemetry().pop(rest_);
     }
     double value(uint32_t id) const override { return values_[slot(id)]; }
     void beginEdit(uint32_t) override {}
     void setValue(uint32_t id, double v) override { values_[slot(id)] = sanitizeHost(*params::find(id), v); }
     void endEdit(uint32_t) override {}
     bool popTelemetry(TelemetryFrame& f) override { return ring_.pop(f); }
-    int latencySamples() const override { return 0; }
-    double sampleRate() const override { return 48000.0; }
+    int latencySamples() const override { return engine_ ? engine_->latency() : 0; }
+    double sampleRate() const override { return kRate; }
 
     void set(size_t i, double host) { values_[i] = host; }
 
-    // Program-like levels: a slow bed with transients, the output a little
-    // louder than the input, so meters and holds have something to show.
+    // Program-like material through the real engine, so everything the
+    // editor shows -- the framework's meters and the product's own telemetry
+    // -- is what the DSP makes of it: a slow bed around -20 dBFS with a
+    // transient twice a second, three partials, the right channel a little
+    // quieter. An instrument plays no notes here, so its meters are
+    // synthesised from the same envelope.
     void feed(int frames) {
-        for (int i = 0; i < frames; ++i) {
-            time_ += 1.0 / kTelemetryHz;
-            const double beat = time_ * 2.0 - std::floor(time_ * 2.0);
-            const double db = -20.0 + 3.0 * std::sin(time_ * 0.7) + 15.0 * std::exp(-beat * 14.0);
-            TelemetryFrame f = rest_;
-            f.channels = 2;
-            for (int c = 0; c < 2; ++c) {
-                f.inputPeak[c] = static_cast<float>(std::pow(10.0, (db - 1.5 * c) / 20.0));
-                f.outputPeak[c] = static_cast<float>(std::pow(10.0, (db + 2.0 - 1.5 * c) / 20.0));
+        if (!engine_) {
+            engine_ = std::make_unique<Engine>();
+            for (size_t i = 0; i < params::kCount; ++i) engine_->store().set(i, values_[i]);
+            engine_->activate(kRate, kPeriodMax, product::info::kInstrument ? 0 : 2, 2);
+            engine_->setMetering(true);
+        }
+        const int period = std::min(kPeriodMax, static_cast<int>(std::lround(kRate / kTelemetryHz)));
+        std::vector<double> l(static_cast<size_t>(period)), r(static_cast<size_t>(period));
+        double* io[] = {l.data(), r.data()};
+        constexpr double kTwoPi = 6.283185307179586;
+        for (int f = 0; f < frames; ++f) {
+            for (int k = 0; k < period; ++k) {
+                const double t = time_ + k / kRate;
+                const double a = std::pow(10.0, envelopeDb(t) / 20.0);
+                const double x = a * (0.6 * std::sin(kTwoPi * 110.0 * t) + 0.3 * std::sin(kTwoPi * 440.0 * t) +
+                                      0.1 * std::sin(kTwoPi * 1760.0 * t));
+                l[static_cast<size_t>(k)] = x;
+                r[static_cast<size_t>(k)] = 0.84 * x;
             }
-            ring_.push(f);
+            time_ += period / kRate;
+            engine_->process<double>(io, io, period);
+            TelemetryFrame frame;
+            while (engine_->telemetry().pop(frame)) {
+                if (product::info::kInstrument) {
+                    const double db = envelopeDb(time_);
+                    for (int c = 0; c < 2; ++c)
+                        frame.outputPeak[c] = static_cast<float>(std::pow(10.0, (db - 1.5 * c) / 20.0));
+                }
+                ring_.push(frame);
+            }
         }
     }
 
   private:
+    static constexpr double kRate = 48000.0;
+    static constexpr int kPeriodMax = 2048;
+
+    static double envelopeDb(double t) {
+        const double beat = t * 2.0 - std::floor(t * 2.0);
+        return -20.0 + 3.0 * std::sin(t * 0.7) + 15.0 * std::exp(-beat * 14.0);
+    }
     static size_t slot(uint32_t id) {
         const int i = params::indexOf(id);
         return i >= 0 ? static_cast<size_t>(i) : 0;
     }
     double values_[params::kCount];
     TelemetryRing ring_;
-    TelemetryFrame rest_{};
+    std::unique_ptr<Engine> engine_;
     double time_ = 0.0;
 };
 
@@ -256,6 +277,27 @@ int main(int argc, char** argv) {
     if (text && centre(text, x, y)) editor.pointerDown(x, y, 0, mod::kCtrl, false);
     if (hover && centre(hover, x, y)) editor.pointerMove(x, y, 0);
 
+    // Some window managers (KWin, for an XWayland window) put a newly mapped
+    // top-level window back to the size it was created at, a little while
+    // after mapping it. Insist until the size holds, and never write an
+    // image at a scale nobody asked for.
+    uint32_t wantW = 0, wantH = 0;
+    gui.sizeAt(scale, wantW, wantH);
+    auto sized = [&] { return gui.window().width() == wantW && gui.window().height() == wantH; };
+    for (int held = 0, tries = 0; held < 10 && tries < 400; ++tries) {
+        if (sized()) {
+            ++held;
+        } else {
+            held = 0;
+            gui.setUserScale(scale);
+        }
+        pump(1);
+    }
+    if (!sized()) {
+        std::fprintf(stderr, "the window manager kept the preview at %ux%u, not %ux%u for --scale %g\n",
+                     gui.window().width(), gui.window().height(), wantW, wantH, scale);
+        return 5;
+    }
     host.feed(2);
     editor.markDirty();
     capture.want = true;

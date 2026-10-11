@@ -58,7 +58,7 @@ void EditorBase::idle(double seconds) {
         output_[c].advance(seconds);
         moving = moving || input_[c].moving() || output_[c].moving();
     }
-    if (moving) dirty_ = true;
+    if (moving && peakMeters_) dirty_ = true;
     ui_.idle(seconds);
     animate(seconds);
 }

@@ -203,30 +203,36 @@ void describeTime(const ParamDef& p, double ms, ValueText& t) {
 
 // --- conversions --------------------------------------------------------------
 
-double toPlain(const ParamDef& p, double host) {
-    if (!p.tapered()) {
-        const double v = clampTo(host, p.min, p.max);
-        return p.stepped() ? std::round(v) : v;
-    }
-    const double t = clampTo(host, 0.0, 1.0);
-    double v = p.min;
-    if (p.taper == Taper::Log)
-        v = p.min * std::pow(p.max / p.min, t);
-    else
-        v = p.min + (p.max - p.min) * std::pow(t, p.curve);
+namespace {
+
+// Plain value <-> position along the taper, 0..1.
+double fromPosition(const ParamDef& p, double t) {
+    t = clampTo(t, 0.0, 1.0);
+    const double v = p.taper == Taper::Log ? p.min * std::pow(p.max / p.min, t)
+                                           : p.min + (p.max - p.min) * std::pow(t, p.curve);
     return clampTo(v, p.min, p.max);
 }
 
-double toHost(const ParamDef& p, double plain) {
+double toPosition(const ParamDef& p, double plain) {
     const double v = clampTo(plain, p.min, p.max);
-    if (!p.tapered()) return p.stepped() ? std::round(v) : v;
     if (p.max <= p.min) return 0.0;
-    double t = 0.0;
-    if (p.taper == Taper::Log)
-        t = std::log(v / p.min) / std::log(p.max / p.min);
-    else
-        t = std::pow((v - p.min) / (p.max - p.min), 1.0 / p.curve);
+    const double t = p.taper == Taper::Log ? std::log(v / p.min) / std::log(p.max / p.min)
+                                           : std::pow((v - p.min) / (p.max - p.min), 1.0 / p.curve);
     return clampTo(t, 0.0, 1.0);
+}
+
+}  // namespace
+
+double toPlain(const ParamDef& p, double host) {
+    if (p.hostTapered()) return fromPosition(p, host);
+    const double v = clampTo(host, p.min, p.max);
+    return p.stepped() ? std::round(v) : v;
+}
+
+double toHost(const ParamDef& p, double plain) {
+    if (p.hostTapered()) return toPosition(p, plain);
+    const double v = clampTo(plain, p.min, p.max);
+    return p.stepped() ? std::round(v) : v;
 }
 
 double hostDefault(const ParamDef& p) { return toHost(p, p.def); }
@@ -238,11 +244,14 @@ double sanitizeHost(const ParamDef& p, double host) {
 }
 
 double toNormalized(const ParamDef& p, double host) {
+    // A plain host value still moves the knob along its taper.
+    if (p.tapered() && !p.hostTapered()) return toPosition(p, host);
     const double lo = p.hostMin(), hi = p.hostMax();
     return hi > lo ? clampTo((host - lo) / (hi - lo), 0.0, 1.0) : 0.0;
 }
 
 double fromNormalized(const ParamDef& p, double normalized) {
+    if (p.tapered() && !p.hostTapered()) return fromPosition(p, normalized);
     const double lo = p.hostMin(), hi = p.hostMax();
     const double v = lo + clampTo(normalized, 0.0, 1.0) * (hi - lo);
     return p.stepped() ? std::round(v) : v;

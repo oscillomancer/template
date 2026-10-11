@@ -5,6 +5,8 @@
 // editor and against controls bound to the product's own parameters:
 // gestures always balance and never nest, edits land where they should,
 // repaint follows changes from anywhere, and the layout is sane.
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <random>
 #include <string>
@@ -402,9 +404,18 @@ TEST(silence_does_not_repaint_and_signal_does) {
     engine->setMetering(true);
     std::vector<double> l(512), r(512);
     double* io[] = {l.data(), r.data()};
-    for (int b = 0; b < 4; ++b) engine->process<double>(io, io, 512);
-    TelemetryFrame quiet{};
+    for (int b = 0; b < 4; ++b) {
+        // In place, so the input is re-zeroed: the last block's output is
+        // not silence for a product with a noise floor.
+        std::fill(l.begin(), l.end(), 0.0);
+        std::fill(r.begin(), r.end(), 0.0);
+        engine->process<double>(io, io, 512);
+    }
+    // The newest frame: steady state, not whatever the product does as it
+    // starts up.
+    TelemetryFrame quiet{}, next{};
     CHECK(engine->telemetry().pop(quiet));
+    while (engine->telemetry().pop(next)) quiet = next;
 
     ProductEditor p;
     for (int k = 0; k < 3; ++k) p.host.ring.push(quiet);
@@ -413,8 +424,16 @@ TEST(silence_does_not_repaint_and_signal_does) {
     for (int k = 0; k < 10; ++k) p.host.ring.push(quiet);
     p.editor->idle(0.016);
     CHECK(!p.editor->needsRepaint());
-    TelemetryFrame loud = quiet;
-    loud.outputPeak[0] = loud.outputPeak[1] = 0.5f;
+    // Signal, through the same engine: a product shows it somewhere.
+    for (int b = 0; b < 4; ++b) {
+        for (int k = 0; k < 512; ++k) l[static_cast<size_t>(k)] = r[static_cast<size_t>(k)] = 0.5 * std::sin(0.13 * (b * 512 + k));
+        engine->process<double>(io, io, 512);
+    }
+    TelemetryFrame loud{};
+    CHECK(engine->telemetry().pop(loud));
+    while (engine->telemetry().pop(next)) loud = next;
+    // An instrument's signal comes from notes, which this does not play.
+    if (product::info::kInstrument) loud.outputPeak[0] = loud.outputPeak[1] = 0.5f;
     p.host.ring.push(loud);
     p.editor->idle(0.016);
     CHECK(p.editor->needsRepaint());

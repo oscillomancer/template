@@ -19,7 +19,14 @@
 //               automation lane and generic slider move the way the editor's
 //               knob does: a frequency lane drawn in Hz spends 99% of its
 //               height above 200 Hz.
-//   normalized  0..1, what a knob or slider displays. Linear in host space.
+//   normalized  0..1, what a knob or slider displays. Linear in host space,
+//               except for a parameter marked plainHostValue() (below).
+//
+// plainHostValue() keeps a tapered parameter's host value in plain units: the
+// knob still follows the taper, but hosts store and automate Hz, not the
+// position. It exists for products that moved onto this framework with
+// sessions and automation already saved that way; a new parameter should not
+// use it.
 //
 // Host text is ASCII (hosts draw it in their own fonts); the editor may
 // prettify it, e.g. with a true minus sign.
@@ -61,6 +68,7 @@ inline constexpr uint32_t kModulatable = 1u << 1;  // accepts CLAP non-destructi
 inline constexpr uint32_t kHidden = 1u << 2;       // retired: still loads from old sessions
 inline constexpr uint32_t kBypass = 1u << 3;       // the framework's latency-compensated bypass
 inline constexpr uint32_t kRestart = 1u << 4;      // changing it while active asks the host to restart
+inline constexpr uint32_t kPlainHost = 1u << 5;    // tapered, but the host value is the plain value
 }  // namespace pflag
 
 inline constexpr const char* kOffOnLabels[] = {"Off", "On"};
@@ -92,6 +100,8 @@ struct ParamDef {
     constexpr ParamDef modulatable() const { return with(pflag::kModulatable); }
     constexpr ParamDef bypass() const { return with(pflag::kBypass); }
     constexpr ParamDef restartOnChange() const { return with(pflag::kRestart); }
+    // See the top of this file: only for sessions saved before the move.
+    constexpr ParamDef plainHostValue() const { return with(pflag::kPlainHost); }
     constexpr ParamDef notAutomatable() const { return without(pflag::kAutomatable | pflag::kModulatable); }
     // Keep a removed parameter's ID reserved and loadable, invisible to hosts.
     constexpr ParamDef retired() const { return with(pflag::kHidden).notAutomatable(); }
@@ -99,9 +109,11 @@ struct ParamDef {
     constexpr bool is(uint32_t flag) const { return (flags & flag) != 0; }
     constexpr bool stepped() const { return kind != ParamKind::Continuous; }
     constexpr bool tapered() const { return kind == ParamKind::Continuous && taper != Taper::Linear; }
+    // The host value is the taper position (0..1) rather than the plain value.
+    constexpr bool hostTapered() const { return tapered() && !is(pflag::kPlainHost); }
     constexpr bool bipolar() const { return min < 0.0 && max > 0.0; }
-    constexpr double hostMin() const { return tapered() ? 0.0 : min; }
-    constexpr double hostMax() const { return tapered() ? 1.0 : max; }
+    constexpr double hostMin() const { return hostTapered() ? 0.0 : min; }
+    constexpr double hostMax() const { return hostTapered() ? 1.0 : max; }
     constexpr const char* displayLabel() const { return label ? label : name; }
 
   private:
