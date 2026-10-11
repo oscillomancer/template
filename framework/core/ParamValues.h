@@ -10,7 +10,9 @@
 //       mode_ = v.choice(kMode);
 //   }
 //
-// Values already include CLAP modulation and are clamped to range.
+// Values already include CLAP modulation and are clamped to range. An output
+// parameter's value here means nothing: the processor reports outputs
+// (ProcessorBase::setOutput), it does not read them.
 #pragma once
 
 #include <cassert>
@@ -33,6 +35,20 @@ class ParamValues {
     double operator[](uint32_t id) const { return plain_[slot(id)]; }
     int choice(uint32_t id) const { return static_cast<int>(std::lround(plain_[slot(id)])); }
     bool on(uint32_t id) const { return plain_[slot(id)] > 0.5; }
+    // A level in decibels as a linear gain: exactly 0 at the minimum of a
+    // parameter marked offAtMinimum(), exactly 1 at 0 dB.
+    double gain(uint32_t id) const {
+        const size_t i = slot(id);
+        assert(params::at(i).unit == Unit::Decibels && "gain() reads a decibel parameter");
+        return levelGain(params::at(i), plain_[i]);
+    }
+    // At the minimum of a parameter marked offAtMinimum().
+    bool off(uint32_t id) const { return params::at(slot(id)).off(plain_[slot(id)]); }
+    // A noteValue() parameter's length in quarter notes.
+    double beats(uint32_t id) const {
+        assert(params::at(slot(id)).labels == kNoteValueLabels && "beats() reads a noteValue() parameter");
+        return noteValueBeats(choice(id));
+    }
     bool changed(uint32_t id) const { return changed_[slot(id)]; }
     // True for the update that follows prepare() or reset(): jump, don't glide.
     bool initial() const { return initial_; }

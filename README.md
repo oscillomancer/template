@@ -16,7 +16,7 @@ entry, menus, HiDPI and resizing are the framework's.
 
 ```sh
 cmake -DNAME="Name" -DID=com.suppleaudio.name -DCODE=NmXx -DDEST=../name \
-      -P framework/tools/new_product.cmake            # add -DKIND=instrument for a synth
+      -P framework/tools/new_product.cmake            # or start from an example: -DEXAMPLE=instrument
 cd ../name && git init
 cmake --preset release && cmake --build --preset release && ctest --preset release
 ```
@@ -40,7 +40,16 @@ The starter product here is a utility filter (input gain, 12/24 dB/oct
 Butterworth low and high cuts, mix, output gain), bit-transparent at its
 defaults, with a live response graph whose handles drag. It shows every kind of
 control and every pattern the framework expects; replace it.
-`framework/examples/instrument` is the same for an instrument.
+
+`examples/` holds small products for what the starter does not use, each a
+starting point of its own (`-DEXAMPLE=<name>`) and each built and tested on
+every framework change (`framework/tools/test_examples.cmake`). They live
+beside `framework/`, not in it, so products do not carry them.
+
+| Example | What it shows |
+| --- | --- |
+| `instrument` (Tone) | Notes at their exact sample, voices, note ends for the host |
+| `pulse` (Pulse) | A tempo-synced rate, framework-smoothed parameters, a level off at its minimum (-inf dB), an output parameter the host displays |
 
 ## Read next
 

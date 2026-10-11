@@ -11,7 +11,9 @@
 // Repaint is decided in idle(), which Window calls on every timer tick
 // whether or not anything was drawn: telemetry is drained there, and a
 // parameter the host changed is noticed by comparing against what was last
-// drawn. An idle editor (no audio, nobody touching it) draws nothing.
+// drawn. An idle editor (no audio, nobody touching it) draws nothing. An
+// output parameter moves with the audio, so it repaints only when a visible
+// control shows it or the product watch()es it.
 //
 // All coordinates are design units: the panel is laid out once at its
 // design size and Window scales the whole drawing.
@@ -98,8 +100,12 @@ class EditorBase {
     const Ui& ui() const { return ui_; }
     const Theme& theme() const { return theme_; }
 
-    // A parameter's plain value, for drawing.
+    // A parameter's plain value, for drawing. An output's is what the
+    // processor last reported.
     double plain(uint32_t id) const;
+    // Repaint when this output parameter changes, for drawing of the
+    // product's own that reads it. A control bound to it needs no call.
+    void watch(uint32_t id);
     // The plain value the DSP is using: the base value plus any host
     // modulation. Draw what is heard (a response curve) from this.
     double effective(uint32_t id) const;
@@ -123,6 +129,7 @@ class EditorBase {
     Ui ui_;
     std::vector<double> shownValue_;
     std::vector<double> shownModulation_;
+    std::vector<bool> watched_;
     PeakMeter input_[kMeterChannels];
     PeakMeter output_[kMeterChannels];
     int meterChannels_ = kMeterChannels;

@@ -51,11 +51,13 @@ editor change. It proves drawing only, not embedding in a host.
 
 ```sh
 cmake -DNAME="Name" -DID=com.suppleaudio.name -DCODE=NmXx -DDEST=../name \
-      [-DKIND=instrument] [-DDESCRIPTION="..."] -P framework/tools/new_product.cmake
+      [-DEXAMPLE=instrument|pulse] [-DDESCRIPTION="..."] -P framework/tools/new_product.cmake
 ```
 
-`ID` and `CODE` (the AU subtype, also the state tag) are permanent the moment
-anything ships. `KIND=instrument` starts from `framework/examples/instrument`.
+Run it in the template. `ID` and `CODE` (the AU subtype, also the state tag)
+are permanent the moment anything ships. Without `EXAMPLE` the product starts
+from the template's starter effect; with it, from that directory of the
+template's `examples/` (`KIND=instrument` still means `EXAMPLE=instrument`).
 The new product builds and passes every test as created. Then:
 
 1. Write down, in the product's root `AGENTS.md`, what the DSP does, every
@@ -80,7 +82,28 @@ supple::integer(kVoices, "Voices", 1, 16, 8),
 supple::choice(kMode, "Mode", kModeLabels, 0),
 supple::toggle(kBypass, "Bypass", false).bypass(),
 supple::choice(kQuality, "Quality", kQualityLabels, 1).restartOnChange(),
+supple::decibels(kSend, "Send", -60.0, 6.0, 0.0).offAtMinimum().smoothed(20.0),
+supple::noteValue(kTime, "Time", "1/8."),
+supple::decibels(kReduction, "Gain Reduction", -30.0, 0.0, 0.0).output(),
 ```
+
+Further factories: `cents`, `degrees`, `octaves`, `bpm`, `pan` (-1..+1,
+"50L"/"C"/"50R"), `samples` and `midiNote` (integers; a note reads "C#4").
+Further modifiers:
+
+- `.offAtMinimum()`: the minimum means off. A level reads "-inf dB" there
+  (anything else "Off"), and `v.gain(id)` (or `levelGain(def, dB)`) is
+  exactly 0. Just above the minimum it is on and says so.
+- `.smoothed(ms)`: the framework glides the parameter per sample and the
+  processor reads `block.smoothed(id)` (see DSP). Continuous only.
+- `.output()`: read-only. The processor reports it with `setOutput(id,
+  plain)`; the host hears it about 30 times a second (CLAP
+  `IS_READONLY`, VST3 output parameter changes) and the editor shows it.
+  Never automated, never in state. A gain reduction meter a host can show.
+- `.formatted(format, parse)`: the parameter's own text both ways, for what
+  no `Unit` describes. ASCII; the parser reads back everything the formatter
+  writes. Prefer a new `Unit` (in the template) when more than one product
+  would want it.
 
 - **IDs are session ABI.** Append new enum values; never reorder, renumber or
   reuse one. A removed parameter stays in the table marked `.retired()`. IDs
@@ -99,7 +122,9 @@ supple::choice(kQuality, "Quality", kQualityLabels, 1).restartOnChange(),
   special-casing one parameter.
 - Read values in `Processor::update` in plain units: `v[kCutoff]` is Hz,
   `v[kMix]` is 0..1, `v.choice(kMode)` is an index, `v.on(kBypass)` is a
-  bool. `v.changed(id)` says what moved; `v.initial()` says snap, don't glide.
+  bool, `v.gain(kSend)` a level as linear gain, `v.beats(kTime)` a note
+  value in quarter notes. `v.changed(id)` says what moved; `v.initial()`
+  says snap, don't glide.
 - A parameter that changes latency or topology is `.restartOnChange()`. The
   framework asks the host to restart (once, from the main thread) and the
   processor rebuilds in `prepare()`. `update()` still sees the new value at
@@ -122,6 +147,15 @@ contract is at the top of `core/ProcessorBase.h`. In short:
   random generator's position, not an envelope.
 - The framework calls `update` with `initial()` true after `prepare` and
   after `reset`; snap smoothers then. Otherwise smooth per sample.
+- Or let the framework smooth: mark the parameter `.smoothed(ms)` and read
+  `const double* x = block.smoothed(kDepth)`, its plain value at each frame
+  of the block (a log taper glides in log space), retargeted at each
+  change's exact frame, snapped after `prepare` and `reset`, exactly the
+  target once settled. `block.gliding(id)` is false when it is constant
+  across the block, so per-sample conversions (`levelGain` for a level)
+  can be done once.
+- Output parameters: `setOutput(kReduction, db)` from `update` or
+  `process`. The last value reported in a block is the one published.
 - `process(Block&)` is double precision and in place. The block may be one
   sample long, because it is split at every event. Output must not depend on
   where the splits fall; `core-tests` checks this bit-for-bit under random
@@ -138,7 +172,11 @@ contract is at the top of `core/ProcessorBase.h`. In short:
   and the VST3 wrapper otherwise keeps every note forever. The instrument
   example does all of this.
 - `block.transport` is the host's transport at the first sample of that
-  split, so tempo-synced phase can be computed per block.
+  split, so tempo-synced phase can be computed per block: from
+  `transport->beats` while playing, so it lands on the same beat wherever
+  playback starts. `block.tempo()` is the host's tempo, or 120 when it
+  sent none; `beatsToSeconds(beats, bpm)` converts. The pulse example does
+  all of this.
 - Editor data: declare `struct Telemetry` and `captureTelemetry`, and only
   accumulate it while `block.metering` is true. Input and output peak meters
   are measured by the framework already.
@@ -155,8 +193,14 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 
 - In the constructor, add controls in Tab order:
   `ui().knob(kCutoff, {x, y, w, h})`, `hslider`, `vslider`, `toggle`,
-  `segmented`, `dropdown`. Rects are in design units (`kEditorWidth` ×
-  `kEditorHeight`); the window scales the whole panel.
+  `segmented`, `dropdown`, and `readout` (label, value and bar; display
+  only). Rects are in design units (`kEditorWidth` × `kEditorHeight`); the
+  window scales the whole panel.
+- A control bound to an output parameter only displays it. An output
+  repaints the editor only while a visible control shows it; drawing of the
+  product's own that reads one calls `watch(id)` in the constructor.
+- A control that does not apply right now (a free rate while synced) is
+  `enabled = false`: dimmed and left alone. Set it from `animate`.
 - `paint(vg)`: background, `widgets::panel(...)`, the product's centrepiece,
   then `drawControls(vg)`. Menus and text fields are drawn above it all
   automatically.
@@ -221,8 +265,12 @@ lets one fix reach every product. So:
 
 1. Make the change in the template. Add a test that would have caught the
    problem.
-2. Run every preset there. Then generate an instrument with `new_product.cmake`
-   and run its tests too: the template only contains an effect.
+2. Run every preset there. Then every preset for the examples, which
+   exercise what the starter does not (an instrument, smoothing, outputs):
+   `cmake -DPRESET=<preset> -P framework/tools/test_examples.cmake`. A
+   feature no example uses gets one (see the template's `AGENTS.md`), and
+   its framework tests follow the product's own table, so they run for real
+   there.
 3. Bump `framework/VERSION.txt` and add an entry to `framework/CHANGES.md` saying
    what a product must do, if anything.
 4. In each product: `cmake -DFROM=../template -P framework/tools/update_framework.cmake`,

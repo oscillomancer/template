@@ -48,7 +48,7 @@ void list() {
         formatValue(p, p.hostMin(), lo, sizeof(lo));
         formatValue(p, p.hostMax(), hi, sizeof(hi));
         formatValue(p, hostDefault(p), def, sizeof(def));
-        std::printf("%-28s %-18s %-18s %s\n", p.name, lo, hi, def);
+        std::printf("%-28s %-18s %-18s %s%s\n", p.name, lo, hi, def, p.isOutput() ? "  (output)" : "");
     }
 }
 
@@ -65,6 +65,10 @@ bool parseAssignment(const char* text, int frame, std::vector<Change>& out) {
     for (size_t i = 0; i < params::kCount; ++i) {
         const ParamDef& p = params::at(i);
         if (name != p.name) continue;
+        if (p.isOutput()) {
+            std::fprintf(stderr, "error: %s is an output: the processor reports it\n", p.name);
+            return false;
+        }
         double host = 0.0;
         if (!parseValue(p, eq + 1, host)) {
             std::fprintf(stderr, "error: \"%s\" is not a value for %s\n", eq + 1, p.name);
@@ -177,6 +181,11 @@ int main(int argc, char** argv) {
     std::printf("%s -> %s: %d ch, %d Hz, %.2f s, latency %d, output peak %.2f dBFS, %.0fx realtime\n",
                 input.c_str(), output.c_str(), channels, audio.sampleRate, duration, engine->latency(),
                 dsp::gainToDb(peak), duration / std::max(seconds, 1e-9));
+    for (uint16_t i : params::kOutputIndices) {
+        char value[64];
+        formatValue(params::at(i), engine->store().get(i), value, sizeof(value));
+        std::printf("  %s at the end: %s\n", params::at(i).name, value);
+    }
     if (engine->safetyResets())
         std::printf("warning: %u blocks produced non-finite output and were silenced\n", engine->safetyResets());
     return 0;

@@ -118,9 +118,22 @@ inline void parameterText(const clap_plugin_t* plug, Check check) {
             }
             ++cases;
         }
+        // A level whose minimum reads "-inf" (off) takes "-inf" for exactly
+        // that minimum; every other parameter refuses it.
+        char minimum[256]{};
+        const bool offAtMinimum = params->value_to_text(plug, info.id, info.min_value, minimum, sizeof(minimum)) &&
+            !std::strncmp(minimum, "-inf", 4);
+        if (offAtMinimum) {
+            double decoded = 12345.0;
+            if (!params->text_to_value(plug, info.id, "-inf", &decoded) || decoded != info.min_value) {
+                std::printf("     \"-inf\" is not the minimum: id=%u %s decoded=%g\n", info.id, info.name, decoded);
+                rejectsNonfinite = false;
+            }
+        }
         // Rejection, not merely a finite/clamped result, is the contract.
         for (const char* text : {"", " ", "garbage", "nan", "-nan", "NaN", "nan(1)", "nan dB", "inf",
                                  "-inf", "Inf", "infinity", "INFINITY", "1e999", "-1e999"}) {
+            if (offAtMinimum && !std::strcmp(text, "-inf")) continue;
             double decoded = 12345.0;
             if (params->text_to_value(plug, info.id, text, &decoded)) {
                 std::printf("     accepted invalid text: id=%u %s text=\"%s\" decoded=%g\n",

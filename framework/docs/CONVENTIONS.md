@@ -45,8 +45,22 @@ German locale would otherwise see "1,5 dB" and fail to parse "1.5". Decimal
 places are chosen from the rounded value, so 999.6 Hz shows as "1.00 kHz", not
 "1000 Hz", and every value's text parses back to the same text. Parsing
 accepts what people type ("1.2k", "50" for a percentage, "-6db", "250ms") and
-rejects anything non-finite or followed by a foreign unit. Host text is ASCII;
-the editor draws a true minus sign.
+rejects anything non-finite or followed by a foreign unit. The one exception
+is a level marked off at its minimum, which reads "-inf dB" there and takes
+"-inf" back for exactly that value. Host text is ASCII ("deg", "-inf"); the
+editor draws a true minus sign, a degree sign and an infinity.
+
+**Outputs are reports, not state.** A meter the host can display is a
+read-only parameter the processor writes. Saving it would make every state
+differ by the last meter reading, and hosts compare states to tell whether a
+project changed. The host hears it at a fixed rate, by event, and `get_value`
+returns what it last heard, so its two views agree.
+
+**Framework smoothing is per sample, retargeted at the change's frame.**
+That is what keeps output independent of where blocks split; a per-block
+smoother would not be. It snaps after prepare and reset, which the reset
+contract needs, and lands exactly on the target, so a settled level of
+0 dB is exactly unity.
 
 **IDs, ranges and tapers are ABI.** State and automation are stored by ID as
 host values. Appending is free; everything else breaks someone's session.

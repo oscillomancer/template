@@ -30,10 +30,17 @@
 // Bypass is not the processor's business. A parameter marked bypass() is
 // handled by the framework, crossfading to the input delayed by the reported
 // latency, while the processor keeps running so un-bypassing is seamless.
+//
+// Parameters marked smoothed(ms) arrive per sample in Block::smoothed(id),
+// glided by the framework; output parameters are reported with setOutput().
 #pragma once
 
+#include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+
+#include "core/ParamTable.h"
 
 namespace supple {
 
@@ -67,7 +74,36 @@ struct Block {
     const Transport* transport = nullptr;  // null when the host sent none
 
     double* channel(int c) const { return data[c]; }
+
+    // A parameter marked smoothed(ms), in plain units, at each of this
+    // block's frames: gliding to every change (sample-accurately, wherever
+    // the host's blocks split) and exactly the target once it arrives.
+    const double* smoothed(uint32_t id) const { return glides[slot(id)]; }
+    // False when smoothed(id) holds one value throughout this block, so a
+    // processor can do its per-sample conversions once.
+    bool gliding(uint32_t id) const { return moving[slot(id)]; }
+    // The host's tempo, or `fallback` when it sent none.
+    double tempo(double fallback = 120.0) const {
+        return transport && transport->hasTempo && transport->tempo > 0.0 ? transport->tempo : fallback;
+    }
+
+    // The engine's.
+    const double* const* glides = nullptr;
+    const bool* moving = nullptr;
+
+  private:
+    static size_t slot(uint32_t id) {
+        const int i = params::indexOf(id);
+        assert(i >= 0 && params::kSmoothedSlot[static_cast<size_t>(i)] >= 0 &&
+               "Block::smoothed reads a parameter marked smoothed()");
+        return i >= 0 && params::kSmoothedSlot[static_cast<size_t>(i)] >= 0
+                   ? static_cast<size_t>(params::kSmoothedSlot[static_cast<size_t>(i)])
+                   : 0;
+    }
 };
+
+// Seconds in a number of beats (quarter notes) at a tempo.
+inline double beatsToSeconds(double beats, double bpm) { return beats * 60.0 / bpm; }
 
 struct NoteEvent {
     enum class Type : uint8_t { On, Off, Choke };
@@ -149,6 +185,17 @@ class ProcessorBase {
     void reset() {}
     void note(const NoteEvent&) {}
 
+    // Reports an output parameter's value, in plain units, from update() or
+    // process(). The framework passes it to the host (about 30 times a
+    // second, when it changed) and to the editor.
+    void setOutput(uint32_t id, double plain) {
+        const int i = params::indexOf(id);
+        assert(i >= 0 && params::at(static_cast<size_t>(i)).isOutput() && "setOutput needs an output() parameter");
+        if (outputs_ && i >= 0 && std::isfinite(plain)) outputs_[i] = plain;
+    }
+    // The engine's; a processor never calls it.
+    void bindOutputs(double* sink) { outputs_ = sink; }
+
     // An instrument calls this when a voice ends: `frame` is within the
     // current Block in process(), and 0 inside note(). See NoteEnds.
     void noteEnded(const NoteEvent& address, int frame = 0) {
@@ -173,6 +220,7 @@ class ProcessorBase {
 
   private:
     NoteEnds* noteEnds_ = nullptr;
+    double* outputs_ = nullptr;
 };
 
 }  // namespace supple

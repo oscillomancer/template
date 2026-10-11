@@ -20,14 +20,22 @@ int nvgAlign(Align a) {
            NVG_ALIGN_MIDDLE;
 }
 
+bool isLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+
 // "-3.0" -> "−3.0": the true minus sign sits on the figures' centre line.
-void prettyMinus(const char* in, char* out, size_t size) {
+// "-inf" -> "−∞".
+void prettyNumber(const char* in, char* out, size_t size) {
     size_t o = 0;
     for (const char* s = in; *s && o + 4 < size; ++s) {
         if (*s == '-') {
             out[o++] = '\xE2';
             out[o++] = '\x88';
             out[o++] = '\x92';
+        } else if (!std::strncmp(s, "inf", 3) && (s == in || !isLetter(s[-1])) && !isLetter(s[3])) {
+            out[o++] = '\xE2';
+            out[o++] = '\x88';
+            out[o++] = '\x9E';
+            s += 2;
         } else {
             out[o++] = *s;
         }
@@ -68,9 +76,18 @@ void arc(NVGcontext* vg, float cx, float cy, float r, float a0, float a1, NVGcol
     nvgStroke(vg);
 }
 
-// The text a control shows for its current value.
+// The text a control shows for its current value: the host's, with the
+// editor's typography (numbers get theirs from number()).
 ValueText valueText(const ControlState& s) {
-    return s.def ? describe(*s.def, s.value) : ValueText{};
+    ValueText v = s.def ? describe(*s.def, s.value) : ValueText{};
+    if (!std::strcmp(v.unit, "deg")) std::snprintf(v.unit, sizeof(v.unit), "\xC2\xB0");
+    return v;
+}
+
+// Number and unit as one string: "-6.0 dB", "4.0:1", "90°".
+void joined(const ValueText& v, char* out, size_t size) {
+    const bool attached = v.unit[0] == ':' || !std::strcmp(v.unit, "\xC2\xB0");
+    std::snprintf(out, size, "%s%s%s", v.number, v.unit[0] && !attached ? " " : "", v.unit);
 }
 
 float fitSize(NVGcontext* vg, const char* text, float size, float minSize, float width, const char* face) {
@@ -104,7 +121,7 @@ void number(NVGcontext* vg, float x, float y, const char* text, float size, NVGc
             bool medium) {
     if (!text || !*text) return;
     char pretty[64];
-    prettyMinus(text, pretty, sizeof(pretty));
+    prettyNumber(text, pretty, sizeof(pretty));
     nvgSave(vg);
     nvgFontFace(vg, medium ? font::kMonoMedium : font::kMono);
     nvgFontSize(vg, size);
@@ -201,6 +218,7 @@ void control(NVGcontext* vg, const Theme& t, const Control& c, const ControlStat
         case Widget::Toggle: toggle(vg, t, c, s); break;
         case Widget::Segmented: segmented(vg, t, c, s); break;
         case Widget::Dropdown: dropdown(vg, t, c, s); break;
+        case Widget::Readout: readout(vg, t, c, s); break;
     }
 }
 
@@ -287,9 +305,8 @@ namespace {
 
 void sliderValueText(NVGcontext* vg, const Theme& t, const ControlState& s, float x, float y, Align a) {
     if (s.editing) return;
-    const ValueText v = valueText(s);
     char text[64];
-    std::snprintf(text, sizeof(text), "%s%s%s", v.number, v.unit[0] && v.unit[0] != ':' ? " " : "", v.unit);
+    joined(valueText(s), text, sizeof(text));
     number(vg, x, y, text, 11.0f, rgb(t.text), a);
 }
 
@@ -364,6 +381,29 @@ void vslider(NVGcontext* vg, const Theme& t, const Control& c, const ControlStat
     label(vg, x, b.bottom() - 9.0f, s.label(c), 11.0f, hot || s.focused ? rgb(t.text) : rgb(t.textMuted),
           Align::Center, true);
     if (s.focused) focusOutline(vg, t, b, 4.0f);
+    nvgRestore(vg);
+}
+
+void readout(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
+    const Rect b = c.bounds;
+    nvgSave(vg);
+    if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
+    label(vg, b.x, b.y + 8.0f, s.label(c), 11.0f, rgb(t.textMuted), Align::Left, true);
+    char text[64];
+    joined(valueText(s), text, sizeof(text));
+    number(vg, b.right(), b.y + 8.0f, text, 11.0f, rgb(t.text), Align::Right);
+    // The bar is lit in the meters' colour: it reports, it does not adjust.
+    const Rect bar{b.x, b.bottom() - 6.0f, b.w, 6.0f};
+    well(vg, t, bar, 3.0f);
+    const float x0 = bar.x + 1.5f, x1 = bar.right() - 1.5f;
+    const float xo = x0 + (x1 - x0) * static_cast<float>(originNormal(s));
+    const float xv = x0 + (x1 - x0) * static_cast<float>(s.normalized);
+    if (std::fabs(xv - xo) > 0.25f) {
+        nvgBeginPath(vg);
+        nvgRoundedRect(vg, std::min(xo, xv), bar.y + 1.5f, std::fabs(xv - xo), bar.h - 3.0f, 1.5f);
+        nvgFillColor(vg, rgb(t.accent2));
+        nvgFill(vg);
+    }
     nvgRestore(vg);
 }
 

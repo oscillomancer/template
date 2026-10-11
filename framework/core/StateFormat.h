@@ -20,6 +20,9 @@
 // drifts by an ulp.) The consequence is that a released parameter's range and
 // taper are session ABI, exactly as they already are for automation lanes.
 //
+// Output parameters are not state: they are the processor's report, and a
+// state that changed with every meter reading would never compare equal.
+//
 // Unknown chunks and unknown IDs are skipped, absent parameters take their
 // defaults, and nothing is applied unless the whole blob parses. A new chunk
 // is a compatible addition; bump the format version only for a change an old
@@ -130,8 +133,9 @@ inline std::vector<uint8_t> save(uint32_t magic, const double* hostValues, doubl
     w.tag(magic);
     w.u32(kFormatVersion);
     const size_t chunk = w.beginChunk(kParamChunk);
-    w.u32(static_cast<uint32_t>(params::kCount));
+    w.u32(static_cast<uint32_t>(params::kCount - params::kOutputCount));
     for (size_t i = 0; i < params::kCount; ++i) {
+        if (params::at(i).isOutput()) continue;
         w.u32(params::at(i).id);
         w.f64(hostValues[i]);
     }
@@ -168,7 +172,8 @@ inline LoadResult load(const uint8_t* data, size_t size, uint32_t magic, Snapsho
                 double v = 0.0;
                 if (!r.u32(id) || !r.f64(v)) return LoadResult::Corrupt;
                 const int i = params::indexOf(id);
-                if (i >= 0 && std::isfinite(v)) snapshot.host[i] = sanitizeHost(params::at(static_cast<size_t>(i)), v);
+                if (i >= 0 && std::isfinite(v) && !params::at(static_cast<size_t>(i)).isOutput())
+                    snapshot.host[i] = sanitizeHost(params::at(static_cast<size_t>(i)), v);
             }
             sawParams = true;
         } else if (tag == kEditorChunk && length >= 8) {

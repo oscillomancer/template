@@ -175,12 +175,121 @@ const char* baseUnitText(Unit unit) {
         case Unit::Ratio: return ":1";
         case Unit::Semitones: return "st";
         case Unit::Cents: return "ct";
+        case Unit::Degrees: return "deg";
+        case Unit::Samples: return "smp";
+        case Unit::Octaves: return "oct";
+        case Unit::Bpm: return "BPM";
+        case Unit::Pan:
+        case Unit::Note:
         case Unit::None: break;
     }
     return "";
 }
 
 void copyText(char* out, size_t size, const char* text) { std::snprintf(out, size, "%s", text ? text : ""); }
+
+const char* const kNoteNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+
+// "C4" is 60: octave numbers change at C, and key 0 is "C-1".
+void noteName(double key, char* out, size_t size) {
+    const long k = std::lround(key);
+    const long octave = (k >= 0 ? k / 12 : (k - 11) / 12) - 1;
+    std::snprintf(out, size, "%s%ld", kNoteNames[((k % 12) + 12) % 12], octave);
+}
+
+// A note name, any case, with an optional sharp or flat ("c#4", "Db3", "A-1").
+bool readNoteName(const char* s, double& key) {
+    while (isSpace(*s)) ++s;
+    static const int kOffsets[] = {9, 11, 0, 2, 4, 5, 7};  // a b c d e f g
+    const char letter = lower(*s);
+    if (letter < 'a' || letter > 'g') return false;
+    int semitone = kOffsets[letter - 'a'];
+    ++s;
+    if (*s == '#') {
+        ++semitone;
+        ++s;
+    } else if (*s == 'b' && (s[1] == '-' || (s[1] >= '0' && s[1] <= '9'))) {
+        --semitone;
+        ++s;
+    }
+    bool negative = false;
+    if (*s == '-') {
+        negative = true;
+        ++s;
+    }
+    if (*s < '0' || *s > '9') return false;
+    int octave = 0;
+    while (*s >= '0' && *s <= '9') {
+        octave = octave * 10 + (*s - '0');
+        if (octave > 100) return false;
+        ++s;
+    }
+    while (isSpace(*s)) ++s;
+    if (*s) return false;
+    key = (negative ? -octave : octave) * 12.0 + 12.0 + semitone;
+    return true;
+}
+
+// "50L", "L 50", "C", "centre", "50R", or a signed percentage ("-50" is 50L).
+bool readPan(const char* text, double& plain) {
+    char token[32];
+    restToken(text, token, sizeof(token));
+    if (!std::strcmp(token, "c") || !std::strcmp(token, "center") || !std::strcmp(token, "centre")) {
+        plain = 0.0;
+        return true;
+    }
+    double side = 0.0;
+    const char* s = token;
+    if (*s == 'l' || *s == 'r') {
+        side = *s == 'l' ? -1.0 : 1.0;
+        ++s;
+    }
+    double v = 0.0;
+    if (!readNumber(s, v)) return false;
+    if (*s == '%') ++s;
+    if (side == 0.0 && (*s == 'l' || *s == 'r')) {
+        side = *s == 'l' ? -1.0 : 1.0;
+        ++s;
+    }
+    if (*s) return false;
+    if (side != 0.0) {
+        if (v < 0.0) return false;  // "-50L" means nothing
+        v *= side;
+    }
+    plain = v / 100.0;
+    return std::isfinite(plain);
+}
+
+// What an offAtMinimum() parameter shows at its minimum, and accepts for it.
+void offText(const ParamDef& p, ValueText& t) {
+    if (p.unit == Unit::Decibels) {
+        copyText(t.number, sizeof(t.number), "-inf");
+        copyText(t.unit, sizeof(t.unit), p.suffix ? p.suffix : "dB");
+    } else {
+        copyText(t.number, sizeof(t.number), "Off");
+        t.unit[0] = '\0';
+    }
+}
+
+bool readOff(const ParamDef& p, const char* text) {
+    char token[32];
+    restToken(text, token, sizeof(token));
+    if (!std::strcmp(token, "off")) return true;
+    if (p.unit != Unit::Decibels) return false;
+    // "-inf", in ASCII or as the editor draws it, with or without the unit.
+    for (const char* minus : {"-", "\xE2\x88\x92"})
+        for (const char* inf : {"inf", "infinity", "\xE2\x88\x9E"})
+            for (const char* unit : {"", "db", p.suffix}) {
+                if (!unit) continue;
+                char want[48];
+                std::snprintf(want, sizeof(want), "%s%s%s", minus, inf, unit);
+                char wanted[48];
+                restToken(want, wanted, sizeof(wanted));
+                if (!std::strcmp(token, wanted)) return true;
+            }
+    return false;
+}
+
 
 // Milliseconds, switching to seconds at one second.
 void describeTime(const ParamDef& p, double ms, ValueText& t) {
@@ -264,6 +373,17 @@ ValueText describe(const ParamDef& p, double host) {
     const double v = toPlain(p, sanitizeHost(p, host));
     const bool plus = p.bipolar();
 
+    if (p.off(v)) {
+        offText(p, t);
+        return t;
+    }
+    if (p.formatter) {
+        p.formatter(p, v, t);
+        t.number[sizeof(t.number) - 1] = '\0';
+        t.unit[sizeof(t.unit) - 1] = '\0';
+        return t;
+    }
+
     if (p.kind == ParamKind::Choice || p.kind == ParamKind::Toggle) {
         const int i = static_cast<int>(std::lround(v - p.min));
         if (p.labels && i >= 0 && i < p.labelCount)
@@ -273,6 +393,10 @@ ValueText describe(const ParamDef& p, double host) {
         return t;
     }
     if (p.kind == ParamKind::Integer) {
+        if (p.unit == Unit::Note) {
+            noteName(v, t.number, sizeof(t.number));
+            return t;
+        }
         writeFixed(v, 0, plus, t.number, sizeof(t.number));
         copyText(t.unit, sizeof(t.unit), p.suffix ? p.suffix : baseUnitText(p.unit));
         return t;
@@ -310,11 +434,41 @@ ValueText describe(const ParamDef& p, double host) {
             copyText(t.unit, sizeof(t.unit), p.suffix ? p.suffix : ":1");
             return t;
         }
+        case Unit::Degrees:
+        case Unit::Samples: {
+            // Degrees: whole above ten. Samples: like a time, fractions only
+            // where they are a visible part of the value.
+            const bool samples = p.unit == Unit::Samples;
+            auto rule = [&](double x) {
+                if (p.precision >= 0) return p.precision;
+                if (x < 10.0) return samples ? 2 : 1;
+                return samples && x < 100.0 ? 1 : 0;
+            };
+            const double rounded = settle(v, rule, d);
+            writeFixed(rounded, d, plus, t.number, sizeof(t.number));
+            copyText(t.unit, sizeof(t.unit), p.suffix ? p.suffix : baseUnitText(p.unit));
+            return t;
+        }
+        case Unit::Pan: {
+            auto rule = [&](double) { return p.precision >= 0 ? p.precision : 0; };
+            const double rounded = settle(std::fabs(v) * 100.0, rule, d);
+            if (rounded == 0.0) {
+                copyText(t.number, sizeof(t.number), "C");
+                return t;
+            }
+            char amount[24];
+            writeFixed(rounded, d, false, amount, sizeof(amount));
+            std::snprintf(t.number, sizeof(t.number), "%s%s", amount, v < 0.0 ? "L" : "R");
+            return t;
+        }
+        case Unit::Note:  // a continuous note is a number of semitones
         case Unit::Decibels:
         case Unit::Semitones:
         case Unit::Cents:
+        case Unit::Octaves:
+        case Unit::Bpm:
         case Unit::None: {
-            const int fallback = p.unit == Unit::None ? 2 : p.unit == Unit::Cents ? 0 : 1;
+            const int fallback = p.unit == Unit::None || p.unit == Unit::Octaves ? 2 : p.unit == Unit::Cents ? 0 : 1;
             auto rule = [&](double) { return p.precision >= 0 ? p.precision : fallback; };
             const double rounded = settle(v, rule, d);
             writeFixed(rounded, d, plus, t.number, sizeof(t.number));
@@ -338,6 +492,31 @@ void formatValue(const ParamDef& p, double host, char* out, size_t size) {
 
 bool parseValue(const ParamDef& p, const char* text, double& host) {
     if (!text) return false;
+
+    if (p.is(pflag::kOffAtMin) && readOff(p, text)) {
+        host = toHost(p, p.min);
+        return true;
+    }
+    if (p.parser) {
+        double plain = 0.0;
+        if (!p.parser(p, text, plain) || !std::isfinite(plain)) return false;
+        host = toHost(p, plain);
+        return true;
+    }
+    if (p.unit == Unit::Pan) {
+        double plain = 0.0;
+        if (!readPan(text, plain)) return false;
+        host = toHost(p, plain);
+        return true;
+    }
+    if (p.unit == Unit::Note && p.kind == ParamKind::Integer) {
+        double key = 0.0;
+        if (readNoteName(text, key)) {
+            host = toHost(p, key);
+            return true;
+        }
+        // otherwise a plain note number, below
+    }
 
     if (p.kind == ParamKind::Choice || p.kind == ParamKind::Toggle) {
         for (int i = 0; p.labels && i < p.labelCount; ++i) {
@@ -396,6 +575,21 @@ bool parseValue(const ParamDef& p, const char* text, double& host) {
             ok = bare || tokenIs(token, "ct") || tokenIs(token, "c") || tokenIs(token, "cents") ||
                  tokenIs(token, p.suffix);
             break;
+        case Unit::Degrees:
+            ok = bare || tokenIs(token, "deg") || tokenIs(token, "degrees") || tokenIs(token, "\xC2\xB0") ||
+                 tokenIs(token, p.suffix);
+            break;
+        case Unit::Samples:
+            ok = bare || tokenIs(token, "smp") || tokenIs(token, "spl") || tokenIs(token, "sample") ||
+                 tokenIs(token, "samples") || tokenIs(token, p.suffix);
+            break;
+        case Unit::Octaves:
+            ok = bare || tokenIs(token, "oct") || tokenIs(token, "octave") || tokenIs(token, "octaves") ||
+                 tokenIs(token, p.suffix);
+            break;
+        case Unit::Bpm: ok = bare || tokenIs(token, "bpm") || tokenIs(token, p.suffix); break;
+        case Unit::Pan:
+        case Unit::Note:
         case Unit::None: ok = bare || tokenIs(token, p.suffix); break;
     }
     if (!ok) return false;

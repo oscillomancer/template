@@ -68,7 +68,8 @@ struct MockHost : EditorHost {
 
 int findParam(bool (*want)(const ParamDef&)) {
     for (size_t i = 0; i < params::kCount; ++i)
-        if (want(params::at(i)) && !params::at(i).is(pflag::kHidden)) return static_cast<int>(i);
+        if (want(params::at(i)) && !params::at(i).is(pflag::kHidden) && !params::at(i).isOutput())
+            return static_cast<int>(i);
     return -1;
 }
 bool isContinuous(const ParamDef& p) { return p.kind == ParamKind::Continuous; }
@@ -342,6 +343,43 @@ TEST(losing_focus_ends_every_gesture_and_overlay) {
     CHECK(b.host.openCount == 0 && b.host.clean());
 }
 
+TEST(a_control_on_an_output_only_displays_it) {
+    int output = -1;
+    for (size_t i = 0; i < params::kCount && output < 0; ++i)
+        if (params::at(i).isOutput()) output = static_cast<int>(i);
+    if (output < 0) {
+        std::printf("      (no output parameters in this product)\n");
+        return;
+    }
+    MockHost host;
+    Ui ui{host, 800.0f, 600.0f};
+    const uint32_t id = params::at(static_cast<size_t>(output)).id;
+    const Rect knobRect{20, 20, 100, 120}, readoutRect{150, 40, 200, 40};
+    ui.knob(id, knobRect);
+    ui.readout(id, readoutRect);
+    const int normal = findParam(isContinuous);
+    if (normal >= 0) ui.knob(params::at(static_cast<size_t>(normal)).id, {400, 20, 100, 120});
+    for (const Rect& r : {knobRect, readoutRect}) {
+        CHECK(!ui.pointerMove(r.cx(), r.cy(), 0) || ui.hover() < 0);
+        CHECK(ui.cursor() == Cursor::Arrow);
+        ui.pointerDown(r.cx(), r.cy(), 0, 0, false);
+        ui.pointerMove(r.cx(), r.cy() - 40, 0);
+        ui.pointerUp(r.cx(), r.cy() - 40, 0, 0);
+        ui.pointerDown(r.cx(), r.cy(), 0, 0, true);
+        ui.pointerDown(r.cx(), r.cy(), 0, mod::kCtrl, false);
+        ui.wheel(r.cx(), r.cy(), 0.0f, 3.0f, 0);
+        ui.idle(1.0);
+    }
+    for (int k = 0; k < 4; ++k) {
+        ui.key(key::kTab, 0);
+        CHECK(ui.focus() < 0 || ui.focus() == 2);  // focus passes over both
+        ui.key(key::kHome, 0);
+    }
+    CHECK(!ui.textEdit().open && !ui.menu().open);
+    CHECK(host.values[static_cast<size_t>(output)] == hostDefault(params::at(static_cast<size_t>(output))));
+    CHECK(host.clean());
+}
+
 // --- the product's editor -------------------------------------------------------------------
 
 namespace {
@@ -389,12 +427,31 @@ TEST(an_idle_editor_repaints_when_the_host_changes_a_value) {
     p.editor->idle(0.016);
     CHECK(!p.editor->needsRepaint());  // nothing moved: draw nothing
     // Automation, a generic host editor or a preset, with no audio running.
-    const ParamDef& first = params::at(0);
-    p.host.values[0] = fromNormalized(first, 0.9);
+    size_t k = 0;
+    while (k + 1 < params::kCount && params::at(k).isOutput()) ++k;
+    const double moved = fromNormalized(params::at(k), 0.9);
+    p.host.values[k] = moved != p.host.values[k] ? moved : fromNormalized(params::at(k), 0.1);
     p.editor->idle(0.016);
     CHECK(p.editor->needsRepaint());
     p.draw();
     CHECK(!p.editor->needsRepaint());
+}
+
+TEST(an_output_repaints_the_editor_only_where_it_is_shown) {
+    for (size_t i = 0; i < params::kCount; ++i) {
+        if (!params::at(i).isOutput()) continue;
+        ProductEditor p;
+        const Ui& ui = p.editor->layout();
+        bool shown = false;
+        for (int c = 0; c < ui.count(); ++c) shown |= ui.control(c).param == params::at(i).id && ui.control(c).visible;
+        p.editor->idle(0.016);
+        p.draw();
+        p.host.values[i] = fromNormalized(params::at(i), 0.6);  // the processor reported something new
+        p.editor->idle(0.016);
+        // A product drawing it its own way watch()es it; that is not visible from here.
+        if (shown) CHECK_MSG(p.editor->needsRepaint(), "%s is on screen and moved", params::at(i).name);
+        std::printf("      %s: %s\n", params::at(i).name, shown ? "shown, repaints" : "not shown by a control");
+    }
 }
 
 TEST(silence_does_not_repaint_and_signal_does) {

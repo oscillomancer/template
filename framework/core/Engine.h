@@ -24,6 +24,11 @@
 //     input), or a finite double overflowed a float buffer. The block is
 //     silenced and the processor and dry history reset instead.
 //   - note ends an instrument reports (NoteEnds), for the host to collect.
+//   - smoothing for parameters marked smoothed(ms), per sample, retargeted
+//     at each change's exact frame.
+//   - output parameters: what the processor reports with setOutput() goes
+//     to the store after every block (the editor and get_value read it) and
+//     is due for the host about kOutputHz times a second.
 #pragma once
 
 #include <algorithm>
@@ -100,10 +105,14 @@ template <class P>
 class BasicEngine {
   public:
     using Processor = P;
+    // How often output parameters are offered to the host.
+    static constexpr double kOutputHz = 30.0;
 
     BasicEngine() {
         for (auto& m : modulation_) m.store(0.0, std::memory_order_relaxed);
+        for (size_t i = 0; i < params::kCount; ++i) outputs_[i] = params::at(i).def;
         processor_.bindNoteEnds(&noteEnds_);
+        processor_.bindOutputs(outputs_);
     }
 
     ParamStore& store() { return store_; }
@@ -124,6 +133,21 @@ class BasicEngine {
                         std::vector<double>(static_cast<size_t>(maxBlock_), 0.0));
         pointers_.resize(static_cast<size_t>(channelsOut_));
         for (int c = 0; c < channelsOut_; ++c) pointers_[static_cast<size_t>(c)] = scratch_[static_cast<size_t>(c)].data();
+        glideBuffer_.assign(params::kSmoothedCount * static_cast<size_t>(maxBlock_), 0.0);
+        for (size_t k = 0; k < params::kSmoothedCount; ++k) {
+            const ParamDef& p = params::at(params::kSmoothedIndices[k]);
+            glides_[k].smoother.setTime(p.smoothing, sampleRate_);
+            glides_[k].log = p.taper == Taper::Log;
+            glidePointers_[k] = glideBuffer_.data() + k * static_cast<size_t>(maxBlock_);
+        }
+        // Outputs start from their defaults, for the host and the editor.
+        for (uint16_t i : params::kOutputIndices) {
+            outputs_[i] = params::at(i).def;
+            store_.setFromAudio(i, hostDefault(params::at(i)));
+        }
+        outputPeriod_ = std::max(1, static_cast<int>(std::lround(sampleRate_ / kOutputHz)));
+        outputCountdown_ = outputPeriod_;
+        outputsDue_ = false;
 
         // Every value is read fresh, so any pending store changes are moot.
         store_.drain([](size_t) {});
@@ -135,6 +159,7 @@ class BasicEngine {
         values_.markAll();
         values_.setInitial(true);
         processor_.prepare(ProcessSetup{sampleRate_, maxBlock_, channelsOut_}, values_);
+        retargetGlides(true);
         processor_.update(values_);
         values_.clearChanges();
 
@@ -186,6 +211,14 @@ class BasicEngine {
     }
     // Notes the processor finished during the last process() or flush().
     const NoteEnds& noteEnds() const { return noteEnds_; }
+    // Audio thread: true about kOutputHz times a second while processing,
+    // when the caller should tell the host the output parameters' values
+    // (the store's) that changed since it last did.
+    bool takeOutputsDue() {
+        const bool due = outputsDue_;
+        outputsDue_ = false;
+        return due;
+    }
 
     // --- audio thread ----------------------------------------------------------
 
@@ -257,6 +290,7 @@ class BasicEngine {
             pending = events.next(e);
         }
         commit();
+        publishOutputs(frames);
     }
 
     // Convenience for tools and tests: one block with no events.
@@ -275,6 +309,7 @@ class BasicEngine {
 
     void refresh(size_t i) {
         const ParamDef& p = params::at(i);
+        if (p.isOutput()) return;  // the processor's to report, not to read
         const double host = sanitizeHost(p, store_.get(i) + mod_[i]);
         values_.setIndex(i, toPlain(p, host));
     }
@@ -293,6 +328,7 @@ class BasicEngine {
         if (e.index < 0 || e.index >= static_cast<int>(params::kCount)) return;
         const size_t i = static_cast<size_t>(e.index);
         const ParamDef& p = params::at(i);
+        if (p.isOutput()) return;  // read-only: a host has no business setting it
         if (e.type == EngineEvent::Type::Value) {
             store_.setFromAudio(i, sanitizeHost(p, e.value));
         } else {
@@ -314,6 +350,8 @@ class BasicEngine {
             if (params::kBypassIndex >= 0 &&
                 values_.changed(params::at(static_cast<size_t>(params::kBypassIndex)).id))
                 bypass_.set(bypassOn() ? 1.0 : 0.0);
+            for (size_t k = 0; k < params::kSmoothedCount; ++k)
+                if (values_.changed(params::at(params::kSmoothedIndices[k]).id)) retarget(k, values_.initial());
             processor_.update(values_);
             const int latency = std::max(0, processor_.latencySamples());
             dryLatency_ = std::min(latency, delayCapacity_);
@@ -330,8 +368,70 @@ class BasicEngine {
     void reinitialize() {
         values_.markAll();
         values_.setInitial(true);
+        retargetGlides(true);
         processor_.update(values_);
         values_.clearChanges();
+    }
+
+    // --- smoothing ------------------------------------------------------------
+
+    struct Glide {
+        dsp::Smoother smoother;  // in log space for a log taper
+        double target = 0.0;     // plain: what a settled glide reads, exactly
+        bool log = false;
+        int filled = 0;          // leading buffer frames already holding target
+    };
+
+    void retarget(size_t k, bool snap) {
+        Glide& g = glides_[k];
+        g.target = values_.atIndex(params::kSmoothedIndices[k]);
+        g.smoother.set(g.log ? std::log(g.target) : g.target, snap);
+        g.filled = 0;
+    }
+    void retargetGlides(bool snap) {
+        for (size_t k = 0; k < params::kSmoothedCount; ++k) retarget(k, snap);
+    }
+
+    void fillGlides(int n) {
+        for (size_t k = 0; k < params::kSmoothedCount; ++k) {
+            Glide& g = glides_[k];
+            double* out = glidePointers_[k];
+            if (g.smoother.settled()) {
+                moving_[k] = false;
+                if (g.filled < n) {
+                    std::fill(out, out + n, g.target);
+                    g.filled = n;
+                }
+                continue;
+            }
+            moving_[k] = true;
+            g.filled = 0;
+            for (int i = 0; i < n; ++i) {
+                const double v = g.smoother.next();
+                out[i] = g.smoother.settled() ? g.target : g.log ? std::exp(v) : v;
+            }
+        }
+    }
+
+    // --- outputs ----------------------------------------------------------------
+
+    void publishOutputs(int frames) {
+        if constexpr (params::kOutputCount > 0) {
+            for (uint16_t i : params::kOutputIndices) {
+                const ParamDef& p = params::at(i);
+                const double host = sanitizeHost(p, toHost(p, outputs_[i]));
+                if (host != store_.get(i)) store_.setFromAudio(i, host);
+            }
+            // The remainder carries over, so the rate holds whatever the
+            // block size; a block longer than a period counts once.
+            outputCountdown_ -= frames;
+            if (outputCountdown_ <= 0) {
+                outputCountdown_ = std::max(1, outputCountdown_ + outputPeriod_);
+                outputsDue_ = true;
+            }
+        } else {
+            (void)frames;
+        }
     }
 
     template <class T>
@@ -349,11 +449,14 @@ class BasicEngine {
             }
         }
 
+        fillGlides(n);
         Block block;
         block.data = pointers_.data();
         block.channels = channelsOut_;
         block.frames = n;
         block.metering = metering;
+        block.glides = glidePointers_;
+        block.moving = moving_;
         if (transport) {
             // Where this split starts, not where the host block did.
             transport_ = *transport;
@@ -462,6 +565,16 @@ class BasicEngine {
     ParamValues values_;
     double mod_[params::kCount]{};
     std::atomic<double> modulation_[params::kCount];
+    double outputs_[params::kCount];  // plain, written by the processor
+    int outputPeriod_ = 1600;
+    int outputCountdown_ = 1600;
+    bool outputsDue_ = false;
+
+    static constexpr size_t kGlideSlots = params::kSmoothedCount > 0 ? params::kSmoothedCount : 1;
+    Glide glides_[kGlideSlots];
+    double* glidePointers_[kGlideSlots]{};
+    bool moving_[kGlideSlots]{};
+    std::vector<double> glideBuffer_;
 
     double sampleRate_ = 48000.0;
     int maxBlock_ = 512;

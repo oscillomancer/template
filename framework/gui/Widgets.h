@@ -50,6 +50,8 @@ void vslider(NVGcontext* vg, const Theme& t, const Control& c, const ControlStat
 void toggle(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s);
 void segmented(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s);
 void dropdown(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s);
+// Label, value and a bar from the origin, for display only.
+void readout(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s);
 
 // The open menu and text field, drawn above everything else.
 void overlays(NVGcontext* vg, const Theme& t, const Ui& ui);

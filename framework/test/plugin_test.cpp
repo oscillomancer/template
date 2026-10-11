@@ -6,6 +6,7 @@
 // real threads, and the restart protocol. Run the tsan preset to have every
 // cross-thread test here checked for races as well.
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <random>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include "Check.h"
+#include "core/Engine.h"
 #include "core/ParamTable.h"
 #include "gui/EditorHost.h"
 #include "plugin/Entry.h"
@@ -284,6 +286,7 @@ TEST(the_host_parameter_list_is_the_table) {
         CHECK(((info.flags & CLAP_PARAM_IS_BYPASS) != 0) == p.is(pflag::kBypass));
         CHECK(((info.flags & CLAP_PARAM_IS_STEPPED) != 0) == p.stepped());
         CHECK(((info.flags & CLAP_PARAM_IS_AUTOMATABLE) != 0) == p.is(pflag::kAutomatable));
+        CHECK(((info.flags & CLAP_PARAM_IS_READONLY) != 0) == p.isOutput());
         CHECK(i.value(k) == hostDefault(p));
     }
     clap_param_info_t none{};
@@ -301,8 +304,9 @@ TEST(state_restores_every_value_and_resaves_identically) {
         Audio audio(a.channels());
         InEvents events;
         for (size_t k = 0; k < params::kCount; ++k) {
-            expected[k] = fromNormalized(params::at(k), 0.63);
-            events.add(0, params::at(k).id, expected[k]);
+            // An output is not the host's to set, nor state to restore.
+            expected[k] = params::at(k).isOutput() ? hostDefault(params::at(k)) : fromNormalized(params::at(k), 0.63);
+            events.add(0, params::at(k).id, fromNormalized(params::at(k), 0.63));
         }
         OutEvents out;
         audio.run(a.plugin, &events.list, &out.list);
@@ -389,6 +393,7 @@ TEST(editor_edits_reach_a_stopped_host_through_flush) {
     for (size_t k = 0; k < params::kCount; ++k) last[k] = i.value(k);
     for (int step = 0; step < 4000; ++step) {
         const size_t k = rng() % params::kCount;
+        if (params::at(k).isOutput()) continue;  // read-only; its own test is below
         const uint32_t id = params::at(k).id;
         const double v = fromNormalized(params::at(k), (rng() % 1000) / 999.0);
         editor->beginEdit(id);
@@ -437,7 +442,7 @@ TEST(editor_edits_and_state_loads_during_playback_are_race_free) {
     for (int step = 0; step < 20000; ++step) {
         const size_t k = rng() % params::kCount;
         const uint32_t id = params::at(k).id;
-        if (editor) {
+        if (editor && !params::at(k).isOutput()) {
             editor->beginEdit(id);
             editor->setValue(id, fromNormalized(params::at(k), (rng() % 100) / 99.0));
             editor->endEdit(id);
@@ -469,6 +474,62 @@ TEST(telemetry_flows_only_while_metering) {
     int frames = 0;
     while (editor->popTelemetry(f)) ++frames;
     CHECK_MSG(std::abs(frames - static_cast<int>(kTelemetryHz)) <= 1, "%d frames in one second", frames);
+}
+
+// --- output parameters ----------------------------------------------------------------------
+
+TEST(output_parameters_reach_the_host_and_stay_out_of_state) {
+    if (params::kOutputCount == 0) {
+        std::printf("      (no output parameters in this product)\n");
+        return;
+    }
+    Instance i;
+    i.activate(48000.0, 480);
+    Audio audio(i.channels(), 480);
+    // A host that tries to set one is ignored, from the audio thread or the editor.
+    InEvents attempt;
+    for (uint16_t k : params::kOutputIndices) attempt.add(0, params::at(k).id, fromNormalized(params::at(k), 0.9));
+    if (gui::EditorHost* editor = supple_test_editor_host(i.plugin))
+        for (uint16_t k : params::kOutputIndices) {
+            editor->beginEdit(params::at(k).id);
+            editor->setValue(params::at(k).id, fromNormalized(params::at(k), 0.9));
+            editor->endEdit(params::at(k).id);
+        }
+    int events[params::kOutputCount > 0 ? params::kOutputCount : 1]{};
+    std::vector<uint8_t> first;
+    for (int b = 0; b < 100; ++b) {  // one second of programme
+        for (int c = 0; c < audio.channels; ++c)
+            for (int f = 0; f < 480; ++f)
+                audio.data[static_cast<size_t>(c)][static_cast<size_t>(f)] =
+                    0.25f * static_cast<float>(std::sin(0.031 * (b * 480 + f) + c));
+        OutEvents block;
+        audio.run(i.plugin, b == 0 ? &attempt.list : noEvents(), &block.list);
+        for (size_t n = 0; n < params::kOutputCount; ++n) {
+            const size_t k = params::kOutputIndices[n];
+            if (!block.sawValue[k]) continue;
+            ++events[n];
+            // What the host heard is what it reads.
+            CHECK_MSG(block.lastValue[k] == i.value(k), "%s: sent %g, reads %g", params::at(k).name,
+                      block.lastValue[k], i.value(k));
+        }
+        if (b == 10) first = saveState(i);
+        i.pumpMain();
+    }
+    for (size_t n = 0; n < params::kOutputCount; ++n) {
+        const size_t k = params::kOutputIndices[n];
+        const ParamDef& p = params::at(k);
+        const double now = i.value(k);
+        CHECK_MSG(events[n] <= static_cast<int>(Engine::kOutputHz) + 1, "%s: %d events in a second", p.name, events[n]);
+        CHECK_MSG(now >= p.hostMin() && now <= p.hostMax(), "%s reads %g", p.name, now);
+        // Once after activation whatever its value, then whenever it moved.
+        CHECK_MSG(events[n] >= 1, "%s: the host never heard it", p.name);
+        std::printf("      %s: %d values sent in one second, now %g\n", p.name, events[n], now);
+    }
+    // The meters moved; the state did not.
+    CHECK(saveState(i) == first);
+    Instance fresh;
+    CHECK(loadState(fresh, first));
+    for (uint16_t k : params::kOutputIndices) CHECK(fresh.value(k) == hostDefault(params::at(k)));
 }
 
 // --- restart protocol ----------------------------------------------------------------------

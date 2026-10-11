@@ -39,7 +39,11 @@ class PreviewHost : public EditorHost {
     PreviewHost() {
         for (size_t i = 0; i < params::kCount; ++i) values_[i] = hostDefault(params::at(i));
     }
-    double value(uint32_t id) const override { return values_[slot(id)]; }
+    // An output shows what the DSP reported for the programme fed so far.
+    double value(uint32_t id) const override {
+        const size_t i = slot(id);
+        return engine_ && params::at(i).isOutput() ? engine_->store().get(i) : values_[i];
+    }
     void beginEdit(uint32_t) override {}
     void setValue(uint32_t id, double v) override { values_[slot(id)] = sanitizeHost(*params::find(id), v); }
     void endEdit(uint32_t) override {}
@@ -219,7 +223,8 @@ int main(int argc, char** argv) {
             const char* eq = std::strchr(next, '=');
             const int p = eq ? paramByName(std::string(next, static_cast<size_t>(eq - next)).c_str()) : -1;
             double v = 0.0;
-            if (p < 0 || !parseValue(params::at(static_cast<size_t>(p)), eq + 1, v)) {
+            if (p < 0 || params::at(static_cast<size_t>(p)).isOutput() ||
+                !parseValue(params::at(static_cast<size_t>(p)), eq + 1, v)) {
                 std::fprintf(stderr, "cannot set \"%s\"\n", next);
                 return 2;
             }

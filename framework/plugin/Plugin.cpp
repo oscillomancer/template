@@ -56,7 +56,8 @@ const clap_plugin_descriptor_t kDescriptor = {
 
 // Feeds the engine CLAP's input events in order, translated and filtered.
 // Parameter events are taken as global: nothing here declares per-note or
-// per-channel parameters, so a host may not send any.
+// per-channel parameters, so a host may not send any. Nor may it set an
+// output parameter, which is read-only; such events are dropped.
 class ClapEvents {
   public:
     explicit ClapEvents(const clap_input_events_t* in) : in_(in), count_(in ? in->size(in) : 0) {}
@@ -71,7 +72,7 @@ class ClapEvents {
                 case CLAP_EVENT_PARAM_VALUE: {
                     const auto* v = reinterpret_cast<const clap_event_param_value_t*>(h);
                     e.index = params::indexOf(v->param_id);
-                    if (e.index < 0) continue;
+                    if (e.index < 0 || params::at(static_cast<size_t>(e.index)).isOutput()) continue;
                     e.type = EngineEvent::Type::Value;
                     e.value = v->value;
                     return true;
@@ -79,7 +80,7 @@ class ClapEvents {
                 case CLAP_EVENT_PARAM_MOD: {
                     const auto* m = reinterpret_cast<const clap_event_param_mod_t*>(h);
                     e.index = params::indexOf(m->param_id);
-                    if (e.index < 0) continue;
+                    if (e.index < 0 || params::at(static_cast<size_t>(e.index)).isOutput()) continue;
                     e.type = EngineEvent::Type::Modulation;
                     e.value = m->amount;
                     return true;
@@ -147,6 +148,18 @@ struct Plugin
     int reportedLatency = -1;         // main thread: what the host was last told
     bool restartOutstanding = false;  // main thread
     double editorScale = 1.0;         // main thread: survives editor close and state
+    // Each output parameter's value as the host last heard it, by event; its
+    // get_value reports the same, so the host's two views never disagree.
+    // (The editor reads the store, which follows every block.) Written on
+    // the audio thread.
+    static constexpr size_t kOutputSlots = params::kOutputCount > 0 ? params::kOutputCount : 1;
+    std::atomic<double> heardOutputs[kOutputSlots];
+    bool resendOutputs = true;  // audio thread: after activation, tell the host every value once
+
+    Plugin() {
+        for (size_t k = 0; k < params::kOutputCount; ++k)
+            heardOutputs[k].store(hostDefault(params::at(params::kOutputIndices[k])), std::memory_order_relaxed);
+    }
 
     // Reasons for the next on_main_thread, set from any thread.
     std::atomic<bool> callbackRequested{false};
@@ -240,6 +253,34 @@ struct Plugin
             e.key = n.key;
             if (!out->try_push(out, &e.header)) break;  // a full queue loses the rest
         }
+        // Outputs last: stamped at the block's final frame, after every note
+        // end, since the host's list must stay in time order.
+        if (engine.takeOutputsDue()) publishOutputs(out, frames);
+    }
+
+    // Audio thread. Each output whose value moved since the host last heard
+    // it; one the queue refuses is offered again next time.
+    void publishOutputs(const clap_output_events_t* out, uint32_t frames) {
+        if (!out) return;
+        for (size_t k = 0; k < params::kOutputCount; ++k) {
+            const size_t i = params::kOutputIndices[k];
+            const double v = engine.store().get(i);
+            if (!resendOutputs && v == heardOutputs[k].load(std::memory_order_relaxed)) continue;
+            clap_event_param_value_t ev{};
+            ev.header.size = sizeof(ev);
+            ev.header.time = frames ? frames - 1 : 0;
+            ev.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+            ev.header.type = CLAP_EVENT_PARAM_VALUE;
+            ev.param_id = params::at(i).id;
+            ev.note_id = -1;
+            ev.port_index = -1;
+            ev.channel = -1;
+            ev.key = -1;
+            ev.value = v;
+            if (out->try_push(out, &ev.header)) heardOutputs[k].store(v, std::memory_order_relaxed);
+            else return;  // the rest next time, the resend included
+        }
+        resendOutputs = false;
     }
 
     // Main thread: parameters whose change requires a restart, compared
@@ -265,14 +306,19 @@ struct Plugin
         const int i = params::indexOf(id);
         return i >= 0 ? engine.modulation(static_cast<size_t>(i)) : 0.0;
     }
-    void beginEdit(uint32_t id) override {
+    // An output is read-only for the editor too.
+    static int editable(uint32_t id) {
         const int i = params::indexOf(id);
+        return i >= 0 && !params::at(static_cast<size_t>(i)).isOutput() ? i : -1;
+    }
+    void beginEdit(uint32_t id) override {
+        const int i = editable(id);
         if (i < 0) return;
         edits.begin(static_cast<size_t>(i));
         requestFlush();
     }
     void setValue(uint32_t id, double v) override {
-        const int i = params::indexOf(id);
+        const int i = editable(id);
         if (i < 0) return;
         const size_t index = static_cast<size_t>(i);
         engine.store().set(index, v);
@@ -281,7 +327,7 @@ struct Plugin
         requestFlush();
     }
     void endEdit(uint32_t id) override {
-        const int i = params::indexOf(id);
+        const int i = editable(id);
         if (i < 0) return;
         edits.end(static_cast<size_t>(i));
         requestFlush();
@@ -415,6 +461,7 @@ bool CLAP_ABI paramsInfo(const clap_plugin_t*, uint32_t index, clap_param_info_t
     if (p.is(pflag::kModulatable)) out->flags |= CLAP_PARAM_IS_MODULATABLE;
     if (p.is(pflag::kHidden)) out->flags |= CLAP_PARAM_IS_HIDDEN;
     if (p.is(pflag::kBypass)) out->flags |= CLAP_PARAM_IS_BYPASS;
+    if (p.isOutput()) out->flags |= CLAP_PARAM_IS_READONLY;
     if (p.stepped()) out->flags |= CLAP_PARAM_IS_STEPPED;
     if (p.kind == ParamKind::Choice) out->flags |= CLAP_PARAM_IS_ENUM;
     std::snprintf(out->name, sizeof(out->name), "%s", p.name);
@@ -428,6 +475,11 @@ bool CLAP_ABI paramsInfo(const clap_plugin_t*, uint32_t index, clap_param_info_t
 bool CLAP_ABI paramsValue(const clap_plugin_t* p, clap_id id, double* out) {
     const int i = params::indexOf(id);
     if (i < 0) return false;
+    if (params::at(static_cast<size_t>(i)).isOutput()) {
+        for (size_t k = 0; k < params::kOutputCount; ++k)
+            if (params::kOutputIndices[k] == i) *out = self(p)->heardOutputs[k].load(std::memory_order_relaxed);
+        return true;
+    }
     *out = self(p)->engine.store().get(static_cast<size_t>(i));
     return true;
 }
@@ -503,8 +555,10 @@ bool CLAP_ABI stateLoad(const clap_plugin_t* p, const clap_istream_t* stream) {
     }
 
     const bool restart = s->active && s->restartParamsDiffer(snapshot.host);
-    // Only the store is written here; the audio thread applies it.
-    for (size_t i = 0; i < params::kCount; ++i) s->engine.store().set(i, snapshot.host[i]);
+    // Only the store is written here; the audio thread applies it. Outputs
+    // are the processor's, and state does not carry them.
+    for (size_t i = 0; i < params::kCount; ++i)
+        if (!params::at(i).isOutput()) s->engine.store().set(i, snapshot.host[i]);
     if (snapshot.editorScale > 0.0) {
         s->editorScale = snapshot.editorScale;
 #if SUPPLE_WITH_GUI
@@ -710,6 +764,8 @@ bool CLAP_ABI pluginActivate(const clap_plugin_t* p, double sampleRate, uint32_t
         s->hostLatency->changed(s->host);
     s->reportedLatency = latency;
     s->restartOutstanding = false;
+    // Whatever the host heard before, it hears each output again.
+    s->resendOutputs = true;
     s->restartWanted.store(false, std::memory_order_relaxed);
     s->active = true;
     return true;

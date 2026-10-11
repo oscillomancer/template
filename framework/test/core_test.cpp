@@ -114,6 +114,108 @@ TEST(text_ignores_the_process_locale) {
     if (!applied) std::printf("      (no comma locale installed; checked under C only)\n");
 }
 
+TEST(a_level_off_at_its_minimum_reads_minus_infinity) {
+    const ParamDef send = decibels(0, "Send", -60.0, 12.0, 0.0).offAtMinimum();
+    CHECK(send.off(-60.0) && !send.off(-59.99));
+    CHECK(text(send, -60.0) == "-inf dB");
+    CHECK(text(send, -59.9) == "-59.9 dB");  // just above it is on, and says so
+    for (const char* typed : {"-inf", "-INF dB", " -inf db ", "-infinity", "off", "\xE2\x88\x92\xE2\x88\x9E",
+                              "\xE2\x88\x92\xE2\x88\x9E dB", "-60"}) {
+        bool ok = false;
+        CHECK_MSG(parsed(send, typed, &ok) == -60.0 && ok, "\"%s\"", typed);
+    }
+    for (const char* bad : {"inf", "+inf", "infinity", "-inf Hz", "-in"}) {
+        bool ok = true;
+        parsed(send, bad, &ok);
+        CHECK_MSG(!ok, "accepted \"%s\"", bad);
+    }
+    // Anything else reads "Off" there, in no unit.
+    const ParamDef cut = frequency(1, "Low Cut", 20.0, 2000.0, 20.0).offAtMinimum();
+    CHECK(text(cut, toHost(cut, 20.0)) == "Off");
+    CHECK(text(cut, toHost(cut, 21.0)) == "21.0 Hz");
+    CHECK(parsed(cut, "OFF") == 0.0);  // the taper's start
+    bool ok = true;
+    parsed(cut, "-inf", &ok);
+    CHECK(!ok);
+}
+
+TEST(each_unit_writes_and_reads_its_own_text) {
+    const ParamDef phase = degrees(0, "Phase", 0.0, 180.0, 90.0);
+    CHECK(text(phase, 90.0) == "90 deg");
+    CHECK(text(phase, 2.5) == "2.5 deg");
+    CHECK(parsed(phase, "45\xC2\xB0") == 45.0 && parsed(phase, "45 degrees") == 45.0 && parsed(phase, "45") == 45.0);
+    CHECK(text(degrees(1, "Rotate", -180.0, 180.0, 0.0), 45.0) == "+45 deg");
+    const ParamDef offset = samples(2, "Offset", 0, 4096, 64);
+    CHECK(text(offset, 64.0) == "64 smp");
+    CHECK(parsed(offset, "65 samples") == 65.0 && parsed(offset, "65.4") == 65.0);
+    CHECK(text(octaves(3, "Width", 0.1, 4.0, 1.0), 1.0) == "1.00 oct");
+    const ParamDef tempo = bpm(4, "Tempo", 20.0, 300.0, 120.0);
+    CHECK(text(tempo, 120.0) == "120.0 BPM");
+    CHECK(parsed(tempo, "98.5 bpm") == 98.5);
+    CHECK(text(cents(5, "Fine", -100.0, 100.0, 0.0), -12.0) == "-12 ct");
+
+    const ParamDef balance = pan(6, "Pan");
+    CHECK(text(balance, 0.0) == "C" && text(balance, -0.5) == "50L" && text(balance, 0.25) == "25R");
+    CHECK(text(balance, 0.004) == "C");  // what rounds to the centre is the centre
+    CHECK(parsed(balance, "L30") == -0.3 && parsed(balance, "30 r") == 0.3 && parsed(balance, "-30") == -0.3);
+    CHECK(parsed(balance, "centre") == 0.0 && parsed(balance, "c") == 0.0 && parsed(balance, "100%L") == -1.0);
+    for (const char* bad : {"30X", "-30L", "L", "LR30", ""}) {
+        bool ok = true;
+        parsed(balance, bad, &ok);
+        CHECK_MSG(!ok, "pan accepted \"%s\"", bad);
+    }
+
+    const ParamDef key = midiNote(7, "Key");
+    CHECK(text(key, 60.0) == "C4" && text(key, 61.0) == "C#4" && text(key, 69.0) == "A4");
+    CHECK(text(key, 0.0) == "C-1" && text(key, 127.0) == "G9");
+    CHECK(parsed(key, "c#4") == 61.0 && parsed(key, "Db4") == 61.0 && parsed(key, " a4 ") == 69.0);
+    CHECK(parsed(key, "B-1") == 11.0 && parsed(key, "bb3") == 58.0 && parsed(key, "60") == 60.0);
+    for (const char* bad : {"H4", "C", "C#", "4C", "C4x"}) {
+        bool ok = true;
+        parsed(key, bad, &ok);
+        CHECK_MSG(!ok, "note accepted \"%s\"", bad);
+    }
+
+    const ParamDef division = noteValue(8, "Time", "1/8.");
+    CHECK(text(division, division.def) == "1/8.");
+    CHECK(noteValueBeats(static_cast<int>(division.def)) == 0.75);
+    CHECK(parsed(division, "1/4T") == static_cast<double>(detail::noteValueIndex("1/4T")));
+    CHECK(noteValueBeats(detail::noteValueIndex("1/4")) == 1.0 && noteValueBeats(detail::noteValueIndex("4/1")) == 16.0);
+    for (size_t i = 1; i < std::size(kNoteValueBeats); ++i) CHECK(kNoteValueBeats[i] > kNoteValueBeats[i - 1]);
+}
+
+namespace {
+// A width shown as "Mono", "Stereo" or a percentage between.
+void widthText(const ParamDef&, double plain, ValueText& out) {
+    if (plain <= 0.0) std::snprintf(out.number, sizeof(out.number), "Mono");
+    else if (plain == 1.0) std::snprintf(out.number, sizeof(out.number), "Stereo");
+    else std::snprintf(out.number, sizeof(out.number), "%.0f%%", plain * 100.0);
+    out.unit[0] = '\0';
+}
+bool widthParse(const ParamDef&, const char* text, double& plain) {
+    if (!std::strcmp(text, "Mono") || !std::strcmp(text, "mono")) return plain = 0.0, true;
+    if (!std::strcmp(text, "Stereo") || !std::strcmp(text, "stereo")) return plain = 1.0, true;
+    char* end = nullptr;
+    const double v = std::strtod(text, &end);
+    if (end == text || (*end && std::strcmp(end, "%"))) return false;
+    plain = v * 0.01;
+    return true;
+}
+}  // namespace
+
+TEST(a_custom_format_owns_the_text_both_ways) {
+    const ParamDef width = continuous(0, "Width", 0.0, 2.0, 1.0).formatted(widthText, widthParse);
+    CHECK(text(width, 0.0) == "Mono" && text(width, 1.0) == "Stereo" && text(width, 1.5) == "150%");
+    CHECK(parsed(width, "stereo") == 1.0 && parsed(width, "150%") == 1.5);
+    CHECK(parsed(width, "900") == 2.0);  // the framework clamps what the parser returns
+    bool ok = true;
+    parsed(width, "wide", &ok);
+    CHECK(!ok);
+    // Off at the minimum is the framework's, ahead of the format.
+    const ParamDef offWidth = width.offAtMinimum();
+    CHECK(text(offWidth, 0.0) == "Off" && parsed(offWidth, "off") == 0.0);
+}
+
 TEST(every_product_parameter_round_trips_its_own_text) {
     for (size_t i = 0; i < params::kCount; ++i) {
         const ParamDef& p = params::at(i);
@@ -508,7 +610,7 @@ TEST(reset_preserves_parameters_and_clears_history) {
     test::RenderOptions o;
     for (size_t i = 0; i < params::kCount; ++i) {
         const ParamDef& p = params::at(i);
-        if (!p.is(pflag::kBypass)) o.initial.push_back({p.id, toPlain(p, fromNormalized(p, 0.3))});
+        if (!p.is(pflag::kBypass) && !p.isOutput()) o.initial.push_back({p.id, toPlain(p, fromNormalized(p, 0.3))});
     }
     auto used = std::make_unique<Engine>();
     test::render(test::noise(2, 9000, 8), o, used.get());
@@ -534,7 +636,8 @@ TEST(after_reset_output_depends_only_on_the_state) {
         std::vector<double> host(params::kCount);
         for (size_t i = 0; i < params::kCount; ++i) {
             const ParamDef& p = params::at(i);
-            host[i] = p.is(pflag::kRestart) || p.is(pflag::kHidden) ? hostDefault(p) : fromNormalized(p, unit(rng));
+            host[i] = p.is(pflag::kRestart) || p.is(pflag::kHidden) || p.isOutput() ? hostDefault(p)
+                                                                                     : fromNormalized(p, unit(rng));
         }
         return host;
     };
@@ -602,6 +705,204 @@ TEST(modulation_is_not_saved_and_events_past_the_block_are_kept) {
     CHECK_NEAR(e->store().get(index), fromNormalized(params::at(index), 0.25), 1e-12);
 }
 
+// --- smoothing, outputs, levels -----------------------------------------------------------
+//
+// These follow the product's own table: a product without smoothed, output or
+// level parameters skips them, and the template's examples have each.
+
+namespace {
+
+// Records every smoothed parameter's value at each frame, as a processor
+// reads it.
+class GlideProbe : public ProcessorBase<GlideProbe> {
+  public:
+    static constexpr int kFrames = 64000;
+    GlideProbe() : trace(params::kSmoothedCount, std::vector<double>(kFrames, 0.0)) {}
+    void prepare(const ProcessSetup&, const ParamValues&) {}
+    void update(const ParamValues&) {}
+    void process(Block& b) {
+        for (size_t k = 0; k < params::kSmoothedCount; ++k) {
+            const uint32_t id = params::at(params::kSmoothedIndices[k]).id;
+            const double* v = b.smoothed(id);
+            for (int i = 0; i < b.frames && at + i < kFrames; ++i) trace[k][static_cast<size_t>(at + i)] = v[i];
+            if (!b.gliding(id))
+                for (int i = 1; i < b.frames; ++i) constantLied |= v[i] != v[0];
+        }
+        at += b.frames;
+    }
+    std::vector<std::vector<double>> trace;
+    int at = 0;
+    bool constantLied = false;
+};
+
+// Every smoothed parameter starts at `from` and is moved to `to` (both
+// normalized) at frame `when`, through host blocks of the given sizes.
+void glide(BasicEngine<GlideProbe>& e, std::vector<int> blocks, int frames, int when, double from, double to) {
+    for (uint16_t i : params::kSmoothedIndices) e.store().set(i, fromNormalized(params::at(i), from));
+    e.activate(48000.0, *std::max_element(blocks.begin(), blocks.end()), 2, 2);
+    struct Moves {
+        int when, start, end;
+        double to;
+        size_t k = 0;
+        bool next(EngineEvent& ev) {
+            if (k == params::kSmoothedCount || when < start || when >= end) return false;
+            const size_t i = params::kSmoothedIndices[k++];
+            ev = EngineEvent{};
+            ev.time = static_cast<uint32_t>(when - start);
+            ev.index = static_cast<int>(i);
+            ev.value = fromNormalized(params::at(i), to);
+            return true;
+        }
+    };
+    std::vector<double> l(4096), r(4096);
+    double* io[] = {l.data(), r.data()};
+    for (int frame = 0, b = 0; frame < frames; ++b) {
+        const int n = std::min(blocks[static_cast<size_t>(b) % blocks.size()], frames - frame);
+        Moves moves{when, frame, frame + n, to};
+        e.process<double>(io, io, n, moves, nullptr);
+        frame += n;
+    }
+}
+
+}  // namespace
+
+TEST(smoothed_parameters_glide_sample_accurately_and_settle_exactly) {
+    if (params::kSmoothedCount == 0) {
+        std::printf("      (no smoothed parameters in this product)\n");
+        return;
+    }
+    const int frames = 60000, when = 3000;
+    auto one = std::make_unique<BasicEngine<GlideProbe>>(), split = std::make_unique<BasicEngine<GlideProbe>>();
+    glide(*one, {4096}, frames, when, 0.2, 0.8);
+    glide(*split, {1, 7, 64, 513, 2, 1000}, frames, when, 0.2, 0.8);
+    CHECK(!one->processor().constantLied && !split->processor().constantLied);
+    for (size_t k = 0; k < params::kSmoothedCount; ++k) {
+        const ParamDef& p = params::at(params::kSmoothedIndices[k]);
+        const std::vector<double>& x = one->processor().trace[k];
+        const double from = toPlain(p, fromNormalized(p, 0.2)), to = toPlain(p, fromNormalized(p, 0.8));
+        CHECK_MSG(x == split->processor().trace[k], "%s depends on where the host splits blocks", p.name);
+        bool before = true, monotonic = true;
+        for (int i = 0; i < when; ++i) before &= x[static_cast<size_t>(i)] == from;
+        for (int i = when; i < frames; ++i) {
+            const double a = x[static_cast<size_t>(i - 1)], b = x[static_cast<size_t>(i)];
+            monotonic &= (to > from ? b >= a && b <= to : b <= a && b >= to);
+        }
+        CHECK_MSG(before, "%s moved before its change", p.name);
+        CHECK_MSG(x[when] != from, "%s did not start moving at its change's frame", p.name);
+        CHECK_MSG(monotonic, "%s overshot or turned back", p.name);
+        CHECK_MSG(x[frames - 1] == to, "%s settled at %.17g, not %.17g", p.name, x[frames - 1], to);
+        // One time constant covers 1 - 1/e of the way, measured where it glides
+        // (log frequency for a log taper).
+        auto domain = [&](double v) { return p.taper == Taper::Log ? std::log(v) : v; };
+        const int tau = static_cast<int>(std::lround(p.smoothing * 48.0));
+        const double covered = (domain(x[static_cast<size_t>(when + tau - 1)]) - domain(from)) / (domain(to) - domain(from));
+        CHECK_MSG(std::fabs(covered - (1.0 - std::exp(-1.0))) < 0.01, "%s covered %g in %g ms", p.name, covered,
+                  p.smoothing);
+    }
+    // Reset snaps: what follows starts at the value, not on the way to it.
+    auto reused = std::make_unique<BasicEngine<GlideProbe>>();
+    glide(*reused, {512}, 4096, 1000, 0.2, 0.8);
+    reused->reset();
+    std::vector<double> l(512), r(512);
+    double* io[] = {l.data(), r.data()};
+    reused->process<double>(io, io, 512);
+    for (size_t k = 0; k < params::kSmoothedCount; ++k) {
+        const ParamDef& p = params::at(params::kSmoothedIndices[k]);
+        const double to = toPlain(p, fromNormalized(p, 0.8));
+        bool snapped = true;
+        for (int i = 4096; i < 4096 + 512; ++i) snapped &= reused->processor().trace[k][static_cast<size_t>(i)] == to;
+        CHECK_MSG(snapped, "%s glided on after reset()", p.name);
+    }
+}
+
+namespace {
+
+// Reports every output at 70% of its range, and remembers what update() was
+// told about them.
+class OutputProbe : public ProcessorBase<OutputProbe> {
+  public:
+    static double reported(size_t i) { return toPlain(params::at(i), fromNormalized(params::at(i), 0.7)); }
+    void prepare(const ProcessSetup&, const ParamValues&) {}
+    void update(const ParamValues& v) {
+        for (uint16_t i : params::kOutputIndices) told[i] = v.atIndex(i);
+    }
+    void process(Block&) {
+        for (uint16_t i : params::kOutputIndices) setOutput(params::at(i).id, reported(i));
+    }
+    double told[params::kCount]{};
+};
+
+}  // namespace
+
+TEST(outputs_reach_the_store_at_the_hosts_rate_and_nobody_else_sets_them) {
+    if (params::kOutputCount == 0) {
+        std::printf("      (no output parameters in this product)\n");
+        return;
+    }
+    auto e = std::make_unique<BasicEngine<OutputProbe>>();
+    e->activate(48000.0, 480, 2, 2);
+    for (uint16_t i : params::kOutputIndices) CHECK(e->store().get(i) == hostDefault(params::at(i)));
+    // A host's value for an output is dropped before the processor hears it.
+    struct HostSets {
+        size_t k = 0;
+        bool next(EngineEvent& ev) {
+            if (k == params::kOutputCount) return false;
+            const size_t i = params::kOutputIndices[k++];
+            ev = EngineEvent{};
+            ev.index = static_cast<int>(i);
+            ev.value = fromNormalized(params::at(i), 0.1);
+            return true;
+        }
+    } sets;
+    std::vector<double> l(480), r(480);
+    double* io[] = {l.data(), r.data()};
+    e->process<double>(io, io, 480, sets, nullptr);
+    for (uint16_t i : params::kOutputIndices) {
+        const ParamDef& p = params::at(i);
+        CHECK_MSG(e->processor().told[i] == p.def, "%s: the processor was told a host's value", p.name);
+        CHECK_MSG(e->store().get(i) == toHost(p, OutputProbe::reported(i)), "%s: the store has %g", p.name,
+                  e->store().get(i));
+    }
+    e->takeOutputsDue();
+    int due = 0;
+    for (int b = 0; b < 100; ++b) {  // one second
+        e->process<double>(io, io, 480);
+        due += e->takeOutputsDue() ? 1 : 0;
+    }
+    CHECK_MSG(std::abs(due - static_cast<int>(Engine::kOutputHz)) <= 1, "outputs due %d times in a second", due);
+}
+
+TEST(a_level_reads_as_an_exact_gain_and_off_is_silence) {
+    int levels = 0;
+    for (size_t i = 0; i < params::kCount; ++i) {
+        const ParamDef& p = params::at(i);
+        if (p.unit != Unit::Decibels || p.isOutput()) continue;
+        ++levels;
+        ParamValues v;
+        v.setIndex(i, p.min);
+        if (p.is(pflag::kOffAtMin))
+            CHECK_MSG(v.gain(p.id) == 0.0, "%s is not silent when off", p.name);
+        else
+            CHECK_NEAR(v.gain(p.id), std::pow(10.0, p.min / 20.0), 1e-12);
+        CHECK(v.off(p.id) == p.is(pflag::kOffAtMin));
+        if (p.min < 0.0 && p.max > 0.0) {
+            v.setIndex(i, 0.0);
+            CHECK_MSG(v.gain(p.id) == 1.0, "%s at 0 dB", p.name);
+        }
+        v.setIndex(i, p.max);
+        CHECK_NEAR(v.gain(p.id), std::pow(10.0, p.max / 20.0), 1e-12);
+        CHECK(!v.off(p.id));
+    }
+    for (size_t i = 0; i < params::kCount; ++i) {
+        const ParamDef& p = params::at(i);
+        if (p.labels != kNoteValueLabels) continue;
+        ParamValues v;
+        v.setIndex(i, detail::noteValueIndex("1/4."));
+        CHECK(v.beats(p.id) == 1.5);
+    }
+    std::printf("      %d level parameters\n", levels);
+}
+
 // --- state ----------------------------------------------------------------------------
 
 TEST(state_round_trips_byte_for_byte) {
@@ -611,9 +912,18 @@ TEST(state_round_trips_byte_for_byte) {
     CHECK(bytes.size() > 8 && std::memcmp(bytes.data(), "TEST", 4) == 0);
     state::Snapshot b;
     CHECK(state::load(bytes.data(), bytes.size(), 0x54455354, b) == state::LoadResult::Ok);
-    for (size_t i = 0; i < params::kCount; ++i) CHECK(b.host[i] == a.host[i]);
+    for (size_t i = 0; i < params::kCount; ++i) {
+        const ParamDef& p = params::at(i);
+        // An output is the processor's report, not state: it loads as its default.
+        CHECK_MSG(b.host[i] == (p.isOutput() ? hostDefault(p) : a.host[i]), "%s", p.name);
+    }
     CHECK(b.editorScale == 1.25);
     CHECK(state::save(0x54455354, b.host, b.editorScale) == bytes);
+    // Nor does an output's value change what is saved.
+    if (params::kOutputCount > 0) {
+        for (uint16_t i : params::kOutputIndices) a.host[i] = fromNormalized(params::at(i), 0.81);
+        CHECK(state::save(0x54455354, a.host, 1.25) == bytes);
+    }
 }
 
 TEST(state_rejects_damage_and_skips_what_it_does_not_know) {
@@ -630,15 +940,18 @@ TEST(state_rejects_damage_and_skips_what_it_does_not_know) {
     const size_t future = w.beginChunk(state::fourcc("ZZZZ"));
     w.f64(1.0);
     w.endChunk(future);
+    size_t first = 0;
+    while (first + 1 < params::kCount && params::at(first).isOutput()) ++first;
     const size_t p = w.beginChunk(state::kParamChunk);
     w.u32(1);
-    w.u32(params::at(0).id);
-    w.f64(params::at(0).hostMax());
+    w.u32(params::at(first).id);
+    w.f64(params::at(first).hostMax());
     w.u32(0);  // padding inside the chunk is tolerated too
     w.endChunk(p);
     CHECK(state::load(w.bytes().data(), w.bytes().size(), 0x54455354, out) == state::LoadResult::Ok);
-    CHECK(out.host[0] == params::at(0).hostMax());
-    for (size_t i = 1; i < params::kCount; ++i) CHECK(out.host[i] == hostDefault(params::at(i)));
+    CHECK(out.host[first] == params::at(first).hostMax());
+    for (size_t i = 0; i < params::kCount; ++i)
+        if (i != first) CHECK(out.host[i] == hostDefault(params::at(i)));
 }
 
 // --- edit bridge --------------------------------------------------------------------------

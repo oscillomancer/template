@@ -68,10 +68,8 @@ ControlState Ui::state(int i) const {
 }
 
 int Ui::controlAt(float x, float y) const {
-    for (int i = 0; i < count(); ++i) {
-        const Control& c = controls_[static_cast<size_t>(i)];
-        if (c.visible && c.enabled && c.bounds.contains(x, y) && def(i)) return i;
-    }
+    for (int i = 0; i < count(); ++i)
+        if (interactive(i) && controls_[static_cast<size_t>(i)].bounds.contains(x, y)) return i;
     return -1;
 }
 
@@ -84,9 +82,11 @@ int Ui::segmentAt(int i, float x) const {
     return std::clamp(s, 0, n - 1);
 }
 
-bool Ui::adjustable(int i) const {
+bool Ui::interactive(int i) const {
+    if (i < 0 || i >= count()) return false;
     const Control& c = controls_[static_cast<size_t>(i)];
-    return c.visible && c.enabled && def(i);
+    const ParamDef* p = def(i);
+    return c.visible && c.enabled && p && !p->isOutput() && c.widget != Widget::Readout;
 }
 
 bool Ui::textEditable(int i) const {
@@ -233,6 +233,7 @@ bool Ui::pointerDown(float x, float y, int button, uint32_t mods, bool doubleCli
         case Widget::Dropdown:
             openMenu(i);
             break;
+        case Widget::Readout: break;  // never interactive
     }
     dirty_ = true;
     return true;
@@ -368,7 +369,7 @@ bool Ui::key(uint32_t code, uint32_t mods) {
         dirty_ = true;
         return true;
     }
-    if (focus_ < 0 || !adjustable(focus_)) return false;
+    if (focus_ < 0 || !interactive(focus_)) return false;
     const int i = focus_;
     const ParamDef& p = *def(i);
     const Widget w = controls_[static_cast<size_t>(i)].widget;
@@ -403,7 +404,7 @@ void Ui::moveFocus(int direction) {
     int i = focus_ < 0 ? (direction > 0 ? -1 : n) : focus_;
     for (int k = 0; k < n; ++k) {
         i = ((i + direction) % n + n) % n;
-        if (adjustable(i)) {
+        if (interactive(i)) {
             setFocus(i);
             return;
         }

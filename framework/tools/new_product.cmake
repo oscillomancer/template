@@ -1,15 +1,16 @@
 # Creates a new product from this template.
 #
 #   cmake -DNAME="Loupe" -DID=com.suppleaudio.loupe -DCODE=LoUp -DDEST=../loupe \
-#         [-DKIND=effect|instrument] [-DDESCRIPTION="A parametric EQ."] \
+#         [-DKIND=effect|instrument | -DEXAMPLE=pulse] [-DDESCRIPTION="A parametric EQ."] \
 #         [-DLICENSE=GPL-3.0-or-later|MIT] \
 #         -P framework/tools/new_product.cmake
 #
 # NAME is the display name. ID is the permanent reverse-DNS identifier. CODE
 # is the permanent four-character AU subtype, also used as the state tag.
-# KIND picks the starting point: the template's effect, or the instrument in
-# framework/examples/instrument. LICENSE defaults to GPL-3.0-or-later, which
-# Supple Audio products use; the framework/ directory stays MIT either way.
+# The starting point is the template's effect, or with EXAMPLE any directory
+# in examples/ (KIND=instrument is EXAMPLE=instrument). LICENSE
+# defaults to GPL-3.0-or-later, which Supple Audio products use; the
+# framework/ directory stays MIT either way.
 #
 # The result builds and passes every test as it stands. Then: describe the
 # product in product/, starting with Params.h and Processor.h.
@@ -23,6 +24,9 @@ foreach(var NAME ID CODE DEST)
         message(FATAL_ERROR "new_product: -D${var}=... is required (see the top of this file)")
     endif()
 endforeach()
+if (KIND AND EXAMPLE)
+    message(FATAL_ERROR "new_product: give KIND or EXAMPLE, not both")
+endif()
 if (NOT KIND)
     set(KIND effect)
 endif()
@@ -31,6 +35,27 @@ if (NOT LICENSE)
 endif()
 if (NOT KIND MATCHES "^(effect|instrument)$")
     message(FATAL_ERROR "new_product: KIND must be effect or instrument")
+endif()
+if (KIND STREQUAL "instrument")
+    set(EXAMPLE instrument)
+endif()
+file(GLOB example_dirs LIST_DIRECTORIES true "${template}/examples/*")
+set(examples "")
+set(reserved_codes StFx)  # the starter's
+foreach(dir ${example_dirs})
+    if (IS_DIRECTORY "${dir}" AND EXISTS "${dir}/product.cmake")
+        get_filename_component(name "${dir}" NAME)
+        list(APPEND examples ${name})
+        file(STRINGS "${dir}/product.cmake" code_lines REGEX "^set\\(PRODUCT_(AU_SUBTYPE|STATE_TAG) ")
+        foreach(line ${code_lines})
+            string(REGEX MATCH "\"([^\"]*)\"" _ "${line}")
+            list(APPEND reserved_codes "${CMAKE_MATCH_1}")
+        endforeach()
+    endif()
+endforeach()
+if (EXAMPLE AND NOT EXAMPLE IN_LIST examples)
+    list(JOIN examples ", " known)
+    message(FATAL_ERROR "new_product: no example called ${EXAMPLE} (there are: ${known})")
 endif()
 if (NOT LICENSE MATCHES "^(GPL-3.0-or-later|MIT)$")
     message(FATAL_ERROR "new_product: LICENSE must be GPL-3.0-or-later or MIT")
@@ -48,7 +73,7 @@ endif()
 if (NOT CODE MATCHES "^[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]$")
     message(FATAL_ERROR "new_product: CODE must be exactly four letters or digits")
 endif()
-if (CODE STREQUAL "StFx" OR CODE STREQUAL "ToNe")
+if (CODE IN_LIST reserved_codes AND NOT ALLOW_EXAMPLE_CODE)
     message(FATAL_ERROR "new_product: ${CODE} belongs to the template's own examples; choose a new code")
 endif()
 
@@ -71,8 +96,8 @@ file(COPY "${template}/framework" DESTINATION "${dest}")
 foreach(file CMakeLists.txt CMakePresets.json .gitignore)
     file(COPY "${template}/${file}" DESTINATION "${dest}")
 endforeach()
-if (KIND STREQUAL "instrument")
-    file(COPY "${template}/framework/examples/instrument/" DESTINATION "${dest}/product")
+if (EXAMPLE)
+    file(COPY "${template}/examples/${EXAMPLE}/" DESTINATION "${dest}/product")
 else()
     file(COPY "${template}/product/" DESTINATION "${dest}/product")
 endif()
@@ -167,7 +192,12 @@ why, each parameter's meaning, latency and tail behaviour, anything that
 needs a restart, and every measured claim with the test that measures it.
 ")
 
-message(STATUS "Created ${NAME} (${ID}, ${CODE}, ${KIND}, ${LICENSE}) at ${dest}")
+if (EXAMPLE)
+    set(start "the ${EXAMPLE} example")
+else()
+    set(start "the starter effect")
+endif()
+message(STATUS "Created ${NAME} (${ID}, ${CODE}, from ${start}, ${LICENSE}) at ${dest}")
 message(STATUS "Next:")
 message(STATUS "  cd ${dest} && git init")
 message(STATUS "  cmake --preset release && cmake --build --preset release && ctest --preset release")

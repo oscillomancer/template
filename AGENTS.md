@@ -10,14 +10,37 @@ Supple Audio product, plus a starter product in `product/` that exercises it.
   `framework/tools/new_product.cmake` (see the README) and work in the copy.
 - **Fixing or extending the framework?** This is the place. Follow "Changing
   the framework" at the end of `framework/AGENTS.md`: a test that would have
-  caught it, every preset green, the instrument example generated and green,
-  `framework/VERSION.txt` and `framework/CHANGES.md` updated. Then bring the
-  change into each product with `framework/tools/update_framework.cmake`.
+  caught it, every preset green, every example green
+  (`framework/tools/test_examples.cmake`), `framework/VERSION.txt` and
+  `framework/CHANGES.md` updated. Then bring the change into each product
+  with `framework/tools/update_framework.cmake`.
+- **Adding a framework feature the starter does not use?** Grow the
+  framework, not the number of frameworks: a small feature is opt-in by
+  use (a parameter modifier); a larger one is a switch a product turns on
+  in `product.cmake` (`PRODUCT_SIDECHAIN ON`). Either way, show it in an
+  example under `examples/` -- extend an existing one where it fits, add a
+  small one where none does -- and write the framework's tests against the
+  product's own table, so they run for real in that example and report
+  themselves skipped elsewhere.
 - **Changing the starter product?** It exists to show patterns, not to ship.
   Keep it small and bit-transparent at its defaults. It uses knobs, toggles,
   a segmented control and a custom drag; `ui-tests` covers the other kinds
   (sliders, dropdown) on a synthetic layout, but the preview shows only what
   the starter uses.
+
+## The examples
+
+`examples/<name>/` is a complete `product/` directory: what `new_product`
+copies for `-DEXAMPLE=<name>`, and what `test_examples.cmake` generates,
+builds and tests under any preset. Keep each small, measured
+(`test/processor_test.cpp`) and looked at (`gui-preview`), with its own
+name, ID and codes, which `new_product` then refuses to reuse.
+
+- `instrument` (Tone): notes, voices, note ends.
+- `pulse` (Pulse): a tremolo and auto-pan. Tempo sync (`noteValue`, the
+  song position when playing), `smoothed()` parameters read from
+  `Block::smoothed`, an `offAtMinimum()` level, degrees, and an `output()`
+  parameter shown in a readout and sent to the host.
 
 ## The starter product
 

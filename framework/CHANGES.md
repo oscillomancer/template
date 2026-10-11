@@ -4,6 +4,44 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.6.0
+
+Parameters: what a host can display, what the framework smooths, and the
+text a level, an angle, a pan or a note needs. Nothing changes for a product
+that uses none of it; its sessions, IDs and sound are as they were.
+
+- **Output parameters** (`.output()`): read-only, reported by the processor
+  with `setOutput(id, plain)`. The editor sees each block's value; the host
+  hears it as `CLAP_EVENT_PARAM_VALUE` (VST3 output parameter changes) about
+  30 times a second when it moved, once after every activation, and
+  `get_value` returns what it last heard. Never automated, never set by a
+  host or the editor, never in state. `ui().readout(id, rect)` shows one;
+  any control bound to an output only displays it, and an output repaints
+  the editor only where it is shown (or `watch(id)`ed).
+- **Framework smoothing** (`.smoothed(ms)`): the processor reads
+  `block.smoothed(id)`, the plain value at each frame, glided from each
+  change's exact frame (in log space for a log taper), snapped after
+  prepare and reset, exactly the target once settled; `block.gliding(id)`
+  says whether it moved in this block.
+- **Off at the minimum** (`.offAtMinimum()`): a level reads "-inf dB" there
+  (anything else "Off") and `v.gain(id)` / `levelGain(def, dB)` is exactly
+  0. The editor draws −∞. `host_contract.h` now lets such a level accept
+  "-inf" for exactly its minimum and still rejects it everywhere else.
+- **Custom text** (`.formatted(format, parse)`) for what no unit covers.
+- **Units and factories**: `degrees` (a degree sign in the editor),
+  `samples`, `octaves`, `bpm`, `pan` ("50L", "C", "50R"), `midiNote` ("C#4"
+  is 61), `cents`, and `noteValue(id, name, "1/8.")` over
+  `kNoteValueLabels`, 1/64 triplet to four bars, with `v.beats(id)`.
+- **Tempo**: `block.tempo(fallback)` and `beatsToSeconds()`.
+- **Examples moved out of the framework**: they are in the template's
+  `examples/` now, so products no longer carry them (an update removes
+  `framework/examples`). `new_product.cmake -DEXAMPLE=<name>` starts from
+  any of them (`KIND=instrument` still works), and
+  `framework/tools/test_examples.cmake` builds and tests them all under a
+  preset. A new example, `pulse`, uses everything above.
+- Tests that follow the product's table skip a feature it does not use
+  and say so; the examples exercise them.
+
 ## 1.5.0
 
 Foundations for the features that follow: a newer language, a sanitizer for

@@ -3,7 +3,8 @@
 //
 // Controls: the interaction half of every knob, slider, toggle, segmented
 // switch and dropdown. Drawing lives in Widgets.h; this file decides what a
-// press, drag, wheel turn or key does, and what the host is told.
+// press, drag, wheel turn or key does, and what the host is told. A readout
+// only displays, and so does any control bound to an output parameter.
 //
 // The rules, enforced here so no product has to remember them:
 //
@@ -46,7 +47,7 @@ struct Rect {
     Rect inset(float dx, float dy) const { return {x + dx, y + dy, w - 2.0f * dx, h - 2.0f * dy}; }
 };
 
-enum class Widget : uint8_t { Knob, HSlider, VSlider, Toggle, Segmented, Dropdown };
+enum class Widget : uint8_t { Knob, HSlider, VSlider, Toggle, Segmented, Dropdown, Readout };
 
 enum class Cursor : uint8_t { Arrow, Hand, Caret, LeftRight, UpDown };
 
@@ -108,6 +109,9 @@ class Ui {
     Control& toggle(uint32_t param, Rect r) { return add(param, Widget::Toggle, r); }
     Control& segmented(uint32_t param, Rect r) { return add(param, Widget::Segmented, r); }
     Control& dropdown(uint32_t param, Rect r) { return add(param, Widget::Dropdown, r); }
+    // A value with its label and a bar, for display only: typically an
+    // output parameter (a gain reduction meter the host can show too).
+    Control& readout(uint32_t param, Rect r) { return add(param, Widget::Readout, r); }
 
     int count() const { return static_cast<int>(controls_.size()); }
     const Control& control(int i) const { return controls_[static_cast<size_t>(i)]; }
@@ -135,6 +139,9 @@ class Ui {
     int focus() const { return focus_; }
     int hover() const { return hover_; }
     bool dragging() const { return drag_.control >= 0; }
+    // Takes pointer and keyboard input: visible, enabled, and neither a
+    // readout nor bound to an output parameter.
+    bool interactive(int control) const;
 
     struct Menu {
         bool open = false;
@@ -186,7 +193,6 @@ class Ui {
     double currentValue(int i) const;
     int controlAt(float x, float y) const;
     int segmentAt(int i, float x) const;
-    bool adjustable(int i) const;
     bool textEditable(int i) const;
 
     void beginGesture(int i, bool timed);

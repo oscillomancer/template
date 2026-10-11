@@ -96,10 +96,10 @@ last when it exists.
 
 | Test | Proves |
 | --- | --- |
-| `core-tests` | Parameter text and tapers for every product parameter; DSP blocks; the Engine's contracts (bit-identical output under random automation at any block sizes, float = double, in place = separate buffers, bypass exact after its fade, telemetry rate independent of event density, NaN never reaching the host from the processor, through bypass or by float overflow, the transport each split sees, reset preserving values, and a state loaded before reset rendering exactly what a fresh instance renders); state format; the edit bridge, single- and multi-threaded and against a host that takes one event at a time |
+| `core-tests` | Parameter text and tapers for every product parameter and for every unit, off-at-minimum and custom format; DSP blocks; the Engine's contracts (bit-identical output under random automation at any block sizes, float = double, in place = separate buffers, bypass exact after its fade, telemetry rate independent of event density, NaN never reaching the host from the processor, through bypass or by float overflow, the transport each split sees, reset preserving values, and a state loaded before reset rendering exactly what a fresh instance renders); smoothed parameters gliding from each change's exact frame, identically at any block sizes, settling exactly and snapping on reset; outputs reaching the store at 30 Hz and ignored when a host sets them; levels exact at 0 dB and silent when off; state format, outputs excluded; the edit bridge, single- and multi-threaded and against a host that takes one event at a time |
 | `processor-tests` | The product's own claims (`product/test/`) |
-| `ui-tests` | Interaction rules (drag, Shift, wheel, keys, text entry, menus, focus loss); repaint on host-side changes; layout lint; a 20 000-event fuzz of the real editor that fails on any nested or unbalanced gesture |
-| `plugin-tests` | The CLAP surface in process: descriptor, parameter list, state into a fresh instance, every bus layout, bypass, editor edits reaching a stopped host, edits and preset recalls during playback on real threads, telemetry gating, the restart protocol, the output constant hint cleared, tail changes announced, an instrument ending every note it was given |
+| `ui-tests` | Interaction rules (drag, Shift, wheel, keys, text entry, menus, focus loss); controls on an output display only; repaint on host-side changes, and on an output only where it is shown; layout lint; a 20 000-event fuzz of the real editor that fails on any nested or unbalanced gesture |
+| `plugin-tests` | The CLAP surface in process: descriptor, parameter list, state into a fresh instance, every bus layout, bypass, editor edits reaching a stopped host, edits and preset recalls during playback on real threads, telemetry gating, the restart protocol, the output constant hint cleared, tail changes announced, an instrument ending every note it was given, output parameters read-only, sent to the host at most 30 times a second with `get_value` agreeing, and absent from state |
 | `host-smoke-<n>ch` | The built `.clap` loaded from disk, once per bus width: ports, text round trips and rejection, float/double and in-place renders, no restart storms, the latency protocol when `PRODUCT_SMOKE_LATENCY_PARAM` is set, state into a fresh instance and byte-identical resave, and CLAP's reset contract: a state loaded into a used instance and reset renders bit-identically to a fresh instance with that state |
 | `patch-*` | Each clap-wrapper and Pugl patch is still applied to the pinned checkout |
 | `probe-audio-tests` | Probe audio buffers match mono, multichannel and instrument ports, with separate input/output storage |
@@ -126,12 +126,27 @@ platform you ship (REAPER, Bitwig, Ableton Live, Logic for AU), with
 automation recorded and played back, state saved and reloaded, the editor
 resized, closed and reopened; sample rates 44.1 to 192 kHz; mono and stereo.
 
+Tests that follow the product's own table (smoothing, outputs, levels, an
+instrument's notes) report themselves skipped in a product without the
+feature. The template's examples have each, which is why a framework change
+also runs them:
+
+```sh
+cmake -DPRESET=release -P framework/tools/test_examples.cmake   # any preset; -DEXAMPLES="pulse" for one
+```
+
+It generates each directory of the template's `examples/` with
+`new_product.cmake` into `build/examples/<preset>/<example>`, then
+configures, builds and runs ctest there with the preset. Later runs keep
+those build directories. Logs are beside them.
+
 ## Tools
 
 - `render-cli`: a WAV file through the same Engine and DSP the plugin runs.
-  `--list` prints the parameter table; `--set "Name=value"` uses the
-  parameter's own text; `--at <frame> "Name=value"` automates; repeated
-  `--block` sizes cycle, for boundary bugs.
+  `--list` prints the parameter table (outputs marked); `--set "Name=value"`
+  uses the parameter's own text; `--at <frame> "Name=value"` automates;
+  repeated `--block` sizes cycle, for boundary bugs. Output parameters'
+  final values are printed after the render.
 - `gui-preview out.png`: the real editor rendered offscreen to a PNG, with
   transient states staged: `--hover`, `--focus`, `--menu`, `--text` (by
   parameter name), `--set`, `--scale`.

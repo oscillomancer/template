@@ -16,7 +16,13 @@ EditorBase::EditorBase(EditorHost& host, const Theme& theme, float width, float 
       height_(height),
       ui_(host, width, height),
       shownValue_(params::kCount, 0.0),
-      shownModulation_(params::kCount, 0.0) {}
+      shownModulation_(params::kCount, 0.0),
+      watched_(params::kCount, false) {}
+
+void EditorBase::watch(uint32_t id) {
+    const int i = params::indexOf(id);
+    if (i >= 0) watched_[static_cast<size_t>(i)] = true;
+}
 
 bool EditorBase::attach(NVGcontext* vg) {
     attached_ = loadFonts(vg);
@@ -68,6 +74,12 @@ bool EditorBase::needsRepaint() {
     if (dirty_) return true;
     for (size_t i = 0; i < params::kCount; ++i) {
         const uint32_t id = params::at(i).id;
+        if (params::at(i).isOutput() && !watched_[i]) {
+            bool shown = false;
+            for (int c = 0; c < ui_.count() && !shown; ++c)
+                shown = ui_.control(c).param == id && ui_.control(c).visible;
+            if (!shown) continue;  // nobody sees it move
+        }
         if (host_.value(id) != shownValue_[i]) return dirty_ = true;
         if (params::at(i).is(pflag::kModulatable) && host_.modulation(id) != shownModulation_[i])
             return dirty_ = true;
