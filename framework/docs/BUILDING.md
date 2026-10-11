@@ -94,7 +94,7 @@ builds never touch those folders.
 | `host-smoke-<n>ch` | The built `.clap` loaded from disk, once per bus width: ports, text round trips and rejection, float/double and in-place renders, no restart storms, the latency protocol when `PRODUCT_SMOKE_LATENCY_PARAM` is set, state into a fresh instance and byte-identical resave |
 | `patch-*` | Each clap-wrapper and Pugl patch is still applied to the pinned checkout |
 | `probe-audio-tests` | Probe audio buffers match mono, multichannel and instrument ports, with separate input/output storage |
-| `framework-update` | `update_framework.cmake` updates a 1.1.0-shaped product: the framework is replaced, the product is untouched, and the `asan` preset loses `detect_leaks=1` and nothing else |
+| `framework-update` | `update_framework.cmake` makes a product's `framework/` the template's and changes no other file; a refused update changes nothing |
 | `ci-probe-checker` (template only) | The macOS CI step's checks reject a probe whose editor did not open or resize to the size asked for |
 | `exports-clap`, `exports-vst3` (Linux) | The modules export their entry points and nothing else |
 | `vst3-unload` (Linux) | The VST3 unloads cleanly and survives process exit while loaded |

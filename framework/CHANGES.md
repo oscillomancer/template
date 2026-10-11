@@ -4,6 +4,19 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.3.2
+
+- `update_framework.cmake` replaces `framework/` and nothing else. The
+  `asan` preset migration from 1.2.1 and the fallback to the pre-1.2.0
+  `framework/VERSION` file are gone: no product was ever generated from
+  1.1.0 or earlier. From now on, a framework change that needs an edit
+  outside `framework/` says so here, and the product's owner makes it.
+- `framework-update` now checks that the update changes no file outside
+  `framework/`, removes files the template no longer has, and that each
+  refused update leaves the product untouched.
+
+Nothing for a product to do.
+
 ## 1.3.1
 
 - Pugl's Windows window creation and class cleanup now use the owning
