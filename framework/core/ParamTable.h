@@ -110,7 +110,9 @@ constexpr bool bypassValid() {
 // An output is reported, not set: nothing that acts on a host's value applies.
 constexpr bool outputsValid() {
     for (const auto& p : product::kParams)
-        if (p.isOutput() && (p.is(pflag::kBypass) || p.is(pflag::kRestart) || p.smoothing != 0.0)) return false;
+        if (p.isOutput() && (p.is(pflag::kBypass) || p.is(pflag::kRestart) || p.smoothing != 0.0 ||
+                             p.is(pflag::kPolyMod)))
+            return false;
     return true;
 }
 
@@ -135,7 +137,8 @@ static_assert(detail::labelsValid(),
               "stepped default is not a whole number");
 static_assert(detail::labelLengthsValid(), "a choice or toggle label is empty or longer than 31 bytes");
 static_assert(detail::bypassValid(), "at most one bypass parameter, and it must be a toggle");
-static_assert(detail::outputsValid(), "an output parameter cannot be the bypass, restart or be smoothed");
+static_assert(detail::outputsValid(),
+              "an output parameter cannot be the bypass, restart, smoothed or modulated per note");
 static_assert(detail::modifiersValid(),
               "offAtMinimum() and smoothed() are for continuous parameters (offAtMinimum also integers), "
               "and a smoothing time cannot be negative");
@@ -185,6 +188,7 @@ inline constexpr const ParamDef* find(uint32_t id) {
 // Table index of the bypass parameter, or -1 when the product has none.
 inline constexpr int kBypassIndex = detail::findBypass();
 inline constexpr bool kAnyRestart = detail::anyFlag(pflag::kRestart);
+inline constexpr bool kAnyPolyMod = detail::anyFlag(pflag::kPolyMod);
 
 // Output parameters, by table index.
 inline constexpr size_t kOutputCount = detail::countOutputs();

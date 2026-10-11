@@ -455,9 +455,13 @@ TEST(an_output_repaints_the_editor_only_where_it_is_shown) {
 }
 
 TEST(silence_does_not_repaint_and_signal_does) {
+    if (!product::info::kAudioOutput) {
+        std::printf("      (no audio in this product)\n");
+        return;
+    }
     // A genuinely quiet frame, product payload included, from a real engine.
     auto engine = std::make_unique<Engine>();
-    engine->activate(48000.0, 512, product::info::kInstrument ? 0 : 2, 2);
+    engine->activate(48000.0, 512, product::info::kAudioInput ? 2 : 0, 2);
     engine->setMetering(true);
     std::vector<double> l(512), r(512);
     double* io[] = {l.data(), r.data()};
@@ -490,7 +494,7 @@ TEST(silence_does_not_repaint_and_signal_does) {
     CHECK(engine->telemetry().pop(loud));
     while (engine->telemetry().pop(next)) loud = next;
     // An instrument's signal comes from notes, which this does not play.
-    if (product::info::kInstrument) loud.outputPeak[0] = loud.outputPeak[1] = 0.5f;
+    if (!product::info::kAudioInput) loud.outputPeak[0] = loud.outputPeak[1] = 0.5f;
     p.host.ring.push(loud);
     p.editor->idle(0.016);
     CHECK(p.editor->needsRepaint());

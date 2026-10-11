@@ -89,6 +89,7 @@ inline constexpr uint32_t kRestart = 1u << 4;      // changing it while active a
 inline constexpr uint32_t kPlainHost = 1u << 5;    // tapered, but the host value is the plain value
 inline constexpr uint32_t kOutput = 1u << 6;       // read-only, reported by the processor, never saved
 inline constexpr uint32_t kOffAtMin = 1u << 7;     // the minimum means off: "-inf dB", "Off"
+inline constexpr uint32_t kPolyMod = 1u << 8;      // accepts CLAP modulation per note, too
 }  // namespace pflag
 
 inline constexpr const char* kOffOnLabels[] = {"Off", "On"};
@@ -136,6 +137,10 @@ struct ParamDef {
     constexpr ParamDef decimals(int digits) const { ParamDef p = *this; p.precision = digits; return p; }
     constexpr ParamDef unitText(const char* text) const { ParamDef p = *this; p.suffix = text; return p; }
     constexpr ParamDef modulatable() const { return with(pflag::kModulatable); }
+    // Modulatable per note as well (CLAP polyphonic modulation): the host
+    // may modulate each voice apart, and the processor receives it through
+    // noteModulation(). Needs note input.
+    constexpr ParamDef polyModulatable() const { return with(pflag::kModulatable | pflag::kPolyMod); }
     constexpr ParamDef bypass() const { return with(pflag::kBypass); }
     constexpr ParamDef restartOnChange() const { return with(pflag::kRestart); }
     // See the top of this file: only for sessions saved before the move.
@@ -193,6 +198,12 @@ double hostDefault(const ParamDef& p);
 // Clamps into the host range, rounds stepped values, and maps non-finite
 // input to the default. Every value arriving from outside goes through here.
 double sanitizeHost(const ParamDef& p, double host);
+// The plain value a modulation offset of `amount` host units makes of
+// `plain`, clamped to the range: a voice's own value under per-note
+// modulation (NoteModulation).
+inline double modulatedPlain(const ParamDef& p, double plain, double amount) {
+    return amount == 0.0 ? plain : toPlain(p, sanitizeHost(p, toHost(p, plain) + amount));
+}
 double toNormalized(const ParamDef& p, double host);
 double fromNormalized(const ParamDef& p, double normalized);
 

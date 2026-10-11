@@ -33,7 +33,8 @@ Editor::Editor(EditorHost& host) : EditorBase(host, kTheme, kEditorWidth, kEdito
     ui().segmented(kWaveform, {kShapePanel.x + 16, kShapePanel.y + 48, 150, 28});
     ui().knob(kAttack, {kShapePanel.x + 200, kShapePanel.y + 6, 96, 102});
     ui().knob(kRelease, {kShapePanel.x + 320, kShapePanel.y + 6, 96, 102});
-    ui().knob(kLevel, {kLevelPanel.x + 16, kLevelPanel.y + 70, 110, 120});
+    ui().knob(kLevel, {kLevelPanel.x + 16, kLevelPanel.y + 44, 110, 120});
+    ui().knob(kBendRange, {kLevelPanel.x + 24, kLevelPanel.y + 172, 94, 100});
 }
 
 std::unique_ptr<EditorBase> createEditor(EditorHost& host) { return std::make_unique<Editor>(host); }

@@ -13,12 +13,15 @@ set(PRODUCT_VENDOR      "Supple Audio")
 set(PRODUCT_URL         "")
 set(PRODUCT_COPYRIGHT   "Copyright (c) 2026 Supple Audio")
 
-# effect: one main input and output bus of equal width.
-# instrument: note input, one main output, no audio input.
+# instrument: notes and MIDI in, one main output, no audio input.
 set(PRODUCT_KIND        "instrument")
 
 # Main bus widths offered to the host, the first being the default.
 set(PRODUCT_CHANNELS    2 1)
+
+# The per-note expressions the processor uses, offered to VST3 hosts too
+# (CLAP hosts may send any; noteExpression() ignores the rest).
+set(PRODUCT_NOTE_EXPRESSIONS tuning volume)
 
 # CLAP features after the main category (instrument, implied by PRODUCT_KIND).
 set(PRODUCT_FEATURES    "synthesizer" "stereo")

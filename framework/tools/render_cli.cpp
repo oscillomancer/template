@@ -8,8 +8,13 @@
 //
 //   render-cli in.wav out.wav --set "Input Gain=+6 dB" --set "Low Cut=120 Hz"
 //   render-cli in.wav out.wav --at 48000 "Mix=50%" --block 257
+//   render-cli in.wav out.wav --sidechain key.wav     (PRODUCT_SIDECHAIN)
 //   render-cli --list
+//
+// Aux outputs (PRODUCT_AUX_OUTPUTS) are written beside the output, one file
+// each: out-Ducked.wav. A note effect has no audio to render.
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -35,7 +40,9 @@ void usage() {
         "  --set \"Name=value\"              a parameter, in its own text (\"-6 dB\", \"1.2k\", \"50%%\")\n"
         "  --at <frame> \"Name=value\"       the same, changed at that sample frame\n"
         "  --block <frames>                host block size (default 512); repeat to cycle sizes\n"
-        "  --bits <24|32>                  24-bit PCM or 32-bit float (default)\n",
+        "  --bits <24|32>                  24-bit PCM or 32-bit float (default)\n"
+        "  --sidechain <key.wav>           the sidechain input (silence after it ends)\n"
+        "Aux outputs are written beside the output as <output>-<bus name>.wav.\n",
         product::info::kName, product::info::kVersion);
 }
 
@@ -83,8 +90,23 @@ bool parseAssignment(const char* text, int frame, std::vector<Change>& out) {
 
 }  // namespace
 
+// out.wav and "Ducked" -> out-Ducked.wav.
+std::string auxPath(const std::string& output, const char* bus) {
+    const size_t dot = output.rfind('.');
+    const size_t slash = output.find_last_of("/\\");
+    const bool extension = dot != std::string::npos && (slash == std::string::npos || dot > slash);
+    std::string name(bus);
+    for (char& ch : name)
+        if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_') ch = '_';
+    return (extension ? output.substr(0, dot) : output) + "-" + name + (extension ? output.substr(dot) : ".wav");
+}
+
 int main(int argc, char** argv) {
-    std::string input, output;
+    if (product::info::kNoteEffect) {
+        std::fprintf(stderr, "%s is a note effect: there is no audio to render\n", product::info::kName);
+        return 2;
+    }
+    std::string input, output, sidechainFile;
     std::vector<Change> changes;
     std::vector<int> blocks;
     int bits = 32;
@@ -101,6 +123,8 @@ int main(int argc, char** argv) {
             blocks.push_back(std::max(1, std::atoi(argv[++i])));
         } else if (arg == "--bits" && i + 1 < argc) {
             bits = std::atoi(argv[++i]);
+        } else if (arg == "--sidechain" && i + 1 < argc) {
+            sidechainFile = argv[++i];
         } else if (!arg.empty() && arg[0] != '-' && input.empty()) {
             input = arg;
         } else if (!arg.empty() && arg[0] != '-' && output.empty()) {
@@ -133,6 +157,27 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    wavio::Audio key;
+    if (!sidechainFile.empty()) {
+        if (!product::info::kSidechain) {
+            std::fprintf(stderr, "error: this product has no sidechain\n");
+            return 2;
+        }
+        if (!wavio::read(sidechainFile, key, error)) {
+            std::fprintf(stderr, "error: %s\n", error.c_str());
+            return 1;
+        }
+        if (key.channels != channels || key.sampleRate != audio.sampleRate) {
+            std::fprintf(stderr, "error: the sidechain must match the input: %d channels at %d Hz\n", channels,
+                         audio.sampleRate);
+            return 1;
+        }
+        for (auto& c : key.ch) c.resize(static_cast<size_t>(frames), 0.0);
+    }
+    std::vector<wavio::Audio> aux(static_cast<size_t>(product::info::kAuxOutputs), audio);
+    for (auto& bus : aux)
+        for (auto& c : bus.ch) std::fill(c.begin(), c.end(), 0.0);
+
     auto engine = std::make_unique<Engine>();
     std::stable_sort(changes.begin(), changes.end(), [](const Change& a, const Change& b) { return a.frame < b.frame; });
     size_t next = 0;
@@ -141,7 +186,7 @@ int main(int argc, char** argv) {
         ++next;
     }
     const int maxBlock = *std::max_element(blocks.begin(), blocks.end());
-    engine->activate(audio.sampleRate, maxBlock, product::info::kInstrument ? 0 : channels, channels);
+    engine->activate(audio.sampleRate, maxBlock, product::info::kAudioInput ? channels : 0, channels);
 
     struct Source {
         const std::vector<Change>* changes;
@@ -160,12 +205,25 @@ int main(int argc, char** argv) {
     };
 
     std::vector<double*> pointers(static_cast<size_t>(channels));
+    std::vector<const double*> keys(static_cast<size_t>(channels));
+    std::vector<std::vector<double*>> auxChannels(aux.size(), std::vector<double*>(static_cast<size_t>(channels)));
+    std::vector<double* const*> auxBuses(aux.size());
     const auto started = std::chrono::steady_clock::now();
     for (int frame = 0, b = 0; frame < frames; ++b) {
         const int n = std::min(blocks[static_cast<size_t>(b) % blocks.size()], frames - frame);
-        for (int c = 0; c < channels; ++c) pointers[static_cast<size_t>(c)] = audio.ch[static_cast<size_t>(c)].data() + frame;
+        for (size_t c = 0; c < static_cast<size_t>(channels); ++c) {
+            pointers[c] = audio.ch[c].data() + frame;
+            if (!key.ch.empty()) keys[c] = key.ch[c].data() + frame;
+            for (size_t k = 0; k < aux.size(); ++k) auxChannels[k][c] = aux[k].ch[c].data() + frame;
+        }
+        for (size_t k = 0; k < aux.size(); ++k) auxBuses[k] = auxChannels[k].data();
+        AudioBuses<double> io;
+        io.in = product::info::kAudioInput ? pointers.data() : nullptr;
+        io.out = pointers.data();
+        io.sidechain = key.ch.empty() ? nullptr : keys.data();
+        io.aux = aux.empty() ? nullptr : auxBuses.data();
         Source source{&changes, &next, frame, frame + n};
-        engine->process<double>(pointers.data(), pointers.data(), n, source, nullptr);
+        engine->process(io, n, source, nullptr);
         frame += n;
     }
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
@@ -173,6 +231,14 @@ int main(int argc, char** argv) {
     if (!wavio::write(output, audio, bits, error)) {
         std::fprintf(stderr, "error: %s\n", error.c_str());
         return 1;
+    }
+    for (size_t k = 0; k < aux.size(); ++k) {
+        const std::string path = auxPath(output, product::info::kAuxOutputNames[k]);
+        if (!wavio::write(path, aux[k], bits, error)) {
+            std::fprintf(stderr, "error: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf("  %s -> %s\n", product::info::kAuxOutputNames[k], path.c_str());
     }
     double peak = 0.0;
     for (const auto& ch : audio.ch)

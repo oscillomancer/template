@@ -22,9 +22,11 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 #include <clap/clap.h>
+#include <clapwrapper/vst3.h>
 
 #include "core/Engine.h"
 #include "core/ParamTable.h"
@@ -54,10 +56,16 @@ const clap_plugin_descriptor_t kDescriptor = {
 
 // --- events ---------------------------------------------------------------------
 
+static_assert(!params::kAnyPolyMod || info::kNoteInput,
+              "polyModulatable() needs note input: an instrument, a note effect, or PRODUCT_NOTE_INPUT ON");
+
 // Feeds the engine CLAP's input events in order, translated and filtered.
-// Parameter events are taken as global: nothing here declares per-note or
-// per-channel parameters, so a host may not send any. Nor may it set an
-// output parameter, which is read-only; such events are dropped.
+// Parameter values are taken as global: nothing here declares per-note
+// automation, so a host may not send any. Modulation addressed to notes goes
+// to the processor's noteModulation() for a parameter marked
+// polyModulatable(), and is dropped for any other. Nor may a host set an
+// output parameter, which is read-only. Notes, MIDI and expressions reach a
+// product with note input; the rest drop them.
 class ClapEvents {
   public:
     explicit ClapEvents(const clap_input_events_t* in) : in_(in), count_(in ? in->size(in) : 0) {}
@@ -81,14 +89,31 @@ class ClapEvents {
                     const auto* m = reinterpret_cast<const clap_event_param_mod_t*>(h);
                     e.index = params::indexOf(m->param_id);
                     if (e.index < 0 || params::at(static_cast<size_t>(e.index)).isOutput()) continue;
-                    e.type = EngineEvent::Type::Modulation;
                     e.value = m->amount;
+                    if (m->note_id == -1 && m->port_index == -1 && m->channel == -1 && m->key == -1) {
+                        e.type = EngineEvent::Type::Modulation;
+                        return true;
+                    }
+                    if (!params::at(static_cast<size_t>(e.index)).is(pflag::kPolyMod)) continue;
+                    e.type = EngineEvent::Type::NoteModulation;
+                    e.address = NoteAddress{m->note_id, m->port_index, m->channel, m->key};
+                    return true;
+                }
+                case CLAP_EVENT_NOTE_EXPRESSION: {
+                    if (!info::kNoteInput) continue;
+                    const auto* x = reinterpret_cast<const clap_event_note_expression_t*>(h);
+                    if (x->expression_id < CLAP_NOTE_EXPRESSION_VOLUME || x->expression_id > CLAP_NOTE_EXPRESSION_PRESSURE)
+                        continue;
+                    e.type = EngineEvent::Type::Expression;
+                    e.expression = static_cast<NoteExpression::Type>(x->expression_id);
+                    e.address = NoteAddress{x->note_id, x->port_index, x->channel, x->key};
+                    e.value = x->value;
                     return true;
                 }
                 case CLAP_EVENT_NOTE_ON:
                 case CLAP_EVENT_NOTE_OFF:
                 case CLAP_EVENT_NOTE_CHOKE: {
-                    if (!info::kInstrument) continue;
+                    if (!info::kNoteInput) continue;
                     const auto* n = reinterpret_cast<const clap_event_note_t*>(h);
                     e.type = EngineEvent::Type::Note;
                     e.note.type = h->type == CLAP_EVENT_NOTE_ON    ? NoteEvent::Type::On
@@ -102,9 +127,16 @@ class ClapEvents {
                     return true;
                 }
                 case CLAP_EVENT_MIDI: {
-                    if (!info::kInstrument) continue;
+                    if (!info::kNoteInput) continue;
                     const auto* m = reinterpret_cast<const clap_event_midi_t*>(h);
                     const uint8_t status = m->data[0] & 0xF0;
+                    if (status >= 0xA0 && status <= 0xE0) {
+                        // Controllers, pitch bend, pressure, program changes.
+                        e.type = EngineEvent::Type::Midi;
+                        e.midi = MidiMessage::make(status, m->data[0] & 0x0F, m->data[1], m->data[2]);
+                        e.midi.port = static_cast<int16_t>(m->port_index);
+                        return true;
+                    }
                     if (status != 0x90 && status != 0x80) continue;
                     e.type = EngineEvent::Type::Note;
                     e.note.type = status == 0x90 && m->data[2] > 0 ? NoteEvent::Type::On : NoteEvent::Type::Off;
@@ -140,6 +172,7 @@ struct Plugin
     const clap_host_timer_support_t* hostTimer = nullptr;
     const clap_host_gui_t* hostGui = nullptr;
     const clap_host_tail_t* hostTail = nullptr;
+    const clap_host_voice_info_t* hostVoiceInfo = nullptr;
 
     Engine engine;
     EditBridge edits;
@@ -166,6 +199,7 @@ struct Plugin
     std::atomic<bool> restartWanted{false};
     std::atomic<bool> flushWanted{false};
     std::atomic<bool> flushRequested{false};
+    std::atomic<bool> voicesChanged{false};
 
     template <class T>
     T* hostExtension(const char* id) const {
@@ -239,19 +273,45 @@ struct Plugin
         // Only ever set while active, so this is the audio thread, as the
         // tail extension requires.
         if (engine.takeTailChange() && hostTail && hostTail->changed) hostTail->changed(host);
-        const NoteEnds& ends = engine.noteEnds();
-        for (int i = 0; out && i < ends.count(); ++i) {
-            const NoteEvent& n = ends[i].note;
-            clap_event_note_t e{};
-            e.header.size = sizeof(e);
-            e.header.time = frames ? std::min(ends[i].time, frames - 1) : 0;
-            e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            e.header.type = CLAP_EVENT_NOTE_END;
-            e.note_id = n.noteId;
-            e.port_index = n.port;
-            e.channel = n.channel;
-            e.key = n.key;
-            if (!out->try_push(out, &e.header)) break;  // a full queue loses the rest
+        if (engine.takeVoiceChange()) {  // voice_info.changed is main-thread only
+            voicesChanged.store(true, std::memory_order_release);
+            requestCallback();
+        }
+        const NoteOutput& sent = engine.noteOutput();
+        for (int i = 0; out && i < sent.count(); ++i) {
+            const NoteOutput::Entry& entry = sent[i];
+            const uint32_t time = frames ? std::min(entry.time, frames - 1) : 0;
+            bool pushed = false;
+            if (entry.kind == NoteOutput::Kind::Midi) {
+                clap_event_midi_t e{};
+                e.header.size = sizeof(e);
+                e.header.time = time;
+                e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                e.header.type = CLAP_EVENT_MIDI;
+                e.port_index = 0;
+                std::memcpy(e.data, entry.midi.data, 3);
+                pushed = out->try_push(out, &e.header);
+            } else {
+                // A note end names the note as it arrived, on the input port;
+                // the processor's own notes leave on the output port.
+                const NoteEvent& n = entry.note;
+                const bool end = entry.kind == NoteOutput::Kind::End;
+                clap_event_note_t e{};
+                e.header.size = sizeof(e);
+                e.header.time = time;
+                e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                e.header.type = static_cast<uint16_t>(end                               ? CLAP_EVENT_NOTE_END
+                                                      : n.type == NoteEvent::Type::On   ? CLAP_EVENT_NOTE_ON
+                                                      : n.type == NoteEvent::Type::Off  ? CLAP_EVENT_NOTE_OFF
+                                                                                        : CLAP_EVENT_NOTE_CHOKE);
+                e.note_id = n.noteId;
+                e.port_index = end ? n.port : 0;
+                e.channel = n.channel;
+                e.key = n.key;
+                e.velocity = end ? 0.0 : std::clamp(n.velocity, 0.0, 1.0);
+                pushed = out->try_push(out, &e.header);
+            }
+            if (!pushed) break;  // a full queue loses the rest
         }
         // Outputs last: stamped at the block's final frame, after every note
         // end, since the host's list must stay in time order.
@@ -359,23 +419,57 @@ Plugin* self(const clap_plugin_t* p) { return static_cast<Plugin*>(p->plugin_dat
 
 // --- audio ports ----------------------------------------------------------------------
 
+// Inputs: the main bus (an effect), then the sidechain. Outputs: the main bus
+// (all but a note effect), then each aux output. Every port is as wide as the
+// selected layout. IDs are stable: main 0, sidechain 1, aux k is 1 + k.
+constexpr uint32_t kInputPorts = (info::kAudioInput ? 1u : 0u) + (info::kSidechain ? 1u : 0u);
+constexpr uint32_t kOutputPorts = info::kAudioOutput ? 1u + static_cast<uint32_t>(info::kAuxOutputs) : 0u;
+constexpr uint32_t kSidechainPort = info::kAudioInput ? 1u : 0u;  // its input index
+
+constexpr Layout layoutOf(int channels) {
+    for (const auto& l : info::kLayouts)
+        if (l.channels == channels) return l.layout;
+    return Layout::Generic;
+}
+constexpr bool anyLayout(bool (*test)(Layout)) {
+    for (const auto& l : info::kLayouts)
+        if (test(l.layout)) return true;
+    return false;
+}
+constexpr bool kAnySurround = anyLayout(isSurround);
+constexpr bool kAnyAmbisonic = anyLayout(isAmbisonic);
+
 const char* portType(int channels) {
-    return channels == 1 ? CLAP_PORT_MONO : channels == 2 ? CLAP_PORT_STEREO : nullptr;
+    const Layout l = layoutOf(channels);
+    if (l == Layout::Mono) return CLAP_PORT_MONO;
+    if (l == Layout::Stereo) return CLAP_PORT_STEREO;
+    if (isSurround(l)) return CLAP_PORT_SURROUND;
+    if (isAmbisonic(l)) return CLAP_PORT_AMBISONIC;
+    return nullptr;
 }
 
-uint32_t CLAP_ABI portsCount(const clap_plugin_t*, bool isInput) { return isInput && info::kInstrument ? 0 : 1; }
+bool portExists(bool isInput, uint32_t index) { return index < (isInput ? kInputPorts : kOutputPorts); }
+
+uint32_t CLAP_ABI portsCount(const clap_plugin_t*, bool isInput) { return isInput ? kInputPorts : kOutputPorts; }
 
 bool CLAP_ABI portsGet(const clap_plugin_t* p, uint32_t index, bool isInput, clap_audio_port_info_t* out) {
-    if (index != 0 || (isInput && info::kInstrument)) return false;
+    if (!portExists(isInput, index)) return false;
     const int channels = self(p)->channels;
+    const bool main = isInput ? info::kAudioInput && index == 0 : index == 0;
     std::memset(out, 0, sizeof(*out));
-    out->id = 0;
-    std::snprintf(out->name, sizeof(out->name), "%s", isInput ? "Input" : "Output");
-    out->flags = CLAP_AUDIO_PORT_IS_MAIN | CLAP_AUDIO_PORT_SUPPORTS_64BITS | CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE;
+    if (isInput) {
+        out->id = main ? 0 : 1;
+        std::snprintf(out->name, sizeof(out->name), "%s", main ? "Input" : "Sidechain");
+    } else {
+        out->id = index;
+        std::snprintf(out->name, sizeof(out->name), "%s", main ? "Output" : info::kAuxOutputNames[index - 1]);
+    }
+    out->flags = CLAP_AUDIO_PORT_SUPPORTS_64BITS | CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE;
+    if (main) out->flags |= CLAP_AUDIO_PORT_IS_MAIN;
     out->channel_count = static_cast<uint32_t>(channels);
     out->port_type = portType(channels);
-    // In-place pairing is reciprocal: input 0 with output 0.
-    out->in_place_pair = info::kInstrument ? CLAP_INVALID_ID : 0;
+    // In-place pairing is reciprocal, and only between the main buses.
+    out->in_place_pair = main && info::kAudioInput ? 0 : CLAP_INVALID_ID;
     return true;
 }
 
@@ -391,17 +485,18 @@ bool CLAP_ABI configsGet(const clap_plugin_t*, uint32_t index, clap_audio_ports_
     const int channels = info::kChannelLayouts[index];
     std::memset(out, 0, sizeof(*out));
     out->id = static_cast<clap_id>(channels);
-    if (channels == 1)
-        std::snprintf(out->name, sizeof(out->name), "Mono");
-    else if (channels == 2)
-        std::snprintf(out->name, sizeof(out->name), "Stereo");
-    else
+    const char* names[] = {"", "Mono", "Stereo", "5.1", "7.1", "7.1.4", "Ambisonic 1st order", "Ambisonic 2nd order",
+                           "Ambisonic 3rd order"};
+    const Layout l = layoutOf(channels);
+    if (l == Layout::Generic)
         std::snprintf(out->name, sizeof(out->name), "%d channels", channels);
-    out->input_port_count = info::kInstrument ? 0 : 1;
-    out->output_port_count = 1;
-    out->has_main_input = !info::kInstrument;
-    out->main_input_channel_count = info::kInstrument ? 0 : static_cast<uint32_t>(channels);
-    out->main_input_port_type = info::kInstrument ? nullptr : portType(channels);
+    else
+        std::snprintf(out->name, sizeof(out->name), "%s", names[static_cast<int>(l)]);
+    out->input_port_count = kInputPorts;
+    out->output_port_count = kOutputPorts;
+    out->has_main_input = info::kAudioInput;
+    out->main_input_channel_count = info::kAudioInput ? static_cast<uint32_t>(channels) : 0;
+    out->main_input_port_type = info::kAudioInput ? portType(channels) : nullptr;
     out->has_main_output = true;
     out->main_output_channel_count = static_cast<uint32_t>(channels);
     out->main_output_port_type = portType(channels);
@@ -422,21 +517,125 @@ bool CLAP_ABI configsSelect(const clap_plugin_t* p, clap_id id) {
 
 const clap_plugin_audio_ports_config_t kAudioPortsConfig = {configsCount, configsGet, configsSelect};
 
-// --- note ports (instruments) -----------------------------------------------------------
+// A host asking for widths port by port (clap-wrapper does, for a VST3
+// host's speaker arrangements): every port takes the main bus's width, so
+// the requests must agree on one declared layout. Ports a request leaves out
+// follow it.
+bool layoutRequested(const clap_audio_port_configuration_request_t* requests, uint32_t count, int& channels) {
+    if (!requests || count == 0) return false;
+    int width = -1;
+    for (uint32_t k = 0; k < count; ++k) {
+        const auto& r = requests[k];
+        if (!portExists(r.is_input, r.port_index)) return false;
+        const int w = static_cast<int>(r.channel_count);
+        if (width >= 0 && w != width) return false;
+        width = w;
+    }
+    bool declared = false;
+    for (int c : info::kChannelLayouts) declared |= c == width;
+    if (!declared) return false;
+    const Layout l = layoutOf(width);
+    for (uint32_t k = 0; k < count; ++k) {
+        const auto& r = requests[k];
+        const char* type = portType(width);
+        if (r.port_type && (!type || std::strcmp(r.port_type, type) != 0)) return false;
+        if (!r.port_type || !r.port_details) continue;
+        if (isSurround(l) && std::memcmp(r.port_details, speakers(l), static_cast<size_t>(width)) != 0) return false;
+        if (isAmbisonic(l)) {
+            const auto* a = static_cast<const clap_ambisonic_config_t*>(r.port_details);
+            if (a->ordering != CLAP_AMBISONIC_ORDERING_ACN || a->normalization != CLAP_AMBISONIC_NORMALIZATION_SN3D)
+                return false;
+        }
+    }
+    channels = width;
+    return true;
+}
 
-uint32_t CLAP_ABI notePortsCount(const clap_plugin_t*, bool isInput) { return isInput ? 1 : 0; }
+bool CLAP_ABI configurableCanApply(const clap_plugin_t* p, const clap_audio_port_configuration_request_t* requests,
+                                   uint32_t count) {
+    int channels = 0;
+    return !self(p)->active && layoutRequested(requests, count, channels);
+}
+
+bool CLAP_ABI configurableApply(const clap_plugin_t* p, const clap_audio_port_configuration_request_t* requests,
+                                uint32_t count) {
+    Plugin* s = self(p);
+    int channels = 0;
+    if (s->active || !layoutRequested(requests, count, channels)) return false;
+    s->channels = channels;
+    return true;
+}
+
+const clap_plugin_configurable_audio_ports_t kConfigurablePorts = {configurableCanApply, configurableApply};
+
+// Surround and ambisonic layouts say which channel is which.
+bool CLAP_ABI surroundMaskSupported(const clap_plugin_t*, uint64_t mask) {
+    for (const auto& l : info::kLayouts)
+        if (isSurround(l.layout) && speakerMask(l.layout, l.channels) == mask) return true;
+    return false;
+}
+
+uint32_t CLAP_ABI surroundChannelMap(const clap_plugin_t* p, bool isInput, uint32_t port, uint8_t* map,
+                                     uint32_t capacity) {
+    const int channels = self(p)->channels;
+    const Layout l = layoutOf(channels);
+    if (!portExists(isInput, port) || !isSurround(l) || !map || capacity < static_cast<uint32_t>(channels)) return 0;
+    std::memcpy(map, speakers(l), static_cast<size_t>(channels));
+    return static_cast<uint32_t>(channels);
+}
+
+const clap_plugin_surround_t kSurround = {surroundMaskSupported, surroundChannelMap};
+
+bool CLAP_ABI ambisonicSupported(const clap_plugin_t*, const clap_ambisonic_config_t* config) {
+    return config && config->ordering == CLAP_AMBISONIC_ORDERING_ACN &&
+           config->normalization == CLAP_AMBISONIC_NORMALIZATION_SN3D;
+}
+
+bool CLAP_ABI ambisonicConfig(const clap_plugin_t* p, bool isInput, uint32_t port, clap_ambisonic_config_t* config) {
+    if (!portExists(isInput, port) || !config || !isAmbisonic(layoutOf(self(p)->channels))) return false;
+    config->ordering = CLAP_AMBISONIC_ORDERING_ACN;
+    config->normalization = CLAP_AMBISONIC_NORMALIZATION_SN3D;
+    return true;
+}
+
+const clap_plugin_ambisonic_t kAmbisonic = {ambisonicSupported, ambisonicConfig};
+
+// --- notes --------------------------------------------------------------------------------
+
+uint32_t CLAP_ABI notePortsCount(const clap_plugin_t*, bool isInput) {
+    return (isInput ? info::kNoteInput : info::kNoteOutput) ? 1 : 0;
+}
 
 bool CLAP_ABI notePortsGet(const clap_plugin_t*, uint32_t index, bool isInput, clap_note_port_info_t* out) {
-    if (index != 0 || !isInput) return false;
+    if (index != 0 || !(isInput ? info::kNoteInput : info::kNoteOutput)) return false;
     std::memset(out, 0, sizeof(*out));
     out->id = 0;
     out->supported_dialects = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI;
     out->preferred_dialect = CLAP_NOTE_DIALECT_CLAP;
-    std::snprintf(out->name, sizeof(out->name), "Notes");
+    std::snprintf(out->name, sizeof(out->name), "%s", isInput ? "Notes" : "Notes Out");
     return true;
 }
 
 const clap_plugin_note_ports_t kNotePorts = {notePortsCount, notePortsGet};
+
+// A processor that declares kVoices tells the host about its voices.
+constexpr bool kVoiceInfo = info::kNoteInput && product::Processor::kVoices > 0;
+
+bool CLAP_ABI voiceInfoGet(const clap_plugin_t* p, clap_voice_info_t* out) {
+    if (!out) return false;
+    out->voice_capacity = static_cast<uint32_t>(product::Processor::kVoices);
+    out->voice_count = static_cast<uint32_t>(std::clamp(self(p)->engine.voices(), 0, product::Processor::kVoices));
+    out->flags = product::Processor::kOverlappingNotes ? CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES : 0;
+    return true;
+}
+
+const clap_plugin_voice_info_t kVoiceInfoExt = {voiceInfoGet};
+
+// clap-wrapper's VST3 extension: which note expressions a VST3 host may
+// offer (product.cmake's PRODUCT_NOTE_EXPRESSIONS), and every MIDI channel.
+uint32_t CLAP_ABI vst3MidiChannels(const clap_plugin_t*, uint32_t) { return 16; }
+uint32_t CLAP_ABI vst3NoteExpressions(const clap_plugin_t*) { return info::kNoteExpressions; }
+const clap_plugin_as_vst3_t kAsVst3 = {vst3MidiChannels, vst3NoteExpressions};
 
 // --- latency and tail ---------------------------------------------------------------------
 
@@ -740,6 +939,7 @@ bool CLAP_ABI pluginInit(const clap_plugin_t* p) {
     s->hostTimer = s->hostExtension<const clap_host_timer_support_t>(CLAP_EXT_TIMER_SUPPORT);
     s->hostGui = s->hostExtension<const clap_host_gui_t>(CLAP_EXT_GUI);
     s->hostTail = s->hostExtension<const clap_host_tail_t>(CLAP_EXT_TAIL);
+    s->hostVoiceInfo = s->hostExtension<const clap_host_voice_info_t>(CLAP_EXT_VOICE_INFO);
     return true;
 }
 
@@ -756,7 +956,7 @@ void CLAP_ABI pluginDestroy(const clap_plugin_t* p) {
 bool CLAP_ABI pluginActivate(const clap_plugin_t* p, double sampleRate, uint32_t, uint32_t maxFrames) {
     Plugin* s = self(p);
     if (!s->engine.activate(sampleRate, static_cast<int>(std::max<uint32_t>(1, maxFrames)),
-                            info::kInstrument ? 0 : s->channels, s->channels))
+                            info::kAudioInput ? s->channels : 0, s->channels))
         return false;
     const int latency = s->engine.latency();
     // Telling the host during activate() is the only time it is allowed.
@@ -782,6 +982,47 @@ void CLAP_ABI pluginStopProcessing(const clap_plugin_t*) {}
 
 void CLAP_ABI pluginReset(const clap_plugin_t* p) SUPPLE_REALTIME { self(p)->engine.reset(); }
 
+template <class T>
+T* const* channelsOf(const clap_audio_buffer_t& b) {
+    if constexpr (std::is_same_v<T, float>) return b.data32;
+    else return b.data64;
+}
+
+// Hands the engine every bus the host connected, in one precision. False
+// when the host broke the ports' contract.
+template <class T, class Source>
+bool processAs(Plugin* s, const clap_process_t* process, Source& events, const Transport* t) SUPPLE_REALTIME {
+    const uint32_t width = static_cast<uint32_t>(s->channels);
+    AudioBuses<T> io;
+    clap_audio_buffer_t& out = process->audio_outputs[0];
+    io.out = channelsOf<T>(out);
+    if (info::kAudioInput) {
+        const clap_audio_buffer_t& in = process->audio_inputs[0];
+        if (in.channel_count < width || !channelsOf<T>(in)) return false;
+        io.in = channelsOf<T>(in);
+    }
+    // A bus the host left unconnected, or narrower than it was told, is
+    // silence in and nowhere out.
+    if constexpr (info::kSidechain) {
+        if (kSidechainPort < process->audio_inputs_count) {
+            const clap_audio_buffer_t& sc = process->audio_inputs[kSidechainPort];
+            if (sc.channel_count >= width) io.sidechain = channelsOf<T>(sc);
+        }
+    }
+    T* const* aux[info::kAuxOutputs > 0 ? info::kAuxOutputs : 1] = {};
+    if constexpr (info::kAuxOutputs > 0) {
+        for (uint32_t k = 0; k < static_cast<uint32_t>(info::kAuxOutputs); ++k) {
+            if (1 + k >= process->audio_outputs_count) break;
+            clap_audio_buffer_t& bus = process->audio_outputs[1 + k];
+            bus.constant_mask = 0;
+            if (bus.channel_count >= width) aux[k] = channelsOf<T>(bus);
+        }
+        io.aux = aux;
+    }
+    s->engine.process(io, static_cast<int>(process->frames_count), events, t);
+    return true;
+}
+
 clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_process_t* process) SUPPLE_REALTIME {
     Plugin* s = self(p);
     ClapEvents events(process->in_events);
@@ -802,31 +1043,29 @@ clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_pr
         t = &transport;
     }
 
-    const int frames = static_cast<int>(process->frames_count);
-    const int channels = s->channels;
-    if (process->audio_outputs_count < 1 || (!info::kInstrument && process->audio_inputs_count < 1)) {
+    if constexpr (info::kNoteEffect) {
+        // Notes in, notes out, no audio: still split at every event.
+        AudioBuses<double> none;
+        s->engine.process(none, static_cast<int>(process->frames_count), events, t);
+    } else if (process->audio_outputs_count < 1 || (info::kAudioInput && process->audio_inputs_count < 1)) {
         s->engine.flush(events);
     } else {
         clap_audio_buffer_t& out = process->audio_outputs[0];
         // Bus widths are fixed by the selected configuration and activate();
         // a mismatch is a host contract violation, not a cue to reallocate.
-        if (static_cast<int>(out.channel_count) < channels) return CLAP_PROCESS_ERROR;
+        if (static_cast<int>(out.channel_count) < s->channels) return CLAP_PROCESS_ERROR;
         // Every sample is written, and nothing establishes that they are
         // equal: a stale hint would have the host read sample 0 throughout.
         out.constant_mask = 0;
-        if (info::kInstrument) {
-            if (out.data32) s->engine.process<float>(nullptr, out.data32, frames, events, t);
-            else if (out.data64) s->engine.process<double>(nullptr, out.data64, frames, events, t);
-        } else {
-            const clap_audio_buffer_t& in = process->audio_inputs[0];
-            if (static_cast<int>(in.channel_count) < channels) return CLAP_PROCESS_ERROR;
-            if (in.data32 && out.data32)
-                s->engine.process<float>(in.data32, out.data32, frames, events, t);
-            else if (in.data64 && out.data64)
-                s->engine.process<double>(in.data64, out.data64, frames, events, t);
-            else
-                return CLAP_PROCESS_ERROR;  // mixed precision, which the ports forbid
-        }
+        // The ports require one precision throughout; mixed is refused.
+        bool ok = true;
+        if (out.data32)
+            ok = processAs<float>(s, process, events, t);
+        else if (out.data64)
+            ok = processAs<double>(s, process, events, t);
+        else
+            s->engine.flush(events);
+        if (!ok) return CLAP_PROCESS_ERROR;
     }
     s->afterAudioWork(process->out_events, process->frames_count);
     return CLAP_PROCESS_CONTINUE;
@@ -834,8 +1073,19 @@ clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_pr
 
 const void* CLAP_ABI pluginExtension(const clap_plugin_t*, const char* id) {
     if (!std::strcmp(id, CLAP_EXT_AUDIO_PORTS)) return &kAudioPorts;
-    if (!std::strcmp(id, CLAP_EXT_AUDIO_PORTS_CONFIG)) return &kAudioPortsConfig;
-    if (info::kInstrument && !std::strcmp(id, CLAP_EXT_NOTE_PORTS)) return &kNotePorts;
+    if (info::kAudioOutput) {
+        if (!std::strcmp(id, CLAP_EXT_AUDIO_PORTS_CONFIG)) return &kAudioPortsConfig;
+        if (!std::strcmp(id, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS) ||
+            !std::strcmp(id, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS_COMPAT))
+            return &kConfigurablePorts;
+    }
+    if (kAnySurround && (!std::strcmp(id, CLAP_EXT_SURROUND) || !std::strcmp(id, CLAP_EXT_SURROUND_COMPAT)))
+        return &kSurround;
+    if (kAnyAmbisonic && (!std::strcmp(id, CLAP_EXT_AMBISONIC) || !std::strcmp(id, CLAP_EXT_AMBISONIC_COMPAT)))
+        return &kAmbisonic;
+    if ((info::kNoteInput || info::kNoteOutput) && !std::strcmp(id, CLAP_EXT_NOTE_PORTS)) return &kNotePorts;
+    if (kVoiceInfo && !std::strcmp(id, CLAP_EXT_VOICE_INFO)) return &kVoiceInfoExt;
+    if (info::kNoteInput && !std::strcmp(id, CLAP_PLUGIN_AS_VST3)) return &kAsVst3;
     if (!std::strcmp(id, CLAP_EXT_PARAMS)) return &kParams;
     if (!std::strcmp(id, CLAP_EXT_STATE)) return &kState;
     if (!std::strcmp(id, CLAP_EXT_LATENCY)) return &kLatency;
@@ -851,6 +1101,8 @@ void CLAP_ABI pluginOnMainThread(const clap_plugin_t* p) {
     Plugin* s = self(p);
     s->callbackRequested.store(false, std::memory_order_release);
     if (s->restartWanted.exchange(false, std::memory_order_acq_rel)) s->requestRestart();
+    if (s->voicesChanged.exchange(false, std::memory_order_acq_rel) && s->hostVoiceInfo && s->hostVoiceInfo->changed)
+        s->hostVoiceInfo->changed(s->host);
     if (s->flushWanted.exchange(false, std::memory_order_acq_rel)) {
         s->flushRequested.store(false, std::memory_order_release);
         s->requestFlush();

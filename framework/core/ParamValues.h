@@ -49,6 +49,12 @@ class ParamValues {
         assert(params::at(slot(id)).labels == kNoteValueLabels && "beats() reads a noteValue() parameter");
         return noteValueBeats(choice(id));
     }
+    // The plain value a per-note modulation amount (NoteModulation, host
+    // units) makes of this parameter's current value, clamped to its range.
+    double modulated(uint32_t id, double amount) const {
+        const size_t i = slot(id);
+        return modulatedPlain(params::at(i), plain_[i], amount);
+    }
     bool changed(uint32_t id) const { return changed_[slot(id)]; }
     // True for the update that follows prepare() or reset(): jump, don't glide.
     bool initial() const { return initial_; }

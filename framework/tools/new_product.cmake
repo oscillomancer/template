@@ -1,14 +1,15 @@
 # Creates a new product from this template.
 #
 #   cmake -DNAME="Loupe" -DID=com.suppleaudio.loupe -DCODE=LoUp -DDEST=../loupe \
-#         [-DKIND=effect|instrument | -DEXAMPLE=pulse] [-DDESCRIPTION="A parametric EQ."] \
+#         [-DKIND=effect|instrument|note-effect | -DEXAMPLE=duck] [-DDESCRIPTION="A parametric EQ."] \
 #         [-DLICENSE=GPL-3.0-or-later|MIT] \
 #         -P framework/tools/new_product.cmake
 #
 # NAME is the display name. ID is the permanent reverse-DNS identifier. CODE
 # is the permanent four-character AU subtype, also used as the state tag.
 # The starting point is the template's effect, or with EXAMPLE any directory
-# in examples/ (KIND=instrument is EXAMPLE=instrument). LICENSE
+# in examples/ (KIND=instrument is EXAMPLE=instrument, KIND=note-effect is
+# EXAMPLE=chord). LICENSE
 # defaults to GPL-3.0-or-later, which Supple Audio products use; the
 # framework/ directory stays MIT either way.
 #
@@ -33,11 +34,13 @@ endif()
 if (NOT LICENSE)
     set(LICENSE GPL-3.0-or-later)
 endif()
-if (NOT KIND MATCHES "^(effect|instrument)$")
-    message(FATAL_ERROR "new_product: KIND must be effect or instrument")
+if (NOT KIND MATCHES "^(effect|instrument|note-effect)$")
+    message(FATAL_ERROR "new_product: KIND must be effect, instrument or note-effect")
 endif()
 if (KIND STREQUAL "instrument")
     set(EXAMPLE instrument)
+elseif (KIND STREQUAL "note-effect")
+    set(EXAMPLE chord)
 endif()
 file(GLOB example_dirs LIST_DIRECTORIES true "${template}/examples/*")
 set(examples "")

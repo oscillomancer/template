@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 #include <limits>
 #include <type_traits>
@@ -16,10 +18,70 @@
 namespace host_contract {
 using Check = void (*)(bool, const char*);
 
+// A main bus layout as product.cmake spells it: 1 2 5.1 7.1 7.1.4 ambi1..3,
+// a channel count, or "none" for a plugin with no audio. What follows is
+// what each must look like to a host -- stated here independently of the
+// framework's own tables.
+struct LayoutSpec {
+    uint32_t channels = 2;
+    const char* portType = CLAP_PORT_STEREO;  // null: no type
+    std::vector<uint8_t> speakers;            // surround only
+    bool ambisonic = false;
+};
+
+inline bool parseLayout(const char* name, LayoutSpec& out) {
+    out = LayoutSpec{};
+    const std::string n = name ? name : "";
+    if (n == "none") { out.channels = 0; out.portType = nullptr; return true; }
+    if (n == "1") { out.channels = 1; out.portType = CLAP_PORT_MONO; return true; }
+    if (n == "2") return true;
+    if (n == "5.1" || n == "7.1" || n == "7.1.4") {
+        out.portType = CLAP_PORT_SURROUND;
+        out.speakers = {CLAP_SURROUND_FL, CLAP_SURROUND_FR, CLAP_SURROUND_FC, CLAP_SURROUND_LFE,
+                        CLAP_SURROUND_BL, CLAP_SURROUND_BR};
+        if (n != "5.1") out.speakers.insert(out.speakers.end(), {CLAP_SURROUND_SL, CLAP_SURROUND_SR});
+        if (n == "7.1.4")
+            out.speakers.insert(out.speakers.end(),
+                                {CLAP_SURROUND_TFL, CLAP_SURROUND_TFR, CLAP_SURROUND_TBL, CLAP_SURROUND_TBR});
+        out.channels = static_cast<uint32_t>(out.speakers.size());
+        return true;
+    }
+    if (n.size() == 5 && n.compare(0, 4, "ambi") == 0 && n[4] >= '1' && n[4] <= '3') {
+        const uint32_t order = static_cast<uint32_t>(n[4] - '0');
+        out.channels = (order + 1) * (order + 1);
+        out.portType = CLAP_PORT_AMBISONIC;
+        out.ambisonic = true;
+        return true;
+    }
+    char* end = nullptr;
+    const long count = std::strtol(n.c_str(), &end, 10);
+    if (n.empty() || *end || count < 3 || count > 64) return false;
+    out.channels = static_cast<uint32_t>(count);
+    out.portType = nullptr;
+    return true;
+}
+
+inline const clap_plugin_audio_ports_t* audioPorts(const clap_plugin_t* plug) {
+    return static_cast<const clap_plugin_audio_ports_t*>(plug->get_extension(plug, CLAP_EXT_AUDIO_PORTS));
+}
+
+// Whether the plugin has a main audio input (an effect) -- the one fact
+// about its kind the checks below need.
+inline bool hasMainInput(const clap_plugin_t* plug) {
+    const auto* ports = audioPorts(plug);
+    for (uint32_t i = 0; ports && i < ports->count(plug, true); ++i) {
+        clap_audio_port_info_t info{};
+        if (ports->get(plug, i, true, &info) && (info.flags & CLAP_AUDIO_PORT_IS_MAIN)) return true;
+    }
+    return false;
+}
+
 // Config IDs are opaque: this framework uses the channel count, other
 // plugins use anything. Search by layout, never by ID.
 // A plugin without the configuration extension can use its current layout.
 inline bool selectLayout(const clap_plugin_t* plug, uint32_t channels) {
+    const auto* ports = audioPorts(plug);
+    if (channels == 0) return !ports || ports->count(plug, false) == 0;
     const auto* configs = static_cast<const clap_plugin_audio_ports_config_t*>(
         plug->get_extension(plug, CLAP_EXT_AUDIO_PORTS_CONFIG));
     if (configs) {
@@ -32,47 +94,166 @@ inline bool selectLayout(const clap_plugin_t* plug, uint32_t channels) {
         }
         return false;
     }
-    const auto* ports = static_cast<const clap_plugin_audio_ports_t*>(
-        plug->get_extension(plug, CLAP_EXT_AUDIO_PORTS));
-    clap_audio_port_info_t out{}, in{};
-    return ports && ports->get(plug, 0, false, &out) && out.channel_count == channels &&
-        (ports->count(plug, true) == 0 ||
-         (ports->get(plug, 0, true, &in) && in.channel_count == channels));
+    clap_audio_port_info_t out{};
+    return ports && ports->get(plug, 0, false, &out) && out.channel_count == channels;
 }
 
-inline void ports(const clap_plugin_t* plug, uint32_t channels, Check check) {
-    const auto* ext = static_cast<const clap_plugin_audio_ports_t*>(
-        plug->get_extension(plug, CLAP_EXT_AUDIO_PORTS));
+inline void ports(const clap_plugin_t* plug, const LayoutSpec& layout, Check check) {
+    const auto* ext = audioPorts(plug);
     check(ext != nullptr, "audio port extension available");
     if (!ext) return;
-    const bool instrument = ext->count(plug, true) == 0;
-    clap_audio_port_info_t out{}, in{};
-    const bool haveOut = ext->count(plug, false) == 1 && ext->get(plug, 0, false, &out);
-    check(haveOut, "reports one output port");
-    if (!haveOut) return;
-    check((out.flags & CLAP_AUDIO_PORT_IS_MAIN) != 0, "output is the main bus");
-    check(out.channel_count == channels, "output matches the negotiated channel count");
-    const char* type = channels == 1 ? CLAP_PORT_MONO : CLAP_PORT_STEREO;
-    check(out.port_type && !std::strcmp(out.port_type, type), "output declares the negotiated port type");
-    check((out.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) != 0, "output advertises 64-bit audio");
-    if (instrument) {
-        check(out.in_place_pair == CLAP_INVALID_ID, "instrument does not pair with a nonexistent input");
+    if (layout.channels == 0) {
+        check(ext->count(plug, true) == 0 && ext->count(plug, false) == 0, "a note effect has no audio ports");
         return;
     }
-    const bool haveIn = ext->count(plug, true) == 1 && ext->get(plug, 0, true, &in);
-    check(haveIn, "effect reports one input port");
-    if (!haveIn) return;
-    check((in.flags & CLAP_AUDIO_PORT_IS_MAIN) != 0, "input is the main bus");
-    check(in.channel_count == channels && in.port_type && !std::strcmp(in.port_type, type),
-          "input layout agrees with output");
-    check((in.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) != 0, "input advertises 64-bit audio");
-    check((in.flags & CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE) != 0 &&
-          (out.flags & CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE) != 0,
-          "effect ports require matching sample precision");
-    check(in.in_place_pair != CLAP_INVALID_ID && out.in_place_pair != CLAP_INVALID_ID &&
-          in.in_place_pair == out.id && out.in_place_pair == in.id,
-          "effect in-place pairing is reciprocal");
+    bool shapes = true, types = true, flags = true, ids = true, pairing = true;
+    int mainIn = -1, mainOut = -1;
+    clap_id mainInId = CLAP_INVALID_ID, mainOutId = CLAP_INVALID_ID;
+    for (int dir = 0; dir < 2; ++dir) {
+        const bool input = dir == 0;
+        std::vector<clap_id> seen;
+        for (uint32_t i = 0; i < ext->count(plug, input); ++i) {
+            clap_audio_port_info_t p{};
+            if (!ext->get(plug, i, input, &p)) { shapes = false; continue; }
+            const bool main = (p.flags & CLAP_AUDIO_PORT_IS_MAIN) != 0;
+            if (main) {
+                if ((input ? mainIn : mainOut) >= 0) shapes = false;  // one main bus each way
+                (input ? mainIn : mainOut) = static_cast<int>(i);
+                (input ? mainInId : mainOutId) = p.id;
+                if (i != 0) shapes = false;  // and it comes first
+            }
+            // Every bus here is as wide as the layout: a sidechain, an aux output.
+            shapes = shapes && p.channel_count == layout.channels && p.name[0] != '\0';
+            types = types && ((!layout.portType && !p.port_type) ||
+                              (layout.portType && p.port_type && !std::strcmp(p.port_type, layout.portType)));
+            flags = flags && (p.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) &&
+                    (p.flags & CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE);
+            ids = ids && std::find(seen.begin(), seen.end(), p.id) == seen.end();
+            seen.push_back(p.id);
+            if (!main && p.in_place_pair != CLAP_INVALID_ID) pairing = false;
+        }
+    }
+    check(mainOut == 0, "the main output is the first output port");
+    check(shapes, "one main bus each way, every port as wide as the layout and named");
+    check(types, "every port declares the layout's port type");
+    check(flags, "every port advertises 64-bit audio and one precision throughout");
+    check(ids, "port IDs are unique in each direction");
+    if (mainIn >= 0) {
+        clap_audio_port_info_t in{}, out{};
+        ext->get(plug, 0, true, &in);
+        ext->get(plug, 0, false, &out);
+        pairing = pairing && in.in_place_pair == mainOutId && out.in_place_pair == mainInId;
+    } else {
+        clap_audio_port_info_t out{};
+        ext->get(plug, 0, false, &out);
+        pairing = pairing && out.in_place_pair == CLAP_INVALID_ID;
+    }
+    check(pairing, "only the main buses pair in place, reciprocally");
+
+    if (!layout.speakers.empty()) {
+        const auto* surround = static_cast<const clap_plugin_surround_t*>(plug->get_extension(plug, CLAP_EXT_SURROUND));
+        check(surround != nullptr, "surround extension available");
+        if (!surround) return;
+        uint64_t mask = 0;
+        for (uint8_t sp : layout.speakers) mask |= uint64_t{1} << sp;
+        check(surround->is_channel_mask_supported(plug, mask), "the layout's channel mask is supported");
+        bool maps = true;
+        for (int dir = 0; dir < 2; ++dir)
+            for (uint32_t i = 0; i < ext->count(plug, dir == 0); ++i) {
+                uint8_t map[64]{};
+                const uint32_t n = surround->get_channel_map(plug, dir == 0, i, map, 64);
+                maps = maps && n == layout.channels && std::equal(layout.speakers.begin(), layout.speakers.end(), map);
+            }
+        check(maps, "every port's channel map is the layout's speakers in order");
+    }
+    if (layout.ambisonic) {
+        const auto* ambi = static_cast<const clap_plugin_ambisonic_t*>(plug->get_extension(plug, CLAP_EXT_AMBISONIC));
+        check(ambi != nullptr, "ambisonic extension available");
+        if (!ambi) return;
+        bool configs = true;
+        for (int dir = 0; dir < 2; ++dir)
+            for (uint32_t i = 0; i < ext->count(plug, dir == 0); ++i) {
+                clap_ambisonic_config_t c{};
+                configs = configs && ambi->get_config(plug, dir == 0, i, &c) &&
+                          c.ordering == CLAP_AMBISONIC_ORDERING_ACN && c.normalization == CLAP_AMBISONIC_NORMALIZATION_SN3D;
+            }
+        check(configs, "every port is ACN/SN3D ambisonics");
+    }
 }
+
+// Buffers for every audio port the plugin reports, each its own storage; the
+// main output may alias the main input (in place). Sidechains carry their
+// own signal, so a plugin that keys from one is exercised.
+template <class Sample>
+struct Buses {
+    std::vector<std::vector<std::vector<Sample>>> in, out;  // [port][channel][frame]
+    std::vector<std::vector<Sample*>> inPointers, outPointers;
+    std::vector<clap_audio_buffer_t> inBuffers, outBuffers;
+    int mainIn = -1;
+    uint32_t frames = 0;
+
+    void build(const clap_plugin_t* plug, uint32_t capacity, bool inPlace) {
+        const auto* ports = audioPorts(plug);
+        frames = capacity;
+        for (int dir = 0; dir < 2; ++dir) {
+            const bool input = dir == 0;
+            auto& store = input ? in : out;
+            auto& pointers = input ? inPointers : outPointers;
+            auto& buffers = input ? inBuffers : outBuffers;
+            const uint32_t count = ports ? ports->count(plug, input) : 0;
+            store.assign(count, {});
+            pointers.assign(count, {});
+            buffers.assign(count, clap_audio_buffer_t{});
+            for (uint32_t i = 0; i < count; ++i) {
+                clap_audio_port_info_t p{};
+                ports->get(plug, i, input, &p);
+                if (input && (p.flags & CLAP_AUDIO_PORT_IS_MAIN)) mainIn = static_cast<int>(i);
+                store[i].assign(p.channel_count, std::vector<Sample>(capacity, Sample(0)));
+                for (auto& c : store[i]) pointers[i].push_back(c.data());
+                buffers[i].channel_count = p.channel_count;
+            }
+        }
+        if (inPlace && mainIn >= 0 && !out.empty())
+            for (size_t c = 0; c < outPointers[0].size() && c < inPointers[static_cast<size_t>(mainIn)].size(); ++c)
+                outPointers[0][c] = inPointers[static_cast<size_t>(mainIn)][c];
+        for (int dir = 0; dir < 2; ++dir) {
+            auto& pointers = dir == 0 ? inPointers : outPointers;
+            auto& buffers = dir == 0 ? inBuffers : outBuffers;
+            for (size_t i = 0; i < buffers.size(); ++i) {
+                if constexpr (std::is_same_v<Sample, float>) buffers[i].data32 = pointers[i].data();
+                else buffers[i].data64 = pointers[i].data();
+            }
+        }
+    }
+    void bind(clap_process_t& proc) {
+        proc.audio_inputs = inBuffers.empty() ? nullptr : inBuffers.data();
+        proc.audio_inputs_count = static_cast<uint32_t>(inBuffers.size());
+        proc.audio_outputs = outBuffers.empty() ? nullptr : outBuffers.data();
+        proc.audio_outputs_count = static_cast<uint32_t>(outBuffers.size());
+    }
+    Sample* const* mainInput() { return mainIn >= 0 ? inPointers[static_cast<size_t>(mainIn)].data() : nullptr; }
+    Sample* const* mainOutput() { return outPointers.empty() ? nullptr : outPointers[0].data(); }
+    uint32_t width() const { return outPointers.empty() ? 0 : static_cast<uint32_t>(outPointers[0].size()); }
+    // Every input but the main one: the sidechain.
+    template <class Fn>
+    void forEachSidechain(Fn&& fn) {
+        for (size_t i = 0; i < inPointers.size(); ++i)
+            if (static_cast<int>(i) != mainIn)
+                for (auto* c : inPointers[i]) fn(c);
+    }
+    // Every output channel, main first.
+    template <class Fn>
+    void forEachOutput(Fn&& fn) {
+        for (auto& port : outPointers)
+            for (auto* c : port) fn(c);
+    }
+    void silence(uint32_t count) {
+        for (auto& port : inPointers)
+            for (auto* c : port) std::fill(c, c + count, Sample(0));
+        forEachOutput([&](Sample* c) { std::fill(c, c + count, Sample(0)); });
+    }
+};
+
 inline void parameterText(const clap_plugin_t* plug, Check check) {
     const auto* params = static_cast<const clap_plugin_params_t*>(
         plug->get_extension(plug, CLAP_EXT_PARAMS));
@@ -208,7 +389,7 @@ struct Render {
 
 template<class Sample>
 Render render(const clap_plugin_factory_t* factory, const char* id, const char* plainParam,
-              uint32_t channels, double sampleRate, bool inPlace, bool instrument) {
+              uint32_t channels, double sampleRate, bool inPlace, bool notes) {
     Render result;
     RenderInstance instance(factory, id);
     const auto* plug = instance.plug;
@@ -225,7 +406,7 @@ Render render(const clap_plugin_factory_t* factory, const char* id, const char* 
         if (!params->get_info(plug, i, &info)) return result;
         if (info.flags & CLAP_PARAM_IS_READONLY) continue;
         const bool plain = !std::strcmp(info.name, plainParam);
-        const bool seed = instrument && !std::strcmp(info.name, "Seed");
+        const bool seed = notes && !std::strcmp(info.name, "Seed");
         if (!plain && !seed) continue;
         clap_event_param_value_t value{};
         value.header.size = sizeof(value);
@@ -250,23 +431,13 @@ Render render(const clap_plugin_factory_t* factory, const char* id, const char* 
     instance.processing = true;
 
     // Each channel owns distinct storage. In-place aliases input/output only
-    // within that channel. Different L/R signals expose accidental cross-talk.
-    std::vector<std::vector<Sample>> input(channels, std::vector<Sample>(512));
-    std::vector<std::vector<Sample>> output(channels, std::vector<Sample>(512));
-    std::vector<Sample*> in(channels), out(channels);
-    for (uint32_t c = 0; c < channels; ++c) {
-        in[c] = input[c].data();
-        out[c] = inPlace ? in[c] : output[c].data();
-    }
-    clap_audio_buffer_t ib{}, ob{};
-    ib.channel_count = ob.channel_count = channels;
-    if constexpr (std::is_same_v<Sample, float>) { ib.data32 = in.data(); ob.data32 = out.data(); }
-    else { ib.data64 = in.data(); ob.data64 = out.data(); }
+    // within that channel. Different signals per channel expose cross-talk.
+    Buses<Sample> buses;
+    buses.build(plug, 512, inPlace);
+    const bool effect = buses.mainIn >= 0;
+    std::vector<std::vector<Sample>> input(buses.width(), std::vector<Sample>(512));
     clap_process_t proc{};
-    proc.audio_inputs = instrument ? nullptr : &ib;
-    proc.audio_inputs_count = instrument ? 0u : 1u;
-    proc.audio_outputs = &ob;
-    proc.audio_outputs_count = 1;
+    buses.bind(proc);
     proc.in_events = &events.input;
     proc.out_events = &events.output;
     constexpr uint32_t blocks[] = {1, 64, 257, 512};
@@ -276,20 +447,27 @@ Render render(const clap_plugin_factory_t* factory, const char* id, const char* 
         const uint32_t count = blocks[b % 4];
         proc.frames_count = count;
         proc.steady_time = static_cast<int64_t>(frame);
-        for (uint32_t c = 0; c < channels; ++c) {
-            for (uint32_t i = 0; i < count; ++i) {
-                // Quantize both paths' input to float, then widen for double.
-                // Otherwise this test would include input quantization error.
-                const double t = static_cast<double>(frame + i) / sampleRate;
-                const float v = static_cast<float>((c == 0 ? 0.23 : 0.13) *
-                    std::sin(6.283185307179586 * (c == 0 ? 220.0 : 371.0) * t + c));
-                input[c][i] = static_cast<Sample>(v);
-                if (!inPlace) output[c][i] = std::numeric_limits<Sample>::quiet_NaN();
-            }
-        }
+        // Quantize both paths' input to float, then widen for double.
+        // Otherwise this test would include input quantization error.
+        auto tone = [&](uint32_t c, uint32_t i, double gain, double hz) {
+            const double t = static_cast<double>(frame + i) / sampleRate;
+            return static_cast<Sample>(static_cast<float>(gain * std::sin(6.283185307179586 * hz * t + c)));
+        };
+        for (uint32_t c = 0; c < buses.width(); ++c)
+            for (uint32_t i = 0; i < count; ++i)
+                input[c][i] = tone(c, i, c == 0 ? 0.23 : 0.13, c == 0 ? 220.0 : 371.0 + 13.0 * c);
+        if (Sample* const* main = buses.mainInput())
+            for (uint32_t c = 0; c < buses.width(); ++c) std::copy(input[c].begin(), input[c].begin() + count, main[c]);
+        uint32_t key = 0;
+        buses.forEachSidechain([&](Sample* c) {
+            for (uint32_t i = 0; i < count; ++i) c[i] = tone(key, i, (b / 8) % 2 ? 0.4 : 0.0, 97.0);
+            ++key;
+        });
+        if (!inPlace)
+            buses.forEachOutput([&](Sample* c) { std::fill(c, c + count, std::numeric_limits<Sample>::quiet_NaN()); });
         clap_event_note_t note{};
         events.events.clear();
-        if (instrument && (b == 1 || b == 5 || b == 13 || b == 17)) {
+        if (notes && (b == 1 || b == 5 || b == 13 || b == 17)) {
             note.header.size = sizeof(note);
             note.header.time = 7;
             note.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
@@ -302,17 +480,19 @@ Render render(const clap_plugin_factory_t* factory, const char* id, const char* 
             events.events = {&note.header};
         }
         if (plug->process(plug, &proc) == CLAP_PROCESS_ERROR) result.ok = false;
-        for (uint32_t c = 0; c < channels; ++c) {
+        uint32_t channel = 0;
+        buses.forEachOutput([&](Sample* c) {
             for (uint32_t i = 0; i < count; ++i) {
-                const double v = out[c][i];
+                const double v = c[i];
                 if (!std::isfinite(v)) result.ok = false;
                 result.samples.push_back(v);
                 result.peak = std::max(result.peak, std::fabs(v));
-                if (!inPlace && !instrument)
+                if (effect && channel < buses.width())
                     result.inputDifference = std::max(result.inputDifference,
-                        std::fabs(v - static_cast<double>(input[c][i])));
+                        std::fabs(v - static_cast<double>(input[channel][i])));
             }
-        }
+            ++channel;
+        });
         frame += count;
         instance.pump();
     }
@@ -330,11 +510,15 @@ inline double difference(const Render& a, const Render& b) {
 
 inline void processing(const clap_plugin_factory_t* factory, const char* id,
                        const char* plainParam, uint32_t channels, double sampleRate,
-                       bool instrument, Check check) {
+                       bool effect, bool notes, Check check) {
     // Each render starts with a fresh, identically configured instance. Comparing
     // successive calls on one live processor compares different DSP histories.
-    const auto f = render<float>(factory, id, plainParam, channels, sampleRate, false, instrument);
-    const auto d = render<double>(factory, id, plainParam, channels, sampleRate, false, instrument);
+    const auto f = render<float>(factory, id, plainParam, channels, sampleRate, false, notes);
+    const auto d = render<double>(factory, id, plainParam, channels, sampleRate, false, notes);
+    if (channels == 0) {  // no audio: it ran, with notes in and nothing to hear
+        check(f.ok && d.ok, "float and double processing runs without audio");
+        return;
+    }
     check(f.ok && f.peak > 1e-5, "float render writes finite, non-silent audio");
     check(d.ok && d.peak > 1e-5, "double render writes finite, non-silent audio");
     const double precisionError = difference(f, d);
@@ -342,11 +526,11 @@ inline void processing(const clap_plugin_factory_t* factory, const char* id,
     check(precisionError < 1e-5, "float/double full renders agree from identical initial state");
     std::printf("     float/double max error: %.9g; peaks: %.6g / %.6g\n",
                 precisionError, f.peak, d.peak);
-    if (instrument) return; // No input port means no in-place promise.
+    if (!effect) return; // No input port means no in-place promise.
     check(f.inputDifference > 1e-4 && d.inputDifference > 1e-4,
           "both effect precision paths reach non-identity DSP");
-    const auto fi = render<float>(factory, id, plainParam, channels, sampleRate, true, false);
-    const auto di = render<double>(factory, id, plainParam, channels, sampleRate, true, false);
+    const auto fi = render<float>(factory, id, plainParam, channels, sampleRate, true, notes);
+    const auto di = render<double>(factory, id, plainParam, channels, sampleRate, true, notes);
     const double floatError = difference(f, fi), doubleError = difference(d, di);
     check(floatError == 0.0, "float in-place matches separate buffers on every channel");
     check(doubleError == 0.0, "double in-place matches separate buffers on every channel");

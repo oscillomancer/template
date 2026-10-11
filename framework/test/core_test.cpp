@@ -386,6 +386,62 @@ std::vector<test::Automation> randomAutomation(int frames, uint32_t seed, int co
     return a;
 }
 
+// Whatever else the product takes, so a render exercises all of it: a
+// sidechain that comes and goes, and notes with MIDI, expressions and
+// per-note modulation among them.
+void everyInput(test::RenderOptions& o, int frames, uint32_t seed) {
+    o.frames = frames;
+    if (product::info::kSidechain) {
+        o.sidechain = test::noise(2, frames, seed);
+        for (auto& c : o.sidechain)
+            for (size_t i = 0; i < c.size(); ++i)
+                if ((i / 3000) % 2) c[i] = 0.0;
+    }
+    if (!product::info::kNoteInput) return;
+    std::mt19937 rng(seed);
+    for (int k = 0; k < 40; ++k) {
+        const int start = static_cast<int>(rng() % static_cast<uint32_t>(frames)), key = 40 + static_cast<int>(rng() % 40);
+        NoteAddress address;
+        address.noteId = k;
+        o.events.push_back(test::noteOn(start, key, 0.5 + (rng() % 50) / 100.0, k, k % 3));
+        o.events.push_back(test::midi(start + 5, MidiMessage::cc(k % 3, 1, static_cast<int>(rng() % 128))));
+        o.events.push_back(test::midi(start + 9, MidiMessage::bend(k % 3, ((rng() % 200) - 100) / 100.0)));
+        o.events.push_back(test::expression(start + 11, NoteExpression::Type::Tuning, 0.5, address));
+        for (size_t i = 0; i < params::kCount; ++i)
+            if (params::at(i).is(pflag::kPolyMod)) o.events.push_back(test::noteModulation(start + 13, params::at(i).id, 0.1, address));
+        o.events.push_back(test::noteOff(start + 1 + static_cast<int>(rng() % 6000), key, k, k % 3));
+    }
+}
+
+// Everything a render produced: main output, aux outputs, what was sent.
+struct Rendered {
+    test::Signal main;
+    std::vector<test::Signal> aux;
+    std::vector<test::Sent> sent;
+};
+
+Rendered renderAll(const test::Signal& in, test::RenderOptions o, Engine* engine = nullptr) {
+    Rendered r;
+    o.aux = &r.aux;
+    o.sent = &r.sent;
+    r.main = test::render(in, o, engine);
+    return r;
+}
+
+// The largest difference anywhere; infinite when what was sent differs.
+double difference(const Rendered& x, const Rendered& y) {
+    double d = test::maxDifference(x.main, y.main);
+    if (x.aux.size() != y.aux.size() || x.sent.size() != y.sent.size()) return INFINITY;
+    for (size_t k = 0; k < x.aux.size(); ++k) d = std::max(d, test::maxDifference(x.aux[k], y.aux[k]));
+    for (size_t k = 0; k < x.sent.size(); ++k) {
+        const test::Sent &a = x.sent[k], &b = y.sent[k];
+        if (a.frame != b.frame || a.kind != b.kind || a.note.key != b.note.key || a.note.type != b.note.type ||
+            a.note.noteId != b.note.noteId || std::memcmp(a.midi.data, b.midi.data, 3) != 0)
+            return INFINITY;
+    }
+    return d;
+}
+
 }  // namespace
 
 TEST(output_is_independent_of_host_block_size_under_automation) {
@@ -394,17 +450,21 @@ TEST(output_is_independent_of_host_block_size_under_automation) {
     test::RenderOptions a;
     a.automation = randomAutomation(frames, 11, 400);
     a.blocks = {4096};
+    everyInput(a, frames, 19);
     test::RenderOptions b = a;
     b.blocks = {1, 7, 64, 513, 2, 1000};
-    const test::Signal x = test::render(in, a), y = test::render(in, b);
-    CHECK(test::allFinite(x));
-    CHECK_NEAR(test::maxDifference(x, y), 0.0, 0.0);  // bit-identical
+    const Rendered x = renderAll(in, a), y = renderAll(in, b);
+    CHECK(test::allFinite(x.main));
+    for (const auto& bus : x.aux) CHECK(test::allFinite(bus));
+    CHECK_NEAR(difference(x, y), 0.0, 0.0);  // bit-identical, and the same events at the same frames
+    if (product::info::kNoteOutput || product::info::kNoteInput)
+        std::printf("      %zu events sent, identically\n", x.sent.size());
 }
 
 TEST(float_and_double_host_buffers_agree) {
     auto engineF = std::make_unique<Engine>(), engineD = std::make_unique<Engine>();
-    engineF->activate(48000.0, 256, 2, 2);
-    engineD->activate(48000.0, 256, 2, 2);
+    engineF->activate(48000.0, 256, product::info::kAudioInput ? 2 : 0, 2);
+    engineD->activate(48000.0, 256, product::info::kAudioInput ? 2 : 0, 2);
     std::vector<float> lf(256), rf(256);
     std::vector<double> ld(256), rd(256);
     double worst = 0.0;
@@ -429,8 +489,8 @@ TEST(float_and_double_host_buffers_agree) {
 
 TEST(separate_and_in_place_buffers_agree) {
     auto a = std::make_unique<Engine>(), b = std::make_unique<Engine>();
-    a->activate(44100.0, 128, 2, 2);
-    b->activate(44100.0, 128, 2, 2);
+    a->activate(44100.0, 128, product::info::kAudioInput ? 2 : 0, 2);
+    b->activate(44100.0, 128, product::info::kAudioInput ? 2 : 0, 2);
     const test::Signal in = test::noise(2, 128 * 20, 5);
     double worst = 0.0;
     for (int block = 0; block < 20; ++block) {
@@ -490,7 +550,7 @@ TEST(telemetry_rate_does_not_follow_event_density) {
 
 TEST(non_finite_output_never_reaches_the_host) {
     // Injected through the input, so this needs a product that reads it.
-    if (product::info::kInstrument) return;
+    if (!product::info::kAudioInput) return;
     test::Signal in = test::noise(2, 4096, 4);
     in[0][100] = NAN;
     in[1][2000] = INFINITY;
@@ -520,7 +580,7 @@ TEST(non_finite_output_never_reaches_the_host) {
 }
 
 TEST(non_finite_input_never_passes_through_bypass_or_overflows_a_float) {
-    if (product::info::kInstrument) return;
+    if (!product::info::kAudioInput) return;
     // Bypassed, the output is the host's own input: NaN in, silence out.
     if (params::kBypassIndex >= 0) {
         test::Signal in = test::noise(2, 2048, 9);
@@ -612,15 +672,19 @@ TEST(reset_preserves_parameters_and_clears_history) {
         const ParamDef& p = params::at(i);
         if (!p.is(pflag::kBypass) && !p.isOutput()) o.initial.push_back({p.id, toPlain(p, fromNormalized(p, 0.3))});
     }
+    test::RenderOptions busy = o;
+    everyInput(busy, 9000, 8);
     auto used = std::make_unique<Engine>();
-    test::render(test::noise(2, 9000, 8), o, used.get());
+    renderAll(test::noise(2, 9000, 8), busy, used.get());
     used->reset();
     const test::Signal probe = test::sine(2, 4000, 440.0, 48000.0);
-    test::Signal a = probe;
-    std::vector<double*> pa = {a[0].data(), a[1].data()};
-    used->process<double>(pa.data(), pa.data(), 4000);
-    const test::Signal b = test::render(probe, [&] { auto x = o; x.blocks = {4000}; return x; }());
-    CHECK_NEAR(test::maxDifference(a, b), 0.0, 1e-12);
+    test::RenderOptions after = o;
+    after.blocks = {4000};
+    everyInput(after, 4000, 9);
+    test::RenderOptions carryOn = after;
+    carryOn.activate = false;
+    const Rendered a = renderAll(probe, carryOn, used.get()), b = renderAll(probe, after);
+    CHECK_NEAR(difference(a, b), 0.0, 1e-12);
 }
 
 TEST(after_reset_output_depends_only_on_the_state) {
@@ -646,29 +710,23 @@ TEST(after_reset_output_depends_only_on_the_state) {
         const std::vector<double> first = randomState(), second = randomState();
         auto used = std::make_unique<Engine>();
         for (size_t i = 0; i < params::kCount; ++i) used->store().set(i, first[i]);
-        used->activate(48000.0, 512, 2, 2);
-        test::Signal a = before;
-        for (int f = 0; f < 12000; f += 500) {
-            double* io[] = {a[0].data() + f, a[1].data() + f};
-            used->process<double>(io, io, 500);
-        }
+        test::RenderOptions o;
+        o.blocks = {500};
+        everyInput(o, 12000, 40 + static_cast<uint32_t>(trial));
+        renderAll(before, o, used.get());
         for (size_t i = 0; i < params::kCount; ++i) used->store().set(i, second[i]);
         used->reset();
-        test::Signal x = probe;
-        for (int f = 0; f < 9000; f += 500) {
-            double* io[] = {x[0].data() + f, x[1].data() + f};
-            used->process<double>(io, io, 500);
-        }
+        test::RenderOptions next;
+        next.blocks = {500};
+        everyInput(next, 9000, 50 + static_cast<uint32_t>(trial));
+        test::RenderOptions carryOn = next;
+        carryOn.activate = false;
+        const Rendered x = renderAll(probe, carryOn, used.get());
 
         auto fresh = std::make_unique<Engine>();
         for (size_t i = 0; i < params::kCount; ++i) fresh->store().set(i, second[i]);
-        fresh->activate(48000.0, 512, 2, 2);
-        test::Signal y = probe;
-        for (int f = 0; f < 9000; f += 500) {
-            double* io[] = {y[0].data() + f, y[1].data() + f};
-            fresh->process<double>(io, io, 500);
-        }
-        CHECK_MSG(test::maxDifference(x, y) == 0.0, "trial %d differs by %g", trial, test::maxDifference(x, y));
+        const Rendered y = renderAll(probe, next, fresh.get());
+        CHECK_MSG(difference(x, y) == 0.0, "trial %d differs by %g", trial, difference(x, y));
     }
 }
 

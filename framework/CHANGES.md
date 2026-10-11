@@ -4,6 +4,65 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.7.0
+
+Buses and kinds: what a product switches on in `product.cmake` to take a
+sidechain, add outputs, run in surround, take MIDI, send notes, or be a note
+effect. A product that switches nothing on keeps its ports, IDs and sound.
+
+- **Capabilities in `product.cmake`** (`cmake/Capabilities.cmake` checks
+  them): `PRODUCT_SIDECHAIN ON`, `PRODUCT_AUX_OUTPUTS "Name" ...`,
+  `PRODUCT_NOTE_INPUT ON` (an effect taking notes and MIDI: AU `aumf`),
+  `PRODUCT_NOTE_OUTPUT ON`, `PRODUCT_NOTE_EXPRESSIONS tuning volume ...`, and
+  a third kind, `PRODUCT_KIND "note-effect"` (no audio; AU `aumi`).
+- **Layouts**: `PRODUCT_CHANNELS` takes `5.1`, `7.1`, `7.1.4`, `ambi1` to
+  `ambi3` and plain counts up to 64. CLAP's surround and ambisonic
+  extensions describe them; `setup.layout` tells the processor
+  (`core/Layout.h`). Every port is as wide as the main bus.
+- **Layout negotiation for VST3**: the plugin implements
+  `configurable-audio-ports`, so a VST3 host's `setBusArrangements` selects
+  any declared layout. Before, a VST3 host could only have the first one;
+  now a stereo product can be mono in VST3 too.
+- **Sidechain and aux outputs** in `Block`: `block.sidechain` (silence when
+  unconnected, `block.sidechainConnected`), `block.aux(bus)`. Aux outputs
+  share the main latency and fall silent under bypass.
+- **MIDI, expressions, per-note modulation**: `midi(const MidiMessage&)` gets
+  controllers, pitch bend, pressure and program changes (an instrument
+  dropped them before); `noteExpression()` and `noteModulation()` get CLAP
+  note expressions and per-note modulation of parameters marked
+  `.polyModulatable()`. `NoteAddress` matches events to voices;
+  `modulatedPlain()` / `v.modulated()` turn an amount into a value.
+- **Note output**: `sendNote()` and `sendMidi()` with `PRODUCT_NOTE_OUTPUT`.
+  `NoteEnds` became `NoteOutput` (`Engine::noteOutput()`, entries with a
+  `kind`): **a product's tests that read `engine.noteEnds()` must read
+  `noteOutput()` and keep the `Kind::End` entries.** `noteEnded()` is
+  unchanged.
+- **Voice info**: a processor declaring `kVoices` (and `kOverlappingNotes`)
+  is offered to hosts through CLAP voice-info; `voiceCount()` may say fewer.
+  An instrument that already had a `kVoices` constant now advertises it.
+- **VST3 note expressions** follow `PRODUCT_NOTE_EXPRESSIONS`. Before, the
+  wrapper offered polyphonic pressure alone, to every instrument; **a
+  product that uses polyphonic pressure from VST3 hosts lists `pressure`.**
+- **Two more clap-wrapper patches**: surround and ambisonic ports get VST3
+  speaker arrangements; the plugin's MIDI output reaches VST3 hosts.
+- **Tests**: `vst3-host` (Linux) renders the same performance through the
+  VST3 and the CLAP and requires the same output on every bus and the same
+  notes and MIDI out; `host-smoke-<layout>` runs per declared layout,
+  checking channel maps; `plugin-tests` covers every port, port-by-port
+  negotiation, mixed MIDI/expression/modulation input, note ports, voice
+  info and output event order; `core-tests`' block-size and reset checks
+  now feed the sidechain and notes and compare aux outputs and everything
+  sent. `test::render` takes `sidechain`, `aux`, `events`, `sent`, `frames`
+  and `activate`, and no longer feeds an instrument the input signal.
+- **Tools**: `render-cli --sidechain key.wav` and aux outputs written beside
+  the output; `gui-preview` plays a sidechain kick and a held chord;
+  `new_product -DKIND=note-effect`; `test_examples` runs clap-validator in
+  the examples when the template's build knows where it is.
+- **Examples**: `duck` (sidechain, aux output, surround and ambisonics) and
+  `chord` (a note effect); `instrument` gains pitch bend, the mod wheel,
+  tuning and volume expressions, per-note modulation of Level, and a Bend
+  Range parameter.
+
 ## 1.6.0
 
 Parameters: what a host can display, what the framework smooths, and the

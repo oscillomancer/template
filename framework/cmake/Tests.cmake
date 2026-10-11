@@ -59,9 +59,18 @@ if (SUPPLE_BUILD_PLUGIN)
         target_compile_definitions(host-smoke PRIVATE HOST_SMOKE_LATENCY_PARAM="${PRODUCT_SMOKE_LATENCY_PARAM}")
     endif()
     supple_defaults(host-smoke)
-    foreach(channels ${PRODUCT_CHANNELS})
-        add_test(NAME host-smoke-${channels}ch
-            COMMAND host-smoke $<TARGET_FILE:product-plugin_clap> --channels ${channels})
+    # Once per layout (cmake/Capabilities.cmake): host-smoke-2ch, -5.1, -ambi1,
+    # or -notes for a note effect.
+    foreach(layout ${SUPPLE_LAYOUTS})
+        if (layout MATCHES "^[0-9]+$")
+            set(name ${layout}ch)
+        elseif (layout STREQUAL "none")
+            set(name notes)
+        else()
+            set(name ${layout})
+        endif()
+        add_test(NAME host-smoke-${name}
+            COMMAND host-smoke $<TARGET_FILE:product-plugin_clap> --layout ${layout})
     endforeach()
 
     # Each wrapper patch, still applied to the pinned checkout.
@@ -97,6 +106,28 @@ if (SUPPLE_BUILD_PLUGIN)
         target_link_libraries(vst3-unload-probe PRIVATE ${CMAKE_DL_LIBS})
         supple_defaults(vst3-unload-probe)
         add_test(NAME vst3-unload COMMAND vst3-unload-probe $<TARGET_FILE:product-plugin_vst3>)
+
+        # The VST3 against the CLAP it wraps: buses, layouts, MIDI mapping, and
+        # the same performance rendered through both. A host needs the SDK's
+        # interface IDs and nothing else of it.
+        set(vst3_sdk "${CPM_PACKAGE_vst3sdk_SOURCE_DIR}")
+        if (vst3_sdk AND EXISTS "${vst3_sdk}/pluginterfaces/base/funknown.cpp")
+            add_library(supple-vst3-iids OBJECT ${vst3_sdk}/pluginterfaces/base/funknown.cpp
+                ${vst3_sdk}/pluginterfaces/base/coreiids.cpp ${vst3_sdk}/public.sdk/source/vst/vstinitiids.cpp)
+            target_include_directories(supple-vst3-iids SYSTEM PRIVATE ${vst3_sdk})
+            target_compile_options(supple-vst3-iids PRIVATE -w)
+            supple_sanitize(supple-vst3-iids)
+            add_executable(vst3-host-tests ${SUPPLE_FRAMEWORK}/test/vst3_host_test.cpp $<TARGET_OBJECTS:supple-vst3-iids>)
+            target_include_directories(vst3-host-tests SYSTEM PRIVATE ${vst3_sdk})
+            target_include_directories(vst3-host-tests PRIVATE ${SUPPLE_FRAMEWORK}/test)
+            target_link_libraries(vst3-host-tests PRIVATE product-core clap ${CMAKE_DL_LIBS})
+            target_compile_definitions(vst3-host-tests PRIVATE VST3_HOST_PLAIN_PARAM="${PRODUCT_SMOKE_PLAIN_PARAM}")
+            supple_defaults(vst3-host-tests)
+            # The SDK's interfaces have no virtual destructors, by design.
+            target_compile_options(vst3-host-tests PRIVATE -Wno-non-virtual-dtor)
+            add_test(NAME vst3-host COMMAND vst3-host-tests $<TARGET_FILE:product-plugin_vst3>
+                $<TARGET_FILE:product-plugin_clap>)
+        endif()
 
         if (SUPPLE_BUILD_GUI)
             # A real X11 parent: embedding, pixels, resize, scale, reopen,

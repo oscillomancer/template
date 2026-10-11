@@ -100,6 +100,52 @@ the right history waiting.
 reverb or release rings after input stops; when it changes while active, the
 host is told.
 
+## Buses and notes
+
+What changes the ports a host sees is switched on in `product.cmake`, not
+inferred from code: a sidechain, aux outputs, note input on an effect, note
+output, the note expressions offered to VST3, the kind (which is also the AU
+type). A product that switches nothing on has exactly the ports it had.
+
+Every audio port is as wide as the main bus, and a layout is chosen once for
+all of them. Hosts negotiate one arrangement at a time (VST3's
+`setBusArrangements` sets them together; clap-wrapper turns it into one
+`configurable-audio-ports` request), and a sidechain is almost always fed
+at the main width; a product that wants a mono key sums the channels it is
+given. Layouts are told apart by channel count, which is also their CLAP
+configuration ID, so no two may share one.
+
+A surround layout's channels are in CLAP's speaker order, ascending, which is
+the bit order of a VST3 speaker arrangement and of a WAVE channel mask, so
+the three agree without a table. Ambisonics are ACN/SN3D (AmbiX), which is
+what VST3's `kAmbi*OrderACN` arrangements mean. clap-wrapper turned both into
+an empty arrangement; a patch maps them (see Dependencies).
+
+A sidechain the host left unconnected is silence and `sidechainConnected` is
+false; an aux output it left unconnected is skipped. Aux outputs carry the
+processor's latency like the main bus; bypass fades them to silence, because
+they have no dry signal to fall back to.
+
+Notes arrive at their exact frame, each with every parameter change stamped
+before it already applied. Notes from MIDI become `NoteEvent`s; the other
+channel messages (controllers, pitch bend, pressure, program changes) reach
+`midi()`. VST3 has no MIDI controllers on its event bus: clap-wrapper maps
+them to hidden parameters and back to MIDI, and `vst3-host` proves they
+arrive by rendering the same performance through both formats. Polyphonic
+pressure crosses only as the `pressure` note expression.
+
+What a processor sends -- note ends, and with note output its own notes and
+MIDI -- goes to the host in time order after each block, note ends on the
+input port's address, its own notes on the output port. A note effect has no
+audio for the framework's bypass to crossfade, and only it knows which notes
+it has started, so its bypass (if it has one) is its own.
+
+Per-note modulation arrives as an offset in host units, like CLAP's global
+modulation; `modulatedPlain()` turns it into the voice's own plain value with
+the parameter's taper and range. Voice info is offered only by a processor
+that declares `kVoices`, and its count is re-read after every update, so a
+mono mode can say so.
+
 ## Editor to host
 
 The editor's begin/value/end calls land in `EditBridge`, which stores per
@@ -181,12 +227,16 @@ Many plugins share one host process, several of them built on this framework.
 
 ## Dependencies
 
-Pinned to commits, never branches. Three small patches to clap-wrapper, each a
+Pinned to commits, never branches. Five small patches to clap-wrapper, each a
 test so a dependency bump cannot drop one silently: keep every VST3 automation
 point in a block, not just the last (the wrapper reserves room for 8192 events
 a block; denser automation than that grows its vector on the audio thread); lower the VST3 timer floor from 30 ms
 (33 fps) to 8 ms; take the Linux self-handle with `RTLD_NOLOAD` and look up
-`clap_entry` in our own image, not the whole process. pugl and the Metal
+`clap_entry` in our own image, not the whole process; give surround and
+ambisonic ports their VST3 speaker arrangements (5.1, 7.1, 7.1.4, ACN
+orders one to three) instead of an empty one; and send the plugin's MIDI
+(controllers, pitch bend, pressure, program changes) out as VST3 MIDI CC
+output events instead of dropping it. pugl and the Metal
 backend are non-ARC; `nanovg_mtl.m` requires ARC. Vendored code builds with
 warnings off; ours builds with them on.
 

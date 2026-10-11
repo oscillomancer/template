@@ -57,18 +57,27 @@ class PreviewHost : public EditorHost {
     // editor shows -- the framework's meters and the product's own telemetry
     // -- is what the DSP makes of it: a slow bed around -20 dBFS with a
     // transient twice a second, three partials, the right channel a little
-    // quieter. An instrument plays no notes here, so its meters are
-    // synthesised from the same envelope.
+    // quieter. A sidechain hears a kick on each transient; a product that
+    // takes notes is played a C major chord, held.
     void feed(int frames) {
+        constexpr int width = product::info::kAudioOutput ? 2 : 0;
         if (!engine_) {
             engine_ = std::make_unique<Engine>();
             for (size_t i = 0; i < params::kCount; ++i) engine_->store().set(i, values_[i]);
-            engine_->activate(kRate, kPeriodMax, product::info::kInstrument ? 0 : 2, 2);
+            engine_->activate(kRate, kPeriodMax, product::info::kAudioInput ? width : 0, width);
             engine_->setMetering(true);
         }
         const int period = std::min(kPeriodMax, static_cast<int>(std::lround(kRate / kTelemetryHz)));
         std::vector<double> l(static_cast<size_t>(period)), r(static_cast<size_t>(period));
+        std::vector<double> kl(static_cast<size_t>(period)), kr(static_cast<size_t>(period));
+        std::vector<std::vector<double>> aux(static_cast<size_t>(product::info::kAuxOutputs) * 2,
+                                             std::vector<double>(static_cast<size_t>(period)));
         double* io[] = {l.data(), r.data()};
+        const double* key[] = {kl.data(), kr.data()};
+        std::vector<double*> auxChannels;
+        for (auto& c : aux) auxChannels.push_back(c.data());
+        std::vector<double* const*> auxBuses;
+        for (size_t b = 0; b < static_cast<size_t>(product::info::kAuxOutputs); ++b) auxBuses.push_back(auxChannels.data() + 2 * b);
         constexpr double kTwoPi = 6.283185307179586;
         for (int f = 0; f < frames; ++f) {
             for (int k = 0; k < period; ++k) {
@@ -78,18 +87,32 @@ class PreviewHost : public EditorHost {
                                       0.1 * std::sin(kTwoPi * 1760.0 * t));
                 l[static_cast<size_t>(k)] = x;
                 r[static_cast<size_t>(k)] = 0.84 * x;
+                const double beat = t * 2.0 - std::floor(t * 2.0);
+                kl[static_cast<size_t>(k)] = kr[static_cast<size_t>(k)] = 0.8 * std::exp(-beat * 9.0) * std::sin(kTwoPi * 55.0 * beat);
             }
             time_ += period / kRate;
-            engine_->process<double>(io, io, period);
-            TelemetryFrame frame;
-            while (engine_->telemetry().pop(frame)) {
-                if (product::info::kInstrument) {
-                    const double db = envelopeDb(time_);
-                    for (int c = 0; c < 2; ++c)
-                        frame.outputPeak[c] = static_cast<float>(std::pow(10.0, (db - 1.5 * c) / 20.0));
+            struct Chord {
+                int sent = 0;
+                bool next(EngineEvent& e) {
+                    if (sent >= 3) return false;
+                    e = EngineEvent{};
+                    e.type = EngineEvent::Type::Note;
+                    e.note.key = static_cast<int16_t>(60 + (sent == 1 ? 4 : sent == 2 ? 7 : 0));
+                    e.note.noteId = sent++;
+                    e.note.velocity = 0.8;
+                    return true;
                 }
-                ring_.push(frame);
-            }
+            } chord;
+            if (!product::info::kNoteInput || played_) chord.sent = 3;
+            played_ = true;
+            AudioBuses<double> buses;
+            buses.in = product::info::kAudioInput ? io : nullptr;
+            buses.out = width ? io : nullptr;
+            buses.sidechain = product::info::kSidechain ? key : nullptr;
+            buses.aux = auxBuses.empty() ? nullptr : auxBuses.data();
+            engine_->process(buses, period, chord);
+            TelemetryFrame frame;
+            while (engine_->telemetry().pop(frame)) ring_.push(frame);
         }
     }
 
@@ -109,6 +132,7 @@ class PreviewHost : public EditorHost {
     TelemetryRing ring_;
     std::unique_ptr<Engine> engine_;
     double time_ = 0.0;
+    bool played_ = false;
 };
 
 int paramByName(const char* name) {

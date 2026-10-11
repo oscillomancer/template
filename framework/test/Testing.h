@@ -10,6 +10,12 @@
 //   o.initial = {{kCutoff, 1000.0}};
 //   o.automation = {{4800, kCutoff, 200.0}};  // plain units, absolute frame
 //   const test::Signal out = test::render(test::sine(2, 48000, 100.0, 48000.0), o);
+//
+// Products with more than one bus or with notes use the same call:
+// `o.sidechain` feeds the sidechain, `o.aux` collects the aux outputs,
+// `o.events` delivers notes and MIDI (test::noteOn, test::midi, ...) at their
+// frames, and `o.sent` collects what the processor sent (note ends, notes,
+// MIDI). An instrument's input is ignored; a note effect renders o.frames.
 #pragma once
 
 #include <algorithm>
@@ -93,70 +99,164 @@ struct Automation {
     double plain;
 };
 
+// Any other input event (a note, MIDI, an expression) at an absolute frame.
+struct EventAt {
+    int frame;
+    EngineEvent event;
+};
+
+inline EventAt noteOn(int frame, int key, double velocity = 1.0, int noteId = -1, int channel = 0) {
+    EventAt e{frame, {}};
+    e.event.type = EngineEvent::Type::Note;
+    e.event.note.type = NoteEvent::Type::On;
+    e.event.note.key = static_cast<int16_t>(key);
+    e.event.note.channel = static_cast<int16_t>(channel);
+    e.event.note.noteId = noteId;
+    e.event.note.velocity = velocity;
+    return e;
+}
+inline EventAt noteOff(int frame, int key, int noteId = -1, int channel = 0) {
+    EventAt e = noteOn(frame, key, 0.0, noteId, channel);
+    e.event.note.type = NoteEvent::Type::Off;
+    return e;
+}
+inline EventAt midi(int frame, const MidiMessage& m) {
+    EventAt e{frame, {}};
+    e.event.type = EngineEvent::Type::Midi;
+    e.event.midi = m;
+    return e;
+}
+inline EventAt expression(int frame, NoteExpression::Type type, double value, NoteAddress address = {}) {
+    EventAt e{frame, {}};
+    e.event.type = EngineEvent::Type::Expression;
+    e.event.expression = type;
+    e.event.value = value;
+    e.event.address = address;
+    return e;
+}
+// Per-note modulation of a polyModulatable() parameter, in host units.
+inline EventAt noteModulation(int frame, uint32_t id, double amount, NoteAddress address) {
+    EventAt e{frame, {}};
+    e.event.type = EngineEvent::Type::NoteModulation;
+    e.event.index = params::indexOf(id);
+    e.event.value = amount;
+    e.event.address = address;
+    return e;
+}
+
+// What the processor sent, at an absolute frame.
+struct Sent {
+    int frame;
+    NoteOutput::Kind kind;
+    NoteEvent note;
+    MidiMessage midi;
+};
+
 struct RenderOptions {
     double sampleRate = 48000.0;
     std::vector<int> blocks = {512};               // host block sizes, cycled
     std::vector<std::pair<uint32_t, double>> initial;  // plain values before activation
     std::vector<Automation> automation;            // any order; applied at their frames
     bool metering = false;
+    Signal sidechain;                  // PRODUCT_SIDECHAIN: the key; empty leaves it unconnected
+    std::vector<Signal>* aux = nullptr;  // PRODUCT_AUX_OUTPUTS: receives each aux output
+    std::vector<EventAt> events;       // notes, MIDI, expressions; any order
+    std::vector<Sent>* sent = nullptr;   // receives what the processor sent
+    int frames = 0;                    // a note effect's length (it has no input to measure)
+    bool activate = true;              // false: carry on with an engine already active
 };
 
-// Renders an effect's input through a fresh Engine, splitting it into the
-// given host blocks and delivering automation at its exact frames. Pass an
-// Engine to inspect it afterwards (telemetry, safety resets).
+// Renders an effect's input (an instrument's or note effect's length)
+// through a fresh Engine, splitting it into the given host blocks and
+// delivering automation and events at their exact frames. Pass an Engine to
+// inspect it afterwards (telemetry, safety resets).
 inline Signal render(const Signal& input, const RenderOptions& o, Engine* engine = nullptr) {
     std::unique_ptr<Engine> owned;
     if (!engine) {
         owned = std::make_unique<Engine>();
         engine = owned.get();
     }
-    const int channels = static_cast<int>(input.size());
-    const int frames = channels ? static_cast<int>(input[0].size()) : 0;
+    const int channels = product::info::kAudioOutput ? static_cast<int>(input.size()) : 0;
+    const int frames = !input.empty() && !input[0].empty() ? static_cast<int>(input[0].size()) : o.frames;
     const int maxBlock = *std::max_element(o.blocks.begin(), o.blocks.end());
-    for (const auto& [id, plain] : o.initial) {
-        const int i = params::indexOf(id);
-        if (i >= 0) engine->store().set(static_cast<size_t>(i), toHost(params::at(static_cast<size_t>(i)), plain));
+    if (o.activate) {
+        for (const auto& [id, plain] : o.initial) {
+            const int i = params::indexOf(id);
+            if (i >= 0) engine->store().set(static_cast<size_t>(i), toHost(params::at(static_cast<size_t>(i)), plain));
+        }
+        engine->activate(o.sampleRate, maxBlock, product::info::kAudioInput ? channels : 0, channels);
     }
-    engine->activate(o.sampleRate, maxBlock, channels, channels);
     engine->setMetering(o.metering);
 
-    std::vector<Automation> automation = o.automation;
-    std::stable_sort(automation.begin(), automation.end(),
-                     [](const Automation& a, const Automation& b) { return a.frame < b.frame; });
+    // Automation and events in one list, in time order; at one frame, the
+    // order given.
+    std::vector<EventAt> timeline;
+    for (const Automation& a : o.automation) {
+        const int i = params::indexOf(a.id);
+        EventAt e{a.frame, {}};
+        e.event.type = EngineEvent::Type::Value;
+        e.event.index = i;
+        e.event.value = i >= 0 ? toHost(params::at(static_cast<size_t>(i)), a.plain) : 0.0;
+        timeline.push_back(e);
+    }
+    timeline.insert(timeline.end(), o.events.begin(), o.events.end());
+    std::stable_sort(timeline.begin(), timeline.end(), [](const EventAt& a, const EventAt& b) { return a.frame < b.frame; });
 
-    struct Events {
-        const std::vector<Automation>* list;
+    struct Source {
+        const std::vector<EventAt>* list;
         size_t next;
         int start, end;
         bool next_(EngineEvent& e) {
             if (next >= list->size() || (*list)[next].frame >= end) return false;
-            const Automation& a = (*list)[next++];
-            const int i = params::indexOf(a.id);
-            e = EngineEvent{};
-            e.type = EngineEvent::Type::Value;
+            const EventAt& a = (*list)[next++];
+            e = a.event;
             e.time = static_cast<uint32_t>(std::max(0, a.frame - start));
-            e.index = i;
-            e.value = i >= 0 ? toHost(params::at(static_cast<size_t>(i)), a.plain) : 0.0;
             return true;
         }
     };
-    struct Source {
-        Events* e;
-        bool next(EngineEvent& out) { return e->next_(out); }
+    struct Events {
+        Source* s;
+        bool next(EngineEvent& out) { return s->next_(out); }
     };
 
-    Signal out = input;
+    Signal out = product::info::kAudioOutput ? input : Signal{};
+    if (product::info::kInstrument)
+        for (auto& c : out) std::fill(c.begin(), c.end(), 0.0);
+    const int auxBuses = product::info::kAuxOutputs;
+    std::vector<Signal> aux(static_cast<size_t>(auxBuses), silence(channels, frames));
+    const bool sidechain = product::info::kSidechain && !o.sidechain.empty();
     std::vector<double*> pointers(static_cast<size_t>(channels));
-    Events events{&automation, 0, 0, 0};
+    std::vector<const double*> keys(static_cast<size_t>(channels));
+    std::vector<std::vector<double*>> auxChannels(static_cast<size_t>(auxBuses), std::vector<double*>(static_cast<size_t>(channels)));
+    std::vector<double* const*> auxBusPointers(static_cast<size_t>(auxBuses));
+    if (o.sent) o.sent->clear();
+    Source source{&timeline, 0, 0, 0};
     for (int frame = 0, b = 0; frame < frames; ++b) {
         const int n = std::min(o.blocks[static_cast<size_t>(b) % o.blocks.size()], frames - frame);
-        for (int c = 0; c < channels; ++c) pointers[static_cast<size_t>(c)] = out[static_cast<size_t>(c)].data() + frame;
-        events.start = frame;
-        events.end = frame + n;
-        Source source{&events};
-        engine->process<double>(pointers.data(), pointers.data(), n, source, nullptr);
+        for (int c = 0; c < channels; ++c) {
+            pointers[static_cast<size_t>(c)] = out[static_cast<size_t>(c)].data() + frame;
+            if (sidechain) keys[static_cast<size_t>(c)] = o.sidechain[static_cast<size_t>(c) % o.sidechain.size()].data() + frame;
+            for (int k = 0; k < auxBuses; ++k)
+                auxChannels[static_cast<size_t>(k)][static_cast<size_t>(c)] = aux[static_cast<size_t>(k)][static_cast<size_t>(c)].data() + frame;
+        }
+        for (int k = 0; k < auxBuses; ++k) auxBusPointers[static_cast<size_t>(k)] = auxChannels[static_cast<size_t>(k)].data();
+        AudioBuses<double> io;
+        io.in = product::info::kAudioInput ? pointers.data() : nullptr;
+        io.out = channels ? pointers.data() : nullptr;
+        io.sidechain = sidechain ? keys.data() : nullptr;
+        io.aux = auxBuses ? auxBusPointers.data() : nullptr;
+        source.start = frame;
+        source.end = frame + n;
+        Events events{&source};
+        engine->process(io, n, events, nullptr);
+        if (o.sent) {
+            const NoteOutput& sent = engine->noteOutput();
+            for (int k = 0; k < sent.count(); ++k)
+                o.sent->push_back({frame + static_cast<int>(sent[k].time), sent[k].kind, sent[k].note, sent[k].midi});
+        }
         frame += n;
     }
+    if (o.aux) *o.aux = std::move(aux);
     return out;
 }
 

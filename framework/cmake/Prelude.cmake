@@ -3,7 +3,7 @@
 # enabled.
 
 foreach(var PRODUCT_NAME PRODUCT_ID PRODUCT_VERSION PRODUCT_DESCRIPTION PRODUCT_VENDOR PRODUCT_KIND
-        PRODUCT_CHANNELS PRODUCT_AU_MANUFACTURER PRODUCT_AU_SUBTYPE PRODUCT_STATE_TAG)
+        PRODUCT_AU_MANUFACTURER PRODUCT_AU_SUBTYPE PRODUCT_STATE_TAG)
     if (NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "product/product.cmake must set ${var}")
     endif()
@@ -12,8 +12,11 @@ endforeach()
 if (NOT PRODUCT_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
     message(FATAL_ERROR "PRODUCT_VERSION must be MAJOR.MINOR.PATCH, not '${PRODUCT_VERSION}'")
 endif()
-if (NOT PRODUCT_KIND MATCHES "^(effect|instrument)$")
-    message(FATAL_ERROR "PRODUCT_KIND must be 'effect' or 'instrument', not '${PRODUCT_KIND}'")
+if (NOT PRODUCT_KIND MATCHES "^(effect|instrument|note-effect)$")
+    message(FATAL_ERROR "PRODUCT_KIND must be 'effect', 'instrument' or 'note-effect', not '${PRODUCT_KIND}'")
+endif()
+if (NOT PRODUCT_KIND STREQUAL "note-effect" AND "${PRODUCT_CHANNELS}" STREQUAL "")
+    message(FATAL_ERROR "product/product.cmake must set PRODUCT_CHANNELS")
 endif()
 if (NOT PRODUCT_ID MATCHES "^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$")
     message(FATAL_ERROR "PRODUCT_ID must be reverse-DNS, e.g. com.suppleaudio.product")
@@ -24,11 +27,8 @@ foreach(code PRODUCT_AU_MANUFACTURER PRODUCT_AU_SUBTYPE PRODUCT_STATE_TAG)
         message(FATAL_ERROR "${code} must be exactly four printable ASCII characters, not '${${code}}'")
     endif()
 endforeach()
-foreach(channels ${PRODUCT_CHANNELS})
-    if (NOT channels MATCHES "^[1-8]$")
-        message(FATAL_ERROR "PRODUCT_CHANNELS entries must be bus widths from 1 to 8")
-    endif()
-endforeach()
+# PRODUCT_CHANNELS and the capability switches are checked by
+# cmake/Capabilities.cmake.
 
 # The lowercase identifier form of the name: CMake project, Objective-C class
 # prefix, install paths. Derived unless the product sets it.

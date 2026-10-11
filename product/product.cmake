@@ -14,12 +14,23 @@ set(PRODUCT_URL         "")
 set(PRODUCT_COPYRIGHT   "Copyright (c) 2026 Supple Audio")
 
 # effect: one main input and output bus of equal width.
-# instrument: note input, one main output, no audio input.
+# instrument: notes and MIDI in, one main output, no audio input.
+# note-effect: notes and MIDI in and out, no audio (examples/chord).
 set(PRODUCT_KIND        "effect")
 
-# Main bus widths offered to the host, the first being the default. Effects
-# run in == out; an instrument uses these as its output width.
+# Main bus layouts offered to the host, the first being the default: 1 and 2
+# for mono and stereo, 5.1 7.1 7.1.4 for surround, ambi1 to ambi3 for
+# ambisonics, or a plain channel count. Effects run in == out; an instrument
+# uses these as its output layout.
 set(PRODUCT_CHANNELS    2 1)
+
+# Capabilities, each off until switched on (framework/cmake/Capabilities.cmake;
+# the examples show each one working):
+#   set(PRODUCT_SIDECHAIN ON)                    a sidechain input (examples/duck)
+#   set(PRODUCT_AUX_OUTPUTS "Kick" "Snare")      extra outputs, named (examples/duck)
+#   set(PRODUCT_NOTE_INPUT ON)                   an effect that also takes notes and MIDI
+#   set(PRODUCT_NOTE_OUTPUT ON)                  sends notes and MIDI (examples/chord)
+#   set(PRODUCT_NOTE_EXPRESSIONS tuning volume)  per-note expressions used (examples/instrument)
 
 # CLAP features after the main category (audio-effect or instrument, which is
 # implied by PRODUCT_KIND). clap-wrapper maps them onto VST3 subcategories.

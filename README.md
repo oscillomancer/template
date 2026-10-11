@@ -16,7 +16,7 @@ entry, menus, HiDPI and resizing are the framework's.
 
 ```sh
 cmake -DNAME="Name" -DID=com.suppleaudio.name -DCODE=NmXx -DDEST=../name \
-      -P framework/tools/new_product.cmake            # or start from an example: -DEXAMPLE=instrument
+      -P framework/tools/new_product.cmake            # or start from an example: -DEXAMPLE=duck
 cd ../name && git init
 cmake --preset release && cmake --build --preset release && ctest --preset release
 ```
@@ -27,7 +27,7 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 
 ```
 product/
-  product.cmake   identity, kind, bus widths, sources
+  product.cmake   identity, kind, layouts, capabilities, sources
   Params.h        every parameter: one row each
   Processor.h     the DSP
   Editor.cpp      layout and the product's own drawing
@@ -48,8 +48,14 @@ beside `framework/`, not in it, so products do not carry them.
 
 | Example | What it shows |
 | --- | --- |
-| `instrument` (Tone) | Notes at their exact sample, voices, note ends for the host |
+| `instrument` (Tone) | Notes at their exact sample, voices and voice info, note ends for the host, pitch bend and the mod wheel, tuning and volume note expressions, per-note modulation of a parameter |
 | `pulse` (Pulse) | A tempo-synced rate, framework-smoothed parameters, a level off at its minimum (-inf dB), an output parameter the host displays |
+| `duck` (Duck) | A sidechain input, a named aux output, surround (5.1, 7.1.4) and ambisonic layouts |
+| `chord` (Chord) | A note effect: notes and MIDI in and out, no audio, notes sent at exact frames |
+
+Bigger capabilities are switched on in `product.cmake` (`PRODUCT_SIDECHAIN ON`,
+`PRODUCT_AUX_OUTPUTS "Kick" "Snare"`, `PRODUCT_NOTE_OUTPUT ON`, ...); a product
+that switches nothing on is a plain effect or instrument.
 
 ## Read next
 

@@ -133,16 +133,31 @@ struct OutEvents {
     int depth[params::kCount] = {};
     double lastValue[params::kCount] = {};
     bool sawValue[params::kCount] = {};
-    std::vector<clap_event_note_t> noteEnds;
-    bool nested = false, strayEnd = false, unknownParam = false;
+    std::vector<clap_event_note_t> noteEnds, notes;
+    std::vector<clap_event_midi_t> midi;
+    bool nested = false, strayEnd = false, unknownParam = false, outOfOrder = false;
+    uint32_t lastTime = 0;  // within the current block; newBlock() resets it
     double refuse = 0.0;
     std::mt19937 rng{3};
     clap_output_events_t list{this, [](const clap_output_events_t* l, const clap_event_header_t* h) {
                                   return static_cast<OutEvents*>(l->ctx)->push(h);
                               }};
-    OutEvents() { noteEnds.reserve(4096); }
+    OutEvents() {
+        noteEnds.reserve(4096);
+        notes.reserve(4096);
+        midi.reserve(4096);
+    }
+    void newBlock() { lastTime = 0; }
+    // For a flush: a list of its own, in time order from 0.
+    const clap_output_events_t* fresh() {
+        newBlock();
+        return &list;
+    }
     bool push(const clap_event_header_t* h) {
         if (refuse > 0.0 && std::uniform_real_distribution<double>(0, 1)(rng) < refuse) return false;
+        // A host's list must arrive in time order.
+        outOfOrder |= h->time < lastTime;
+        lastTime = h->time;
         if (h->type == CLAP_EVENT_PARAM_GESTURE_BEGIN || h->type == CLAP_EVENT_PARAM_GESTURE_END) {
             const auto* g = reinterpret_cast<const clap_event_param_gesture_t*>(h);
             const int i = params::indexOf(g->param_id);
@@ -160,35 +175,72 @@ struct OutEvents {
         } else if (h->type == CLAP_EVENT_NOTE_END) {
             if (noteEnds.size() < noteEnds.capacity())
                 noteEnds.push_back(*reinterpret_cast<const clap_event_note_t*>(h));
+        } else if (h->type == CLAP_EVENT_NOTE_ON || h->type == CLAP_EVENT_NOTE_OFF || h->type == CLAP_EVENT_NOTE_CHOKE) {
+            if (notes.size() < notes.capacity()) notes.push_back(*reinterpret_cast<const clap_event_note_t*>(h));
+        } else if (h->type == CLAP_EVENT_MIDI) {
+            if (midi.size() < midi.capacity()) midi.push_back(*reinterpret_cast<const clap_event_midi_t*>(h));
         }
         return true;
     }
     bool balanced() const {
         for (int d : depth)
             if (d != 0) return false;
-        return !nested && !strayEnd && !unknownParam;
+        return !nested && !strayEnd && !unknownParam && !outOfOrder;
     }
 };
 
+// Every bus the product declares: the main bus in place (as most hosts run
+// an effect), the sidechain and each aux output in storage of their own.
 struct Audio {
     int channels;
-    std::vector<std::vector<float>> data;
-    std::vector<float*> pointers;
-    clap_audio_buffer_t in{}, out{};
+    std::vector<std::vector<float>> data;                   // the main bus
+    std::vector<std::vector<float>> sidechain;              // PRODUCT_SIDECHAIN
+    std::vector<std::vector<std::vector<float>>> aux;       // PRODUCT_AUX_OUTPUTS
+    std::vector<float*> pointers, sidechainPointers;
+    std::vector<std::vector<float*>> auxPointers;
+    std::vector<clap_audio_buffer_t> ins, outs;
     clap_process_t process{};
-    explicit Audio(int ch, uint32_t frames = 256) : channels(ch), data(static_cast<size_t>(ch), std::vector<float>(frames)) {
+    explicit Audio(int ch, uint32_t frames = 256)
+        : channels(ch), data(static_cast<size_t>(ch), std::vector<float>(frames)) {
+        const auto width = static_cast<uint32_t>(ch);
         for (auto& d : data) pointers.push_back(d.data());
-        in.data32 = out.data32 = pointers.data();
-        in.channel_count = out.channel_count = static_cast<uint32_t>(ch);
+        auto bus = [&](float** p) {
+            clap_audio_buffer_t b{};
+            b.data32 = p;
+            b.channel_count = width;
+            return b;
+        };
+        if (product::info::kSidechain) {
+            sidechain.assign(static_cast<size_t>(ch), std::vector<float>(frames));
+            for (auto& d : sidechain) sidechainPointers.push_back(d.data());
+        }
+        aux.assign(static_cast<size_t>(product::info::kAuxOutputs),
+                   std::vector<std::vector<float>>(static_cast<size_t>(ch), std::vector<float>(frames)));
+        for (auto& b : aux) {
+            auxPointers.emplace_back();
+            for (auto& d : b) auxPointers.back().push_back(d.data());
+        }
+        if (product::info::kAudioInput) ins.push_back(bus(pointers.data()));
+        if (product::info::kSidechain) ins.push_back(bus(sidechainPointers.data()));
+        if (product::info::kAudioOutput) outs.push_back(bus(pointers.data()));
+        for (auto& p : auxPointers) outs.push_back(bus(p.data()));
         process.frames_count = frames;
-        process.audio_inputs = product::info::kInstrument ? nullptr : &in;
-        process.audio_inputs_count = product::info::kInstrument ? 0 : 1;
-        process.audio_outputs = &out;
-        process.audio_outputs_count = 1;
+        connect(true, true);
     }
-    clap_process_status run(const clap_plugin_t* p, const clap_input_events_t* events, const clap_output_events_t* output) {
+    // A host that leaves the sidechain or the aux outputs unconnected
+    // passes fewer buffers.
+    void connect(bool sidechainToo, bool auxToo) {
+        const uint32_t mainIn = product::info::kAudioInput ? 1 : 0, mainOut = product::info::kAudioOutput ? 1 : 0;
+        process.audio_inputs = ins.empty() ? nullptr : ins.data();
+        process.audio_inputs_count = sidechainToo ? static_cast<uint32_t>(ins.size()) : mainIn;
+        process.audio_outputs = outs.empty() ? nullptr : outs.data();
+        process.audio_outputs_count = auxToo ? static_cast<uint32_t>(outs.size()) : mainOut;
+    }
+    clap_audio_buffer_t* mainOut() { return product::info::kAudioOutput ? &outs[0] : nullptr; }
+    clap_process_status run(const clap_plugin_t* p, const clap_input_events_t* events, OutEvents* output) {
         process.in_events = events;
-        process.out_events = output;
+        process.out_events = output ? &output->list : nullptr;
+        if (output) output->newBlock();
         return p->process(p, &process);
     }
 };
@@ -266,8 +318,9 @@ TEST(the_descriptor_is_the_product_identity) {
     CHECK(!std::strcmp(d->version, product::info::kVersion));
     CHECK(!std::strcmp(d->vendor, product::info::kVendor));
     CHECK(d->features && d->features[0] &&
-          !std::strcmp(d->features[0], product::info::kInstrument ? CLAP_PLUGIN_FEATURE_INSTRUMENT
-                                                                   : CLAP_PLUGIN_FEATURE_AUDIO_EFFECT));
+          !std::strcmp(d->features[0], product::info::kInstrument    ? CLAP_PLUGIN_FEATURE_INSTRUMENT
+                                       : product::info::kNoteEffect ? CLAP_PLUGIN_FEATURE_NOTE_EFFECT
+                                                                    : CLAP_PLUGIN_FEATURE_AUDIO_EFFECT));
     Host host;
     CHECK(factory()->create_plugin(factory(), &host.clap, "com.example.not-this") == nullptr);
 }
@@ -309,7 +362,7 @@ TEST(state_restores_every_value_and_resaves_identically) {
             events.add(0, params::at(k).id, fromNormalized(params::at(k), 0.63));
         }
         OutEvents out;
-        audio.run(a.plugin, &events.list, &out.list);
+        audio.run(a.plugin, &events.list, &out);
         saved = saveState(a);
     }
     Instance b;
@@ -333,24 +386,68 @@ TEST(every_declared_layout_activates_and_processes) {
         auto* configs = static_cast<const clap_plugin_audio_ports_config_t*>(
             i.plugin->get_extension(i.plugin, CLAP_EXT_AUDIO_PORTS_CONFIG));
         auto* ports = static_cast<const clap_plugin_audio_ports_t*>(i.plugin->get_extension(i.plugin, CLAP_EXT_AUDIO_PORTS));
-        CHECK(configs && ports);
-        CHECK(configs->select(i.plugin, static_cast<clap_id>(channels)));
-        clap_audio_port_info_t out{};
-        CHECK(ports->get(i.plugin, 0, false, &out) && out.channel_count == static_cast<uint32_t>(channels));
+        CHECK(ports != nullptr);
+        if (product::info::kAudioOutput) {
+            CHECK(configs && configs->select(i.plugin, static_cast<clap_id>(channels)));
+            // Every port takes the layout's width.
+            for (int dir = 0; dir < 2; ++dir)
+                for (uint32_t k = 0; k < ports->count(i.plugin, dir == 0); ++k) {
+                    clap_audio_port_info_t info{};
+                    CHECK(ports->get(i.plugin, k, dir == 0, &info) && info.channel_count == static_cast<uint32_t>(channels));
+                }
+        } else {
+            CHECK(configs == nullptr && ports->count(i.plugin, true) == 0 && ports->count(i.plugin, false) == 0);
+        }
         i.activate();
-        CHECK(!configs->select(i.plugin, static_cast<clap_id>(channels)));  // not while active
+        if (configs) CHECK(!configs->select(i.plugin, static_cast<clap_id>(channels)));  // not while active
         Audio audio(channels);
         OutEvents events;
-        CHECK(audio.run(i.plugin, noEvents(), &events.list) == CLAP_PROCESS_CONTINUE);
+        CHECK(audio.run(i.plugin, noEvents(), &events) == CLAP_PROCESS_CONTINUE);
+        // A host that connects nothing to the sidechain or aux outputs.
+        audio.connect(false, false);
+        CHECK(audio.run(i.plugin, noEvents(), &events) == CLAP_PROCESS_CONTINUE);
         if (channels > 1) {
             Audio narrow(channels - 1);  // the host breaking its own contract
-            CHECK(narrow.run(i.plugin, noEvents(), &events.list) == CLAP_PROCESS_ERROR);
+            CHECK(narrow.run(i.plugin, noEvents(), &events) == CLAP_PROCESS_ERROR);
         }
     }
 }
 
+TEST(a_host_negotiates_layouts_port_by_port) {
+    if (!product::info::kAudioOutput) return;
+    Instance i;
+    auto* configurable = static_cast<const clap_plugin_configurable_audio_ports_t*>(
+        i.plugin->get_extension(i.plugin, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS));
+    auto* ports = static_cast<const clap_plugin_audio_ports_t*>(i.plugin->get_extension(i.plugin, CLAP_EXT_AUDIO_PORTS));
+    CHECK(configurable && ports);
+    if (!configurable || !ports) return;
+    auto requests = [&](uint32_t width, uint32_t odd = 0) {
+        std::vector<clap_audio_port_configuration_request_t> r;
+        for (int dir = 0; dir < 2; ++dir)
+            for (uint32_t k = 0; k < ports->count(i.plugin, dir == 0); ++k)
+                r.push_back({dir == 0, k, r.empty() ? width : width + odd, nullptr, nullptr});
+        return r;
+    };
+    for (int channels : product::info::kChannelLayouts) {
+        const auto r = requests(static_cast<uint32_t>(channels));
+        CHECK(configurable->can_apply_configuration(i.plugin, r.data(), static_cast<uint32_t>(r.size())));
+        CHECK(configurable->apply_configuration(i.plugin, r.data(), static_cast<uint32_t>(r.size())));
+        clap_audio_port_info_t out{};
+        CHECK(ports->get(i.plugin, 0, false, &out) && out.channel_count == static_cast<uint32_t>(channels));
+        if (r.size() > 1) {  // ports may not disagree
+            const auto mixed = requests(static_cast<uint32_t>(channels), 1);
+            CHECK(!configurable->apply_configuration(i.plugin, mixed.data(), static_cast<uint32_t>(mixed.size())));
+        }
+    }
+    const auto undeclared = requests(65);
+    CHECK(!configurable->apply_configuration(i.plugin, undeclared.data(), static_cast<uint32_t>(undeclared.size())));
+    i.activate();
+    const auto first = requests(static_cast<uint32_t>(product::info::kChannelLayouts[0]));
+    CHECK(!configurable->apply_configuration(i.plugin, first.data(), static_cast<uint32_t>(first.size())));
+}
+
 TEST(host_bypass_passes_the_input_through_exactly) {
-    if (params::kBypassIndex < 0 || product::info::kInstrument) return;
+    if (params::kBypassIndex < 0 || !product::info::kAudioInput) return;
     Instance i;
     i.activate(48000.0, 256);
     Audio audio(i.channels());
@@ -369,13 +466,19 @@ TEST(host_bypass_passes_the_input_through_exactly) {
         for (auto& x : fresh) x = d(rng);
         input.insert(input.end(), fresh.begin(), fresh.end());
         for (int c = 0; c < audio.channels; ++c) audio.data[static_cast<size_t>(c)] = fresh;
-        audio.run(i.plugin, block == 0 ? &on.list : noEvents(), &out.list);
-        if (block >= 4)  // past the 10 ms crossfade
+        for (auto& c : audio.sidechain) c = fresh;  // a key that would otherwise act
+        audio.run(i.plugin, block == 0 ? &on.list : noEvents(), &out);
+        if (block >= 4) {  // past the 10 ms crossfade
             for (int k = 0; k < 256; ++k) {
                 const int t = block * 256 + k - latency;
                 worst = std::max(worst, std::fabs(static_cast<double>(audio.data[0][static_cast<size_t>(k)]) -
                                                   (t >= 0 ? input[static_cast<size_t>(t)] : 0.0)));
             }
+            // Aux outputs have no dry signal: bypassed, they are silent.
+            for (const auto& bus : audio.aux)
+                for (const auto& c : bus)
+                    for (float x : c) worst = std::max(worst, static_cast<double>(std::fabs(x)));
+        }
     }
     CHECK(worst == 0.0);
 }
@@ -400,7 +503,7 @@ TEST(editor_edits_reach_a_stopped_host_through_flush) {
         editor->setValue(id, v);
         last[k] = sanitizeHost(params::at(k), v);
         if (rng() % 2) editor->endEdit(id);
-        if (rng() % 3 == 0) i.params->flush(i.plugin, noEvents(), &out.list);
+        if (rng() % 3 == 0) i.params->flush(i.plugin, noEvents(), out.fresh());
         if (rng() % 5 == 0) editor->endEdit(id);
         i.pumpMain();
     }
@@ -408,7 +511,7 @@ TEST(editor_edits_reach_a_stopped_host_through_flush) {
     out.refuse = 0.0;
     for (int n = 0; n < 4; ++n) {
         i.pumpMain();
-        i.params->flush(i.plugin, noEvents(), &out.list);
+        i.params->flush(i.plugin, noEvents(), out.fresh());
     }
     CHECK(out.balanced());
     for (size_t k = 0; k < params::kCount; ++k) {
@@ -433,10 +536,10 @@ TEST(editor_edits_and_state_loads_during_playback_are_race_free) {
         while (run.load()) {
             for (auto& ch : buffers.data)
                 for (auto& x : ch) x = 0.25f;
-            buffers.run(i.plugin, noEvents(), &out.list);
+            buffers.run(i.plugin, noEvents(), &out);
         }
         out.refuse = 0.0;
-        for (int n = 0; n < 4; ++n) buffers.run(i.plugin, noEvents(), &out.list);
+        for (int n = 0; n < 4; ++n) buffers.run(i.plugin, noEvents(), &out);
     });
     std::mt19937 rng(17);
     for (int step = 0; step < 20000; ++step) {
@@ -466,11 +569,11 @@ TEST(telemetry_flows_only_while_metering) {
     i.activate(48000.0, 480);
     Audio audio(i.channels(), 480);
     OutEvents out;
-    for (int b = 0; b < 100; ++b) audio.run(i.plugin, noEvents(), &out.list);  // one second, editor closed
+    for (int b = 0; b < 100; ++b) audio.run(i.plugin, noEvents(), &out);  // one second, editor closed
     TelemetryFrame f;
     CHECK(!editor->popTelemetry(f));
     supple_test_set_metering(i.plugin, true);
-    for (int b = 0; b < 100; ++b) audio.run(i.plugin, noEvents(), &out.list);
+    for (int b = 0; b < 100; ++b) audio.run(i.plugin, noEvents(), &out);
     int frames = 0;
     while (editor->popTelemetry(f)) ++frames;
     CHECK_MSG(std::abs(frames - static_cast<int>(kTelemetryHz)) <= 1, "%d frames in one second", frames);
@@ -503,7 +606,7 @@ TEST(output_parameters_reach_the_host_and_stay_out_of_state) {
                 audio.data[static_cast<size_t>(c)][static_cast<size_t>(f)] =
                     0.25f * static_cast<float>(std::sin(0.031 * (b * 480 + f) + c));
         OutEvents block;
-        audio.run(i.plugin, b == 0 ? &attempt.list : noEvents(), &block.list);
+        audio.run(i.plugin, b == 0 ? &attempt.list : noEvents(), &block);
         for (size_t n = 0; n < params::kOutputCount; ++n) {
             const size_t k = params::kOutputIndices[n];
             if (!block.sawValue[k]) continue;
@@ -548,7 +651,7 @@ TEST(a_restart_parameter_asks_once_from_the_main_thread) {
         InEvents change;
         change.add(0, p.id, fromNormalized(p, n % 2 ? 0.0 : 1.0));
         const int before = i.host.restarts;
-        audio.run(i.plugin, &change.list, &out.list);
+        audio.run(i.plugin, &change.list, &out);
         CHECK(i.host.restarts == before);  // never from the audio thread
         i.pumpMain();
     }
@@ -558,7 +661,7 @@ TEST(a_restart_parameter_asks_once_from_the_main_thread) {
     i.activate();
     InEvents again;
     again.add(0, p.id, fromNormalized(p, 0.0));  // the loop left it at the top
-    audio.run(i.plugin, &again.list, &out.list);
+    audio.run(i.plugin, &again.list, &out);
     i.pumpMain();
     CHECK(i.host.restarts == 2);  // a fresh activation may ask again
 }
@@ -568,10 +671,11 @@ TEST(the_output_constant_hint_is_cleared) {
     // whose bit is still set.
     Instance i;
     i.activate();
+    if (!product::info::kAudioOutput) return;
     Audio a(i.channels());
-    a.out.constant_mask = ~0ull;
+    for (auto& o : a.outs) o.constant_mask = ~0ull;
     CHECK(a.run(i.plugin, noEvents(), nullptr) == CLAP_PROCESS_CONTINUE);
-    CHECK(a.out.constant_mask == 0);
+    for (const auto& o : a.outs) CHECK(o.constant_mask == 0);
 }
 
 TEST(a_tail_that_changes_while_active_is_announced) {
@@ -586,13 +690,13 @@ TEST(a_tail_that_changes_while_active_is_announced) {
         if (!params::at(k).is(pflag::kBypass)) in.add(0, params::at(k).id, fromNormalized(params::at(k), 0.9));
     Audio a(i.channels());
     OutEvents out;
-    a.run(i.plugin, &in.list, &out.list);
+    a.run(i.plugin, &in.list, &out);
     if (tail->get(i.plugin) == before) return;  // this product's tail is fixed
     CHECK(i.host.tailChanges.load() >= 1);
 }
 
-TEST(an_instrument_ends_every_note_it_was_given) {
-    if (!product::info::kInstrument) return;
+TEST(a_product_with_note_input_ends_every_note_it_was_given) {
+    if (!product::info::kNoteInput) return;
     Instance i;
     i.activate();
     Audio a(i.channels());
@@ -600,12 +704,12 @@ TEST(an_instrument_ends_every_note_it_was_given) {
     NoteList start;
     start.add(CLAP_EVENT_NOTE_ON, 10, 60, 3, 77);
     start.add(CLAP_EVENT_NOTE_ON, 20, 64, 0, 78);
-    a.run(i.plugin, &start.list, &out.list);
+    a.run(i.plugin, &start.list, &out);
     NoteList stop;
     stop.add(CLAP_EVENT_NOTE_OFF, 0, 60, 3, 77);
     stop.add(CLAP_EVENT_NOTE_CHOKE, 5, -1, -1, 78);
-    a.run(i.plugin, &stop.list, &out.list);
-    for (int k = 0; k < 2000 && out.noteEnds.size() < 2; ++k) a.run(i.plugin, noEvents(), &out.list);
+    a.run(i.plugin, &stop.list, &out);
+    for (int k = 0; k < 2000 && out.noteEnds.size() < 2; ++k) a.run(i.plugin, noEvents(), &out);
     CHECK_MSG(out.noteEnds.size() == 2, "%zu NOTE_END events", out.noteEnds.size());
     bool saw77 = false, saw78 = false;
     for (const auto& e : out.noteEnds) {
@@ -613,6 +717,125 @@ TEST(an_instrument_ends_every_note_it_was_given) {
         saw78 |= e.note_id == 78 && e.key == 64 && e.channel == 0;
     }
     CHECK(saw77 && saw78);
+}
+
+// --- notes ------------------------------------------------------------------------------------
+
+TEST(note_ports_are_as_declared) {
+    Instance i;
+    const auto* notes = static_cast<const clap_plugin_note_ports_t*>(i.plugin->get_extension(i.plugin, CLAP_EXT_NOTE_PORTS));
+    CHECK((notes != nullptr) == (product::info::kNoteInput || product::info::kNoteOutput));
+    if (!notes) return;
+    CHECK(notes->count(i.plugin, true) == (product::info::kNoteInput ? 1u : 0u));
+    CHECK(notes->count(i.plugin, false) == (product::info::kNoteOutput ? 1u : 0u));
+    for (int dir = 0; dir < 2; ++dir)
+        for (uint32_t k = 0; k < notes->count(i.plugin, dir == 0); ++k) {
+            clap_note_port_info_t info{};
+            CHECK(notes->get(i.plugin, k, dir == 0, &info));
+            CHECK((info.supported_dialects & CLAP_NOTE_DIALECT_CLAP) && (info.supported_dialects & CLAP_NOTE_DIALECT_MIDI));
+        }
+}
+
+namespace {
+
+// Every kind of note-port event a host sends, mixed, at rising frames.
+struct MixedEvents {
+    std::vector<std::vector<uint8_t>> storage;
+    std::vector<const clap_event_header_t*> list;
+    clap_input_events_t events{this, [](const clap_input_events_t* l) {
+                                    return static_cast<uint32_t>(static_cast<const MixedEvents*>(l->ctx)->list.size());
+                                },
+                                [](const clap_input_events_t* l, uint32_t k) {
+                                    return static_cast<const MixedEvents*>(l->ctx)->list[k];
+                                }};
+    template <class E>
+    E& add(uint16_t type, uint32_t time) {
+        storage.emplace_back(sizeof(E), uint8_t{0});
+        auto* e = reinterpret_cast<E*>(storage.back().data());
+        e->header.size = sizeof(E);
+        e->header.time = time;
+        e->header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        e->header.type = type;
+        return *e;
+    }
+    void finish() {
+        list.clear();
+        for (auto& b : storage) list.push_back(reinterpret_cast<const clap_event_header_t*>(b.data()));
+    }
+};
+
+}  // namespace
+
+TEST(midi_expressions_and_note_modulation_are_taken_in_any_mix) {
+    if (!product::info::kNoteInput) {
+        std::printf("      (no note input in this product)\n");
+        return;
+    }
+    Instance i;
+    i.activate(48000.0, 256);
+    Audio a(i.channels());
+    OutEvents out;
+    for (int block = 0; block < 200; ++block) {
+        MixedEvents m;
+        const int16_t key = static_cast<int16_t>(48 + block % 24);
+        auto& on = m.add<clap_event_note_t>(CLAP_EVENT_NOTE_ON, 3);
+        on.note_id = block;
+        on.port_index = 0;
+        on.channel = static_cast<int16_t>(block % 16);
+        on.key = key;
+        on.velocity = 0.7;
+        auto& cc = m.add<clap_event_midi_t>(CLAP_EVENT_MIDI, 10);
+        cc.data[0] = static_cast<uint8_t>(0xB0 | (block % 16));
+        cc.data[1] = 1;
+        cc.data[2] = static_cast<uint8_t>(block % 128);
+        auto& bend = m.add<clap_event_midi_t>(CLAP_EVENT_MIDI, 20);
+        bend.data[0] = static_cast<uint8_t>(0xE0 | (block % 16));
+        bend.data[1] = 0;
+        bend.data[2] = static_cast<uint8_t>((block * 7) % 128);
+        auto& x = m.add<clap_event_note_expression_t>(CLAP_EVENT_NOTE_EXPRESSION, 30);
+        x.expression_id = block % 7;
+        x.note_id = block;
+        x.port_index = 0;
+        x.channel = static_cast<int16_t>(block % 16);
+        x.key = key;
+        x.value = (block % 7) == CLAP_NOTE_EXPRESSION_TUNING ? 1.5 : 0.6;
+        for (size_t k = 0; k < params::kCount; ++k) {
+            if (!params::at(k).is(pflag::kPolyMod)) continue;
+            auto& mod = m.add<clap_event_param_mod_t>(CLAP_EVENT_PARAM_MOD, 40);
+            mod.param_id = params::at(k).id;
+            mod.note_id = block;
+            mod.port_index = -1;
+            mod.channel = -1;
+            mod.key = -1;
+            mod.amount = 0.25 * (params::at(k).hostMax() - params::at(k).hostMin());
+        }
+        if (block > 4) {
+            auto& off = m.add<clap_event_note_t>(CLAP_EVENT_NOTE_OFF, 200);
+            off.note_id = block - 4;
+            off.port_index = 0;
+            off.channel = static_cast<int16_t>((block - 4) % 16);
+            off.key = static_cast<int16_t>(48 + (block - 4) % 24);
+        }
+        m.finish();
+        CHECK(a.run(i.plugin, &m.events, &out) == CLAP_PROCESS_CONTINUE);
+    }
+    for (const auto& c : a.data)
+        for (float v : c) CHECK(std::isfinite(v));
+    CHECK(!out.outOfOrder);
+}
+
+TEST(voice_info_reports_the_processors_voices) {
+    Instance i;
+    const auto* voices = static_cast<const clap_plugin_voice_info_t*>(i.plugin->get_extension(i.plugin, CLAP_EXT_VOICE_INFO));
+    const bool declared = product::info::kNoteInput && product::Processor::kVoices > 0;
+    CHECK((voices != nullptr) == declared);
+    if (!voices) return;
+    i.activate();
+    clap_voice_info_t info{};
+    CHECK(voices->get(i.plugin, &info));
+    CHECK(info.voice_capacity == static_cast<uint32_t>(product::Processor::kVoices));
+    CHECK(info.voice_count >= 1 && info.voice_count <= info.voice_capacity);
+    CHECK(((info.flags & CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES) != 0) == product::Processor::kOverlappingNotes);
 }
 
 SUPPLE_TEST_MAIN

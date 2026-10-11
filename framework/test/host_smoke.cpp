@@ -144,7 +144,7 @@ void setParamEvent(clap_id id, double value) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: host-smoke <Product.clap or its binary> [--channels N]\n");
+        std::fprintf(stderr, "usage: host-smoke <Product.clap or its binary> [--layout 2|1|5.1|7.1|7.1.4|ambi1..3|N|none]\n");
         return 2;
     }
 
@@ -163,13 +163,19 @@ int main(int argc, char** argv) {
         path = bundle + "/Contents/MacOS/" + name;
     }
 
-    // Select the requested bus before activation; the host buffers alone
+    // Select the requested layout before activation; the host buffers alone
     // must not be what changes width.
-    uint32_t channels = 2;
+    const char* layoutName = "2";
     for (int i = 2; i + 1 < argc; ++i)
-        if (!std::strcmp(argv[i], "--channels")) channels = static_cast<uint32_t>(std::atoi(argv[i + 1]));
+        if (!std::strcmp(argv[i], "--layout") || !std::strcmp(argv[i], "--channels")) layoutName = argv[i + 1];
+    host_contract::LayoutSpec layout;
+    if (!host_contract::parseLayout(layoutName, layout)) {
+        std::fprintf(stderr, "host-smoke: '%s' is not a layout\n", layoutName);
+        return 2;
+    }
+    const uint32_t channels = layout.channels;
 
-    std::printf("clap host smoke test (bus channels: %u)\n", channels);
+    std::printf("clap host smoke test (layout %s, %u channels)\n", layoutName, channels);
 
     LibHandle lib = libOpen(path.c_str());
     if (!lib) {
@@ -220,13 +226,15 @@ int main(int argc, char** argv) {
     auto* state = (const clap_plugin_state_t*)plug->get_extension(plug, CLAP_EXT_STATE);
     check(params && ports && latency && state, "advertises params/ports/latency/state");
 
-    // An instrument declares no audio input. That one fact is enough to know
+    // An effect declares a main audio input. That one fact is enough to know
     // which of the checks below apply, so no product has to configure it: an
     // effect must pass signal through, while an instrument sitting with no
-    // notes is correct to be silent.
-    const bool isInstrument = ports->count(plug, true) == 0;
-    std::printf("     audio inputs: %u (%s)\n", ports->count(plug, true),
-                isInstrument ? "instrument" : "effect");
+    // notes is correct to be silent, and a note effect has no audio at all.
+    const bool isEffect = host_contract::hasMainInput(plug);
+    const auto* notePorts = (const clap_plugin_note_ports_t*)plug->get_extension(plug, CLAP_EXT_NOTE_PORTS);
+    const bool takesNotes = notePorts && notePorts->count(plug, true) > 0;
+    std::printf("     audio ports: %u in, %u out (%s)%s\n", ports->count(plug, true), ports->count(plug, false),
+                isEffect ? "effect" : channels ? "instrument" : "note effect", takesNotes ? ", notes in" : "");
 
     const uint32_t np = params->count(plug);
     check(np > 0, "exposes at least one parameter");
@@ -244,10 +252,10 @@ int main(int argc, char** argv) {
     check(namesOk, "every parameter reports info and a name");
     check(textOk, "every parameter formats its default value");
 
-    host_contract::ports(plug, channels, check);
+    host_contract::ports(plug, layout, check);
     host_contract::parameterText(plug, check);
     host_contract::processing(fac, desc->id, HOST_SMOKE_PLAIN_PARAM, channels,
-                              48000.0, isInstrument, check);
+                              48000.0, isEffect, takesNotes, check);
 
     const uint32_t block = 512;
     check(plug->activate(plug, 48000.0, 32, block), "activate at 48 kHz");
@@ -257,52 +265,41 @@ int main(int argc, char** argv) {
     check(lat < 65536, "reports a sane latency");
     std::printf("     reported latency: %u samples\n", lat);
 
-    std::vector<float> l(block, 0.0f), r(block, 0.0f);
-    float* inBufs[2] = {l.data(), r.data()};
-    float* outBufs[2] = {l.data(), r.data()};
-    if (channels > 2) {
-        std::printf("  (only 1 or 2 channels are driven here)\n");
-        return 0;
-    }
-
-    clap_audio_buffer_t ab{};
-    ab.data32 = inBufs;
-    ab.channel_count = channels;
-    clap_audio_buffer_t obuf{};
-    obuf.data32 = outBufs;
-    obuf.channel_count = channels;
+    // Every port the plugin declared, the main buses in place, as most hosts
+    // run an effect. silence() clears them all between uses below.
+    host_contract::Buses<float> buses;
+    buses.build(plug, block, true);
+    auto quiet = [&] { buses.silence(block); };
 
     clap_input_events_t inEv{nullptr, evCount, evGet};
     clap_output_events_t outEv{nullptr, evPush};
 
     clap_process_t proc{};
     proc.frames_count = block;
-    proc.audio_inputs = isInstrument ? nullptr : &ab;
-    proc.audio_inputs_count = isInstrument ? 0u : 1u;
-    proc.audio_outputs = &obuf;
-    proc.audio_outputs_count = 1;
+    buses.bind(proc);
     proc.in_events = &inEv;
     proc.out_events = &outEv;
 
     bool finite = true;
     double peak = 0.0;
     for (int b = 0; b < 200; ++b) {
-        for (uint32_t i = 0; i < block; ++i) {
-            const double t = (double)(b * block + i) / 48000.0;
-            const float v = isInstrument ? 0.0f
-                                         : (float)(0.3 * std::sin(2.0 * 3.14159265358979323846 * 220.0 * t));
-            l[i] = v;
-            r[i] = v;
-        }
+        quiet();
+        if (float* const* in = buses.mainInput())
+            for (uint32_t c = 0; c < channels; ++c)
+                for (uint32_t i = 0; i < block; ++i)
+                    in[c][i] = (float)(0.3 * std::sin(2.0 * 3.14159265358979323846 * 220.0 * (double)(b * block + i) / 48000.0));
         if (plug->process(plug, &proc) == CLAP_PROCESS_ERROR) finite = false;
-        for (uint32_t i = 0; i < block; ++i) {
-            if (!std::isfinite(l[i]) || !std::isfinite(r[i])) finite = false;
-            peak = std::max(peak, (double)std::fabs(l[i]));
-        }
+        buses.forEachOutput([&](float* c) {
+            for (uint32_t i = 0; i < block; ++i) {
+                if (!std::isfinite(c[i])) finite = false;
+            }
+        });
+        if (float* const* out = buses.mainOutput())
+            for (uint32_t i = 0; i < block; ++i) peak = std::max(peak, (double)std::fabs(out[0][i]));
     }
     check(finite, "processes 100k frames without NaN or error");
     check(peak < 2.0, "output stays bounded");
-    if (!isInstrument) check(peak > 0.05, "effect passes signal through");
+    if (isEffect) check(peak > 0.05, "effect passes signal through");
     std::printf("     output peak: %.4f\n", peak);
 
     // --- restart storm regression ---
@@ -350,7 +347,7 @@ int main(int argc, char** argv) {
         const double t = (double)i / 49.0;
         setParamEvent(idPlain, plainInfo.min_value +
                                    t * (plainInfo.max_value - plainInfo.min_value));
-        for (uint32_t k = 0; k < block; ++k) l[k] = r[k] = 0.0f;
+        quiet();
         plug->process(plug, &proc);
     }
     check(g_restarts == 0,
@@ -370,7 +367,7 @@ int main(int argc, char** argv) {
     }
     auto applyAndProcess = [&](clap_id id, double v) {
         setParamEvent(id, v);
-        for (uint32_t k = 0; k < block; ++k) l[k] = r[k] = 0.0f;
+        quiet();
         plug->process(plug, &proc);
         g_events.active = false;
     };
@@ -404,7 +401,7 @@ int main(int argc, char** argv) {
     restart();
     g_restarts = 0;
     for (int i = 0; i < 50; ++i) {
-        for (uint32_t k = 0; k < block; ++k) l[k] = r[k] = 0.0f;
+        quiet();
         plug->process(plug, &proc);
     }
     check(g_restarts == 0, "a settled latency asks for no restart");
@@ -466,7 +463,7 @@ int main(int argc, char** argv) {
                 if (info.flags & CLAP_PARAM_IS_STEPPED) v = std::round(v);
                 if (info.flags & CLAP_PARAM_IS_BYPASS) v = info.min_value;
                 setParamEvent(info.id, v);
-                for (uint32_t k = 0; k < block; ++k) l[k] = r[k] = 0.0f;
+                quiet();
                 plug->process(plug, &proc);
             }
             g_events.active = false;
@@ -476,15 +473,24 @@ int main(int argc, char** argv) {
             seed = seed * 1664525u + 1013904223u;
             return (float)((int32_t)seed) * (0.25f / 2147483648.0f);
         };
+        // Noise into every input (the sidechain too); every output kept.
+        auto feed = [&] {
+            quiet();
+            if (float* const* in = buses.mainInput())
+                for (uint32_t c = 0; c < channels; ++c)
+                    for (uint32_t k = 0; k < block; ++k) in[c][k] = noise();
+            buses.forEachSidechain([&](float* c) {
+                for (uint32_t k = 0; k < block; ++k) c[k] = noise();
+            });
+        };
         auto render = [&](const clap_plugin_t* p, int blocks) {
             seed = 777;
             std::vector<float> out;
             clap_process_t pr = proc;
             for (int b = 0; b < blocks; ++b) {
-                for (uint32_t k = 0; k < block; ++k) l[k] = r[k] = isInstrument ? 0.0f : noise();
+                feed();
                 p->process(p, &pr);
-                out.insert(out.end(), l.begin(), l.end());
-                if (channels > 1) out.insert(out.end(), r.begin(), r.end());
+                buses.forEachOutput([&](float* c) { out.insert(out.end(), c, c + block); });
             }
             return out;
         };
@@ -495,7 +501,7 @@ int main(int argc, char** argv) {
         state->save(plug, &ow);
         setAll(0.8);
         for (int b = 0; b < 40; ++b) {
-            for (uint32_t k = 0; k < block; ++k) l[k] = r[k] = isInstrument ? 0.0f : noise();
+            feed();
             plug->process(plug, &proc);
         }
         clap_istream_t iw{&wanted, memRead};

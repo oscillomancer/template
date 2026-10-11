@@ -125,10 +125,10 @@ std::vector<NoteAt> ends(const std::vector<NoteAt>& notes, int frames) {
     for (int frame = 0; frame < frames; frame += 256) {
         Source s{&notes, &next, frame, frame + 256};
         engine->process<double>(nullptr, p, 256, s, nullptr);
-        const NoteEnds& e = engine->noteEnds();
+        const NoteOutput& e = engine->noteOutput();
         for (int i = 0; i < e.count(); ++i) {
             CHECK(i == 0 || e[i - 1].time <= e[i].time);
-            out.push_back({frame + static_cast<int>(e[i].time), e[i].note});
+            if (e[i].kind == NoteOutput::Kind::End) out.push_back({frame + static_cast<int>(e[i].time), e[i].note});
         }
     }
     return out;
@@ -171,6 +171,70 @@ TEST(a_release_on_one_channel_leaves_the_same_key_on_another) {
     const std::vector<NoteAt> got = ends(n, 48000);
     CHECK(got.size() == 1);
     CHECK(got.size() == 1 && got[0].note.channel == 1);
+}
+
+// --- MIDI, expressions, per-note modulation ------------------------------------------------
+
+namespace {
+
+constexpr int kSecond = 48000;
+
+// One second of a held note, from 0.1 s in (past the attack).
+test::Signal held(std::vector<test::EventAt> events, std::vector<std::pair<uint32_t, double>> initial = {}) {
+    test::RenderOptions o;
+    o.blocks = {64, 512, 1000};
+    o.initial = initial;
+    o.events = std::move(events);
+    const test::Signal out = test::render(test::silence(2, kSecond + 4800), o);
+    return {{out[0].begin() + 4800, out[0].end()}};
+}
+
+// Rising zero crossings in one second: the pitch, to within 1 Hz.
+double hertz(const test::Signal& s) {
+    int crossings = 0;
+    for (size_t i = 1; i < s[0].size(); ++i) crossings += s[0][i - 1] < 0.0 && s[0][i] >= 0.0;
+    return crossings;
+}
+
+}  // namespace
+
+TEST(a_full_pitch_bend_moves_a_note_by_the_bend_range) {
+    CHECK_NEAR(hertz(held({test::noteOn(0, 69)})), 440.0, 1.0);
+    const double up = hertz(held({test::midi(0, MidiMessage::bend(0, 1.0)), test::noteOn(0, 69)}));
+    CHECK_NEAR(up, 440.0 * std::exp2(2.0 / 12.0), 1.0);
+    const double down = hertz(held({test::midi(0, MidiMessage::bend(0, -1.0)), test::noteOn(0, 69)}, {{kBendRange, 12.0}}));
+    CHECK_NEAR(down, 220.0, 1.0);
+    // A bend on another channel leaves this note alone.
+    CHECK_NEAR(hertz(held({test::midi(0, MidiMessage::bend(5, 1.0)), test::noteOn(0, 69)})), 440.0, 1.0);
+}
+
+TEST(a_tuning_expression_moves_only_the_note_it_names) {
+    NoteAddress first;
+    first.noteId = 1;
+    const double tuned = hertz(held({test::noteOn(0, 69, 1.0, 1), test::expression(0, NoteExpression::Type::Tuning, 12.0, first)}));
+    CHECK_NEAR(tuned, 880.0, 1.0);
+    NoteAddress other;
+    other.noteId = 2;
+    CHECK_NEAR(hertz(held({test::noteOn(0, 69, 1.0, 1), test::expression(0, NoteExpression::Type::Tuning, 12.0, other)})),
+               440.0, 1.0);
+}
+
+TEST(volume_expression_and_per_note_level_modulation_scale_one_voice) {
+    const double plain = test::rms(held({test::noteOn(0, 69, 1.0, 7)}));
+    NoteAddress seven;
+    seven.noteId = 7;
+    const double halved = test::rms(held({test::noteOn(0, 69, 1.0, 7), test::expression(0, NoteExpression::Type::Volume, 0.5, seven)}));
+    CHECK_NEAR(halved / plain, 0.5, 1e-3);
+    // Level is in dB on the host's scale too: -6 is 6 dB down for this voice.
+    const double modulated = test::rms(held({test::noteOn(0, 69, 1.0, 7), test::noteModulation(0, kLevel, -6.0, seven)}));
+    CHECK_NEAR(modulated / plain, dsp::dbToGain(-6.0), 1e-3);
+}
+
+TEST(the_mod_wheel_adds_vibrato_around_the_note) {
+    const test::Signal still = held({test::noteOn(0, 69)});
+    const test::Signal wobbling = held({test::midi(0, MidiMessage::cc(0, 1, 127)), test::noteOn(0, 69)});
+    CHECK(test::maxDifference(still, wobbling) > 0.1);
+    CHECK_NEAR(hertz(wobbling), 440.0, 2.0);
 }
 
 SUPPLE_TEST_MAIN

@@ -14,7 +14,6 @@ set(PRODUCT_URL         "")
 set(PRODUCT_COPYRIGHT   "Copyright (c) 2026 Supple Audio")
 
 # effect: one main input and output bus of equal width.
-# instrument: note input, one main output, no audio input.
 set(PRODUCT_KIND        "effect")
 
 # Main bus widths offered to the host, the first being the default.

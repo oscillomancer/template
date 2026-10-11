@@ -71,6 +71,12 @@ if (SUPPLE_BUILD_PLUGIN)
     # null handle, which searches the whole process and can find another
     # plugin's.
     supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-self-handle.patch)
+    # A CLAP surround or ambisonic port became an empty VST3 speaker
+    # arrangement; it is now 5.1, 7.1, 7.1.4 or first- to third-order ACN.
+    supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-surround.patch)
+    # MIDI the plugin sent (controllers, pitch bend, pressure, program
+    # changes) was dropped; it now leaves as VST3 MIDI CC output events.
+    supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-midi-out.patch)
 endif()
 
 # --- pugl, NanoVG, nanovg_metal ------------------------------------------------------------

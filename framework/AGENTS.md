@@ -13,7 +13,7 @@ Read this file, then `docs/CONVENTIONS.md` for the reasons behind the rules.
 
 | You want to change | Edit |
 | --- | --- |
-| Name, plugin ID, version, AU codes, effect/instrument, bus widths, sources | `product/product.cmake` |
+| Name, plugin ID, version, AU codes, kind, layouts, capabilities (sidechain, aux outputs, notes), sources | `product/product.cmake` |
 | Parameters: names, ranges, tapers, units, defaults, flags | `product/Params.h` |
 | What the plugin does to sound | `product/Processor.h` (and any `.cpp` listed in product.cmake) |
 | Layout, the product's own drawing, its custom interaction | `product/Editor.h`, `product/Editor.cpp` |
@@ -39,7 +39,7 @@ cmake --preset tsan   && cmake --build --preset tsan   && ctest --preset tsan   
 cmake --preset rtsan  && cmake --build --preset rtsan  && ctest --preset rtsan   # RealtimeSanitizer (clang 20+)
 ./build/release/gui-preview panel.png [--scale 2] [--set "Name=value"] [--hover NAME] [--menu NAME] [--text NAME]
 ./build/release/render-cli --list
-./build/release/render-cli in.wav out.wav --set "Name=value" --at 48000 "Name=value" --block 257
+./build/release/render-cli in.wav out.wav --set "Name=value" --at 48000 "Name=value" --block 257 [--sidechain key.wav]
 cmake --build build/release --target product-install    # every format into the user's plugin folders
 ```
 
@@ -51,13 +51,15 @@ editor change. It proves drawing only, not embedding in a host.
 
 ```sh
 cmake -DNAME="Name" -DID=com.suppleaudio.name -DCODE=NmXx -DDEST=../name \
-      [-DEXAMPLE=instrument|pulse] [-DDESCRIPTION="..."] -P framework/tools/new_product.cmake
+      [-DEXAMPLE=instrument|pulse|duck|chord] [-DDESCRIPTION="..."] -P framework/tools/new_product.cmake
 ```
 
 Run it in the template. `ID` and `CODE` (the AU subtype, also the state tag)
 are permanent the moment anything ships. Without `EXAMPLE` the product starts
 from the template's starter effect; with it, from that directory of the
-template's `examples/` (`KIND=instrument` still means `EXAMPLE=instrument`).
+template's `examples/` (`KIND=instrument` means `EXAMPLE=instrument`,
+`KIND=note-effect` means `EXAMPLE=chord`). Start from the example closest to
+the product: an instrument, a sidechain effect, a note effect.
 The new product builds and passes every test as created. Then:
 
 1. Write down, in the product's root `AGENTS.md`, what the DSP does, every
@@ -66,6 +68,38 @@ The new product builds and passes every test as created. Then:
 2. `Params.h`, then `Processor.h`, then tests that measure the claims, then
    the editor. Rewrite `Theme.h`; do not ship the template's palette.
 3. Delete what the example did that the product does not.
+
+## Kind, layouts and capabilities
+
+`product.cmake` says what the host sees, and everything beyond a plain
+effect is switched on there (checked by `cmake/Capabilities.cmake`):
+
+- `PRODUCT_KIND`: `effect` (audio in and out), `instrument` (notes and MIDI
+  in, audio out) or `note-effect` (notes and MIDI in and out, no audio; AU
+  type `aumi`). The kind is the plugin's category; it never changes once
+  shipped.
+- `PRODUCT_CHANNELS`: the main bus layouts offered, the first the default:
+  `1`, `2`, `5.1`, `7.1`, `7.1.4`, `ambi1`..`ambi3`, or a plain count. The
+  processor reads `setup.channels` and `setup.layout` (`core/Layout.h`:
+  which channel is which speaker, `lfeChannel()`). Hosts choose among them,
+  VST3 hosts with their speaker arrangements. A note effect leaves it unset.
+- `PRODUCT_SIDECHAIN ON`: a sidechain input as wide as the main bus.
+  `block.sidechain[c][i]`, silence when unconnected
+  (`block.sidechainConnected`). The duck example.
+- `PRODUCT_AUX_OUTPUTS "Name" ...`: extra outputs, named, each as wide as the
+  main bus. Write `block.aux(bus)[c][i]` (zero on entry); bypass silences
+  them. The duck example.
+- `PRODUCT_NOTE_INPUT ON`: an effect that also takes notes and MIDI (AU
+  type `aumf`). Instruments and note effects always do.
+- `PRODUCT_NOTE_OUTPUT ON`: the processor sends notes and MIDI with
+  `sendNote(note, frame)` and `sendMidi(message, frame)`. Note effects always
+  do. The chord example.
+- `PRODUCT_NOTE_EXPRESSIONS tuning volume ...`: the per-note expressions the
+  processor uses, which VST3 hosts are then offered (volume, pan, tuning,
+  vibrato, expression, brightness, pressure). The instrument example.
+
+Framework tests follow these: a product is tested on the buses and notes it
+has, and the examples have them all.
 
 ## Parameters
 
@@ -100,6 +134,9 @@ Further modifiers:
   plain)`; the host hears it about 30 times a second (CLAP
   `IS_READONLY`, VST3 output parameter changes) and the editor shows it.
   Never automated, never in state. A gain reduction meter a host can show.
+- `.polyModulatable()`: a host may modulate it per note (CLAP polyphonic
+  modulation); each voice's amount arrives through `noteModulation()`. Needs
+  note input. The instrument example.
 - `.formatted(format, parse)`: the parameter's own text both ways, for what
   no `Unit` describes. ASCII; the parser reads back everything the formatter
   writes. Prefer a new `Unit` (in the template) when more than one product
@@ -165,12 +202,27 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 - Mix with latency: use `dsp::DryWet`, which delays the dry path.
 - Report `latencySamples()`, `maxLatencySamples()` (if latency follows a
   parameter) and `tailSamples()`.
-- Instruments implement `note(const NoteEvent&)`; notes arrive at their
-  exact sample. Match releases and chokes on the whole address, where -1 is
-  a wildcard, and call `noteEnded(address, frame)` whenever a voice ends
-  (released to silence, choked, stolen, reset): hosts retire notes on it,
-  and the VST3 wrapper otherwise keeps every note forever. The instrument
-  example does all of this.
+- A product with note input implements `note(const NoteEvent&)`; notes
+  arrive at their exact sample. Match releases and chokes on the whole
+  address (`NoteAddress::of(e).matches(voice)`, where -1 is a wildcard), and
+  call `noteEnded(address, frame)` whenever it is done with a note (a voice
+  released to silence, choked, stolen, reset; a note effect's note released):
+  hosts retire notes on it, and the VST3 wrapper otherwise keeps every note
+  forever. The instrument and chord examples do all of this.
+- MIDI other than notes reaches `midi(const MidiMessage&)`: `isPitchBend()`
+  and `pitchBend()` (-1..+1), `isController()`, `controller()`, `value()`,
+  pressure and program changes, per channel. Per-note expressions reach
+  `noteExpression()` (tuning in semitones, volume as a gain, the rest 0..1)
+  and per-note modulation `noteModulation()`, both by address; a voice
+  starts neutral and keeps each until it changes. `supple::modulatedPlain()`
+  (or `v.modulated(id, amount)` in update) turns an amount into the voice's
+  value.
+- An instrument with a fixed pool declares `static constexpr int kVoices`
+  (and `kOverlappingNotes` if one key can sound twice); hosts are told
+  (CLAP voice-info), and `voiceCount()` may report fewer in use.
+- A note effect writes no audio; its `process(Block&)` still runs at every
+  split, with `channels` 0, so notes due later (a strum, an arpeggio) leave
+  at their exact frame. Its bypass, if any, is its own.
 - `block.transport` is the host's transport at the first sample of that
   split, so tempo-synced phase can be computed per block: from
   `transport->beats` while playing, so it lands on the same beat wherever
@@ -266,7 +318,8 @@ lets one fix reach every product. So:
 1. Make the change in the template. Add a test that would have caught the
    problem.
 2. Run every preset there. Then every preset for the examples, which
-   exercise what the starter does not (an instrument, smoothing, outputs):
+   exercise what the starter does not (notes, MIDI, a sidechain, aux
+   outputs, surround, a note effect, smoothing, outputs):
    `cmake -DPRESET=<preset> -P framework/tools/test_examples.cmake`. A
    feature no example uses gets one (see the template's `AGENTS.md`), and
    its framework tests follow the product's own table, so they run for real
