@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The CI wrapper must reject the cached-size false positive, and native/report
-# mismatches independently. Runs on Linux too, without Cocoa or a GPU.
+# The CI wrapper must reject the cached-size false positive, native/report
+# mismatches independently, and a silent plugin; a note effect's notes count. Runs on Linux too, without Cocoa or a GPU.
 set -euo pipefail
 checker="$1"
 work=$(mktemp -d)
@@ -16,7 +16,11 @@ echo 'presize: adjust->1125x700 set_size=1'
 echo "gui: create=1 parent=1 show=1 size=$size"
 echo 'reopen: create=1 parent=1 show=1'
 echo 'resize: adjust->1400x896 set_size=1'
-echo '(audio path is live)'
+case "$PROBE_CASE" in
+    notes) echo 'notes out         : 3  (note path is live)' ;;
+    silent) echo 'output peak       : -120.000 dBFS  (silent: unexpected)' ;;
+    *) echo 'output peak       : -14.0 dBFS  (audio path is live)' ;;
+esac
 case "$PROBE_CASE" in
     cached) ;; # Old probe output: the size was read before parenting.
     native) echo "realized: get_size=1 size=$size native=800.0x500.0 expected=$size matches=0" ;;
@@ -32,11 +36,12 @@ fi
 PROBE
 chmod +x "$work/build/release/clap-probe"
 cd "$work"
-for mode in cached native reported wrong-expected resize; do
+for mode in cached native reported wrong-expected resize silent; do
     if PROBE_CASE="$mode" bash "$checker" Starter > "$mode.log" 2>&1; then
         echo "checker accepted $mode sizing failure" >&2
         exit 1
     fi
 done
 PROBE_CASE=valid bash "$checker" Starter > valid.log 2>&1
-echo 'CI sizing checker rejects cached, native, reported and resize failures'
+PROBE_CASE=notes bash "$checker" Starter > notes.log 2>&1
+echo 'CI probe checker rejects cached, native, reported and resize failures and silence, and takes a note effect'

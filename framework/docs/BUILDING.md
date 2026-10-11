@@ -167,7 +167,10 @@ template's own build of that preset.
   --reopen --drop-parent --destroy-hot --no-host-timer]`: a GUI host for
   macOS (window embedding, sizing before and after parenting, AU-style timer
   refusal, hot teardown) that writes `probe-window.png`; elsewhere it
-  exercises everything but the window.
+  exercises everything but the window. Audio goes to every declared port
+  (`--mono` keeps the default layout when there is no mono one); a plugin
+  that takes notes gets a held note, and a note effect passes on the notes
+  it sends.
 
 ## Continuous integration
 
@@ -175,8 +178,15 @@ template's own build of that preset.
 tab, "Build and test", "Run workflow", or
 `gh workflow run build.yml -f platforms=macos` (`linux`, `windows`, `all`;
 `-f sanitizers=true` adds asan, and tsan on Linux). Each platform builds the
-release and debug presets and runs `ctest`. The release build then goes
-through what a host would do with it:
+release and debug presets and runs `ctest`. In the template, each example
+under `examples/` also gets a release job of its own on each platform
+(`-f examples=false` leaves them out): the job puts the example in place of
+`product/`, as `new_product` would under the example's own name and codes,
+and runs everything below on it, so the sidechain, aux outputs, surround,
+the instrument and the note effect meet a real AU (`auval` with the
+example's own type: `aufx`, `aumu`, `aumi`), VST3 and CLAP. A product has no
+`examples/`, so a copy of the workflow there runs only its own jobs. The
+release build then goes through what a host would do with it:
 
 - **macOS**: `product-install`, the AU's signature and plist, `auval
   -strict`, pluginval (strictness 8, VST3 and AU, editor included),

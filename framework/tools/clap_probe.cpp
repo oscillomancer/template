@@ -14,7 +14,9 @@
 //              [--drop-parent] [--destroy-hot] [--no-host-timer] [--presize]
 //
 // Its window work is Cocoa-only; elsewhere it exercises everything but the
-// window (x11-probe covers X11 embedding).
+// window (x11-probe covers X11 embedding). Audio goes to every port the
+// plugin declares; a plugin that takes notes is sent one held note, and one
+// without audio (a note effect) has to send notes back.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -24,6 +26,8 @@
 #include <vector>
 
 #include <clap/clap.h>
+
+#include "ProbeAudio.h"
 
 // Loading a shared library is the one thing these hosts do that has no
 // portable spelling. dlopen is POSIX; MSVC ships no <dlfcn.h> at all, so the
@@ -78,6 +82,7 @@ struct Probe {
     int onTimerCalls = 0;
     int flushRequests = 0;
     int outEventsSeen = 0;
+    int notesSeen = 0;
     int callbacksRequested = 0;
     bool callbackPending = false;
     bool guiCreated = false;
@@ -135,11 +140,19 @@ void CLAP_ABI hostRequestCallback(const clap_host_t*) {
 
 // --- event plumbing --------------------------------------------------------
 
-uint32_t CLAP_ABI inSize(const clap_input_events_t*) { return 0; }
-const clap_event_header_t* CLAP_ABI inGet(const clap_input_events_t*, uint32_t) { return nullptr; }
+// Middle C, held from the first block, when the plugin takes notes.
+clap_event_note_t gNoteOn{{sizeof(clap_event_note_t), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_ON, 0},
+                          -1, 0, 0, 60, 0.8};
+bool gSendNote = false;
 
-bool CLAP_ABI outPush(const clap_output_events_t*, const clap_event_header_t*) {
+uint32_t CLAP_ABI inSize(const clap_input_events_t*) { return gSendNote ? 1 : 0; }
+const clap_event_header_t* CLAP_ABI inGet(const clap_input_events_t*, uint32_t index) {
+    return gSendNote && index == 0 ? &gNoteOn.header : nullptr;
+}
+
+bool CLAP_ABI outPush(const clap_output_events_t*, const clap_event_header_t* event) {
     ++g.outEventsSeen;
+    if (event->space_id == CLAP_CORE_EVENT_SPACE_ID && event->type == CLAP_EVENT_NOTE_ON) ++g.notesSeen;
     return true;
 }
 
@@ -171,8 +184,9 @@ int main(int argc, char** argv) {
     }
     int blocks = 400;
     // --mono selects the plugin's declared mono port configuration before
-    // activation, the same contract a real host follows.
-    uint32_t channels = 2;
+    // activation, the same contract a real host follows; otherwise the
+    // plugin keeps its default.
+    bool mono = false;
     // AU hosts open and close the editor repeatedly, and the AU wrapper owns
     // the Cocoa view rather than the plugin. --reopen runs the editor through a
     // second create/set_parent/show against a fresh parent view; --drop-parent
@@ -183,7 +197,7 @@ int main(int argc, char** argv) {
     bool presize = false;
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--no-host-timer")) gRefuseTimers = true;
-        else if (!std::strcmp(argv[i], "--mono")) channels = 1;
+        else if (!std::strcmp(argv[i], "--mono")) mono = true;
         else if (!std::strcmp(argv[i], "--reopen")) reopen = true;
         else if (!std::strcmp(argv[i], "--drop-parent")) dropParent = true;
         else if (!std::strcmp(argv[i], "--destroy-hot")) destroyHot = true;
@@ -195,7 +209,6 @@ int main(int argc, char** argv) {
     (void)reopen, (void)dropParent, (void)destroyHot, (void)resize;  // window tests are Cocoa-only
 #endif
     if (gRefuseTimers) std::printf("(refusing to register host timers)\n");
-    std::printf("(bus channels: %u)\n", channels);
 
     LibHandle lib = libOpen(argv[1]);
     if (!lib) {
@@ -231,10 +244,18 @@ int main(int argc, char** argv) {
     constexpr uint32_t kBlock = 512;
     auto* portConfigs = (const clap_plugin_audio_ports_config_t*)g.plugin->get_extension(
         g.plugin, CLAP_EXT_AUDIO_PORTS_CONFIG);
-    if (!portConfigs || !portConfigs->select(g.plugin, channels == 1 ? 1 : 2)) {
-        std::fprintf(stderr, "audio port configuration unavailable\n");
+    if (mono) {
+        const bool selected = portConfigs && portConfigs->select(g.plugin, 1);
+        std::printf("%s\n", selected ? "(mono configuration selected)"
+                                      : "(no mono configuration: the default layout stays)");
+    }
+    supple::probe::Audio audio;
+    if (!audio.configure(g.plugin, kBlock)) {
+        std::fprintf(stderr, "cannot query the plugin's audio ports\n");
         return 1;
     }
+    auto* notePorts = (const clap_plugin_note_ports_t*)g.plugin->get_extension(g.plugin, CLAP_EXT_NOTE_PORTS);
+    const bool takesNotes = notePorts && notePorts->count(g.plugin, true) > 0;
     g.plugin->activate(g.plugin, 48000.0, kBlock, kBlock);
     g.plugin->start_processing(g.plugin);
 
@@ -403,38 +424,24 @@ int main(int argc, char** argv) {
 #endif
 
     // --- run: audio blocks plus host timer callbacks ------------------------
-    std::vector<float> l(kBlock), r(kBlock);
-    float* chans[2] = {l.data(), r.data()};
-    clap_audio_buffer_t inBuf{}, outBuf{};
-    inBuf.data32 = chans;
-    inBuf.channel_count = channels;
-    outBuf.data32 = chans;
-    outBuf.channel_count = channels;
-
     clap_input_events_t inEv{nullptr, inSize, inGet};
     clap_output_events_t outEv{nullptr, outPush};
 
     clap_process_t proc{};
-    proc.frames_count = kBlock;
-    proc.audio_inputs = &inBuf;
-    proc.audio_inputs_count = 1;
-    proc.audio_outputs = &outBuf;
-    proc.audio_outputs_count = 1;
+    audio.bind(proc);
     proc.in_events = &inEv;
     proc.out_events = &outEv;
     proc.steady_time = 0;
 
     double phase = 0.0, outputPeak = 0.0;
     for (int b = 0; b < blocks; ++b) {
-        // A healthy sine, so the processor and live meters have something to do.
-        for (uint32_t i = 0; i < kBlock; ++i) {
-            const float s = (float)(0.9 * std::sin(phase));
-            phase += 2.0 * 3.14159265358979323846 * 220.0 / 48000.0;
-            l[i] = s;
-            r[i] = s;
-        }
+        // A sine on every input, and the note, so the processor and live
+        // meters have something to do.
+        audio.fillInputs(phase);
+        gSendNote = takesNotes && b == 0;
         g.plugin->process(g.plugin, &proc);
-        for (uint32_t i = 0; i < kBlock; ++i) outputPeak = std::max(outputPeak, (double)std::fabs(l[i]));
+        gSendNote = false;
+        outputPeak = std::max(outputPeak, audio.outputPeak());
         if (g.callbackPending) {
             g.callbackPending = false;
             g.plugin->on_main_thread(g.plugin);
@@ -495,8 +502,12 @@ int main(int argc, char** argv) {
     std::printf("\n--- results ---\n");
     std::printf("timers registered : %d\n", g.timersRegistered);
     std::printf("on_timer calls    : %d\n", g.onTimerCalls);
-    std::printf("output peak       : %.3f dBFS  %s\n", outputLevel,
-                outputLevel > -60.0 ? "(audio path is live)" : "(silent: unexpected)");
+    if (audio.hasOutput())
+        std::printf("output peak       : %.3f dBFS  %s\n", outputLevel,
+                    outputLevel > -60.0 ? "(audio path is live)" : "(silent: unexpected)");
+    else
+        std::printf("notes out         : %d  %s\n", g.notesSeen,
+                    g.notesSeen > 0 ? "(note path is live)" : "(silent: unexpected)");
     std::printf("flush requests    : %d\n", g.flushRequests);
     std::printf("out events        : %d\n", g.outEventsSeen);
     std::printf("main callbacks    : %d\n", g.callbacksRequested);

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Runs clap-probe against the built CLAP in each of its host scenarios and
-# fails if the editor did not come up or the audio path went silent. Each
+# fails if the editor did not come up or the audio path went silent (for a
+# note effect, the notes it sends). Each
 # scenario's window capture lands in probe/<scenario>.png.
 #   clap-probe-mac.sh <Product name>
 set -uo pipefail
@@ -29,7 +30,7 @@ for scenario in "plain:" "resize:--resize" "presize:--presize" "reopen:--reopen"
     problems=()
     [ $status -eq 0 ] || problems+=("exit status $status")
     grep -q "gui: create=1 parent=1 show=1" "probe/$label.txt" || problems+=("editor did not open")
-    grep -q "audio path is live" "probe/$label.txt" || problems+=("audio path silent")
+    grep -Eq "\((audio|note) path is live\)" "probe/$label.txt" || problems+=("audio path silent")
     grep -q "^realized: .* matches=1$" "probe/$label.txt" || problems+=("realized editor size mismatch")
     if [ "$label" = reopen ]; then
         grep -q "reopen: create=1 parent=1 show=1" "probe/$label.txt" || problems+=("editor did not reopen")

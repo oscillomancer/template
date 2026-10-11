@@ -1,7 +1,13 @@
 # Build and test every format on the platforms GitHub hosts.
 #
 # On demand only: Actions tab -> "Build and test" -> Run workflow, or
-#   gh workflow run build.yml -f platforms=macos
+#   gh workflow run build.yml -f platforms=macos [-f examples=false]
+#
+# In the template, each directory under examples/ is also built as the
+# product and taken through the release checks, in a job of its own: the
+# examples are where sidechains, aux outputs, surround, instruments and note
+# effects meet a real AU, VST3 and CLAP. A product has no examples/, so
+# there the starter's jobs are the only ones.
 #
 # What runs where, and what it can and cannot prove, is in
 # framework/docs/BUILDING.md under "Continuous integration".
@@ -20,6 +26,10 @@ on:
         description: Also run the asan preset (and tsan on Linux)
         type: boolean
         default: false
+      examples:
+        description: Also build and check each example under examples/ (release)
+        type: boolean
+        default: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,17 +47,45 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # One extra release job per example on each platform; none without examples/.
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      examples: ${{ steps.list.outputs.examples }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          list='[]'
+          if [ '${{ inputs.examples }}' = true ]; then
+            list=$(for f in examples/*/product.cmake; do if [ -f "$f" ]; then basename "$(dirname "$f")"; fi; done |
+              jq -Rnc '[inputs | {preset: "release", product: .}]')
+          fi
+          echo "examples=$list" | tee -a "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
   macos:
     if: ${{ inputs.platforms == 'macos' || inputs.platforms == 'all' }}
-    name: macOS (${{ matrix.preset }})
+    needs: plan
+    name: macOS (${{ matrix.preset }}, ${{ matrix.product }})
     runs-on: macos-15
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         preset: ${{ fromJSON(inputs.sanitizers && '["release","debug","asan"]' || '["release","debug"]') }}
+        product: [starter]
+        include: ${{ fromJSON(needs.plan.outputs.examples) }}
     steps:
       - uses: actions/checkout@v4
+
+      # What new_product does for -DEXAMPLE, under the example's own name and codes.
+      - name: The example as the product
+        if: matrix.product != 'starter'
+        run: |
+          rm -rf product
+          cp -R 'examples/${{ matrix.product }}' product
 
       - name: Product identity
         id: product
@@ -161,22 +199,32 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always() && matrix.preset == 'release'
         with:
-          name: macos-plugins
+          name: macos-${{ matrix.product == 'starter' && 'plugins' || matrix.product }}
           path: dist/
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   linux:
     if: ${{ inputs.platforms == 'linux' || inputs.platforms == 'all' }}
-    name: Linux (${{ matrix.preset }})
+    needs: plan
+    name: Linux (${{ matrix.preset }}, ${{ matrix.product }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         preset: ${{ fromJSON(inputs.sanitizers && '["release","debug","asan","tsan"]' || '["release","debug"]') }}
+        product: [starter]
+        include: ${{ fromJSON(needs.plan.outputs.examples) }}
     steps:
       - uses: actions/checkout@v4
+
+      # What new_product does for -DEXAMPLE, under the example's own name and codes.
+      - name: The example as the product
+        if: matrix.product != 'starter'
+        run: |
+          rm -rf product
+          cp -R 'examples/${{ matrix.product }}' product
 
       - name: Product identity
         id: product
@@ -243,25 +291,35 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always() && matrix.preset == 'release'
         with:
-          name: linux-plugins
+          name: linux-${{ matrix.product == 'starter' && 'plugins' || matrix.product }}
           path: dist/
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   windows:
     if: ${{ inputs.platforms == 'windows' || inputs.platforms == 'all' }}
-    name: Windows (${{ matrix.preset }})
+    needs: plan
+    name: Windows (${{ matrix.preset }}, ${{ matrix.product }})
     runs-on: windows-2022
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         preset: [release, debug]
+        product: [starter]
+        include: ${{ fromJSON(needs.plan.outputs.examples) }}
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+
+      # What new_product does for -DEXAMPLE, under the example's own name and codes.
+      - name: The example as the product
+        if: matrix.product != 'starter'
+        run: |
+          rm -rf product
+          cp -R 'examples/${{ matrix.product }}' product
 
       - name: Product identity
         id: product
@@ -350,6 +408,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always() && matrix.preset == 'release'
         with:
-          name: windows-plugins
+          name: windows-${{ matrix.product == 'starter' && 'plugins' || matrix.product }}
           path: dist/
           if-no-files-found: ignore

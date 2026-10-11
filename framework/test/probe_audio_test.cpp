@@ -62,10 +62,35 @@ TEST(probe_audio_handles_mono_and_instruments_without_an_input_bus) {
     }
 }
 
+TEST(probe_audio_takes_a_note_effect_without_audio) {
+    Ports none({}, {});
+    supple::probe::Audio audio;
+    CHECK(audio.configure(&none.plugin, 512));
+    CHECK(!audio.hasOutput());
+    clap_process_t process{};
+    audio.bind(process);
+    CHECK(process.frames_count == 512);
+    CHECK(process.audio_inputs == nullptr && process.audio_inputs_count == 0);
+    CHECK(process.audio_outputs == nullptr && process.audio_outputs_count == 0);
+    double phase = 0;
+    audio.fillInputs(phase);
+    CHECK(audio.finiteOutputs() && audio.outputPeak() == 0.0);
+}
+
+TEST(probe_audio_reports_the_output_peak) {
+    Ports ports({2}, {2, 1});
+    supple::probe::Audio audio;
+    CHECK(audio.configure(&ports.plugin, 64));
+    clap_process_t process{};
+    audio.bind(process);
+    CHECK(audio.hasOutput() && audio.outputPeak() == 0.0);
+    process.audio_outputs[1].data32[0][63] = -0.5f;
+    CHECK(audio.outputPeak() == 0.5);
+}
+
 TEST(probe_audio_refuses_missing_or_invalid_port_descriptions) {
     supple::probe::Audio audio;
-    Ports empty({}, {}), zero({}, {0}), bad({2}, {2});
-    CHECK(!audio.configure(&empty.plugin, 512));
+    Ports zero({}, {0}), bad({2}, {2});
     CHECK(!audio.configure(&zero.plugin, 512));
     bad.failGet = true;
     CHECK(!audio.configure(&bad.plugin, 512));

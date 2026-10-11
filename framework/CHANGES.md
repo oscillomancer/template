@@ -4,6 +4,20 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.7.1
+
+The CI probes take any kind of product. Nothing for a product to do; a
+product with a copy of the template's workflow may take the new one, which
+also gets the AU type of a note effect (`aumi`) and of an effect taking notes
+(`aumf`) right for `auval`.
+
+- `clap-probe` sizes its audio from the plugin's ports (sidechain, aux
+  outputs, surround, none at all), sends a plugin that takes notes a held
+  note, and counts a note effect live when it sends notes. `--mono` keeps
+  the default layout when there is no mono one, rather than failing.
+- `tools/ProbeAudio.h` (`win32-probe`) accepts a plugin with no audio ports
+  and reports the output peak.
+
 ## 1.7.0
 
 Buses and kinds: what a product switches on in `product.cmake` to take a

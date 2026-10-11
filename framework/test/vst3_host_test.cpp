@@ -65,7 +65,7 @@ void check(bool ok, const char* what) {
     uint32 PLUGIN_API addRef() override { return 1; }                                     \
     uint32 PLUGIN_API release() override { return 1; }
 
-struct HostApplication : Vst::IHostApplication {
+struct HostApplication final : Vst::IHostApplication {
     SUPPLE_UNKNOWN(Vst::IHostApplication)
     tresult PLUGIN_API getName(Vst::String128 name) override {
         const char* n = "vst3-host-tests";
@@ -83,7 +83,7 @@ struct HostApplication : Vst::IHostApplication {
 
 // The plugin adds to these from inside its process call, where nothing may
 // allocate (the rtsan preset checks): room is made beforehand.
-struct EventList : Vst::IEventList {
+struct EventList final : Vst::IEventList {
     SUPPLE_UNKNOWN(Vst::IEventList)
     std::vector<Vst::Event> events;
     EventList() { events.reserve(1024); }
@@ -100,7 +100,7 @@ struct EventList : Vst::IEventList {
     }
 };
 
-struct ValueQueue : Vst::IParamValueQueue {
+struct ValueQueue final : Vst::IParamValueQueue {
     SUPPLE_UNKNOWN(Vst::IParamValueQueue)
     Vst::ParamID id = 0;
     std::vector<std::pair<int32, Vst::ParamValue>> points;
@@ -123,7 +123,7 @@ struct ValueQueue : Vst::IParamValueQueue {
 
 // Every queue exists beforehand: the plugin adds output parameter changes
 // from inside its process call.
-struct ParameterChanges : Vst::IParameterChanges {
+struct ParameterChanges final : Vst::IParameterChanges {
     SUPPLE_UNKNOWN(Vst::IParameterChanges)
     std::vector<ValueQueue> queues = std::vector<ValueQueue>(64);
     size_t used = 0;

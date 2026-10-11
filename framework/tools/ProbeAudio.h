@@ -3,7 +3,8 @@
 //
 // Audio storage for an embedding probe, sized from the plugin's current
 // ports before activation. Input and output buses never alias; an instrument
-// has no input buffers. No allocation occurs while processing.
+// has no input buffers, a note effect none at all. No allocation occurs while
+// processing.
 #pragma once
 
 #include <clap/clap.h>
@@ -22,12 +23,13 @@ class Audio {
             plugin->get_extension(plugin, CLAP_EXT_AUDIO_PORTS));
         frames_ = frames;
         return ports && frames && configureBuses(plugin, ports, true, input_) &&
-               configureBuses(plugin, ports, false, output_) && !output_.buffers.empty();
+               configureBuses(plugin, ports, false, output_);
     }
+    bool hasOutput() const { return !output_.buffers.empty(); }
     void bind(clap_process_t& process) {
         process.frames_count = frames_;
         process.audio_inputs = input_.buffers.empty() ? nullptr : input_.buffers.data();
-        process.audio_outputs = output_.buffers.data();
+        process.audio_outputs = output_.buffers.empty() ? nullptr : output_.buffers.data();
         process.audio_inputs_count = static_cast<uint32_t>(input_.buffers.size());
         process.audio_outputs_count = static_cast<uint32_t>(output_.buffers.size());
     }
@@ -45,6 +47,14 @@ class Audio {
                 for (float value : channel)
                     if (!std::isfinite(value)) return false;
         return true;
+    }
+    // The largest magnitude on any output channel in the last block.
+    double outputPeak() const {
+        double peak = 0.0;
+        for (const auto& bus : output_.samples)
+            for (const auto& channel : bus)
+                for (float value : channel) peak = std::fmax(peak, std::fabs(static_cast<double>(value)));
+        return peak;
     }
 
   private:
