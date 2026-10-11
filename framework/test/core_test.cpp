@@ -521,6 +521,54 @@ TEST(reset_preserves_parameters_and_clears_history) {
     CHECK_NEAR(test::maxDifference(a, b), 0.0, 1e-12);
 }
 
+TEST(after_reset_output_depends_only_on_the_state) {
+    // CLAP's reset contract, as a host that reuses one instance relies on it
+    // (an offline renderer, a sandbox): load a state, reset, render -- and
+    // get exactly what a fresh instance with that state renders. The state
+    // lands in the store just before reset(), so reset must adopt it snapped,
+    // not glide to it from the old one. Restart parameters keep their values:
+    // changing them needs a reactivation, which is a different contract.
+    std::mt19937 rng(23);
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    auto randomState = [&] {
+        std::vector<double> host(params::kCount);
+        for (size_t i = 0; i < params::kCount; ++i) {
+            const ParamDef& p = params::at(i);
+            host[i] = p.is(pflag::kRestart) || p.is(pflag::kHidden) ? hostDefault(p) : fromNormalized(p, unit(rng));
+        }
+        return host;
+    };
+    const test::Signal before = test::noise(2, 12000, 31), probe = test::noise(2, 9000, 32);
+    for (int trial = 0; trial < 6; ++trial) {
+        const std::vector<double> first = randomState(), second = randomState();
+        auto used = std::make_unique<Engine>();
+        for (size_t i = 0; i < params::kCount; ++i) used->store().set(i, first[i]);
+        used->activate(48000.0, 512, 2, 2);
+        test::Signal a = before;
+        for (int f = 0; f < 12000; f += 500) {
+            double* io[] = {a[0].data() + f, a[1].data() + f};
+            used->process<double>(io, io, 500);
+        }
+        for (size_t i = 0; i < params::kCount; ++i) used->store().set(i, second[i]);
+        used->reset();
+        test::Signal x = probe;
+        for (int f = 0; f < 9000; f += 500) {
+            double* io[] = {x[0].data() + f, x[1].data() + f};
+            used->process<double>(io, io, 500);
+        }
+
+        auto fresh = std::make_unique<Engine>();
+        for (size_t i = 0; i < params::kCount; ++i) fresh->store().set(i, second[i]);
+        fresh->activate(48000.0, 512, 2, 2);
+        test::Signal y = probe;
+        for (int f = 0; f < 9000; f += 500) {
+            double* io[] = {y[0].data() + f, y[1].data() + f};
+            fresh->process<double>(io, io, 500);
+        }
+        CHECK_MSG(test::maxDifference(x, y) == 0.0, "trial %d differs by %g", trial, test::maxDifference(x, y));
+    }
+}
+
 TEST(modulation_is_not_saved_and_events_past_the_block_are_kept) {
     size_t index = params::kCount;
     for (size_t i = 0; i < params::kCount; ++i)

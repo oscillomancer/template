@@ -28,6 +28,7 @@
 
 #include "core/Engine.h"
 #include "core/ParamTable.h"
+#include "core/Realtime.h"
 #include "core/StateFormat.h"
 #include "plugin/EditBridge.h"
 #include "plugin/Entry.h"
@@ -443,7 +444,8 @@ bool CLAP_ABI paramsTextToValue(const clap_plugin_t*, clap_id id, const char* te
     return p && out && parseValue(*p, text, *out);
 }
 
-void CLAP_ABI paramsFlush(const clap_plugin_t* p, const clap_input_events_t* in, const clap_output_events_t* out) {
+void CLAP_ABI paramsFlush(const clap_plugin_t* p, const clap_input_events_t* in,
+                          const clap_output_events_t* out) SUPPLE_REALTIME {
     Plugin* s = self(p);
     ClapEvents events(in);
     s->engine.flush(events);
@@ -722,9 +724,9 @@ void CLAP_ABI pluginDeactivate(const clap_plugin_t* p) {
 bool CLAP_ABI pluginStartProcessing(const clap_plugin_t*) { return true; }
 void CLAP_ABI pluginStopProcessing(const clap_plugin_t*) {}
 
-void CLAP_ABI pluginReset(const clap_plugin_t* p) { self(p)->engine.reset(); }
+void CLAP_ABI pluginReset(const clap_plugin_t* p) SUPPLE_REALTIME { self(p)->engine.reset(); }
 
-clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_process_t* process) {
+clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_process_t* process) SUPPLE_REALTIME {
     Plugin* s = self(p);
     ClapEvents events(process->in_events);
     // Edits first, so the host records them in the block that plays them.

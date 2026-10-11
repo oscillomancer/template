@@ -7,7 +7,6 @@
 // cross-thread test here checked for races as well.
 #include <atomic>
 #include <cstring>
-#include <map>
 #include <mutex>
 #include <random>
 #include <thread>
@@ -126,36 +125,46 @@ struct InEvents {
 };
 
 // Records what the plugin tells the host, refusing a share of it on request.
+// A host's output event list. It is called on the audio thread, so it
+// allocates nothing: the rtsan preset would rightly fail a host that did.
 struct OutEvents {
-    std::map<clap_id, int> depth;
-    std::map<clap_id, double> lastValue;
+    int depth[params::kCount] = {};
+    double lastValue[params::kCount] = {};
+    bool sawValue[params::kCount] = {};
     std::vector<clap_event_note_t> noteEnds;
-    bool nested = false, strayEnd = false;
+    bool nested = false, strayEnd = false, unknownParam = false;
     double refuse = 0.0;
     std::mt19937 rng{3};
     clap_output_events_t list{this, [](const clap_output_events_t* l, const clap_event_header_t* h) {
                                   return static_cast<OutEvents*>(l->ctx)->push(h);
                               }};
+    OutEvents() { noteEnds.reserve(4096); }
     bool push(const clap_event_header_t* h) {
         if (refuse > 0.0 && std::uniform_real_distribution<double>(0, 1)(rng) < refuse) return false;
-        if (h->type == CLAP_EVENT_PARAM_GESTURE_BEGIN) {
+        if (h->type == CLAP_EVENT_PARAM_GESTURE_BEGIN || h->type == CLAP_EVENT_PARAM_GESTURE_END) {
             const auto* g = reinterpret_cast<const clap_event_param_gesture_t*>(h);
-            nested |= ++depth[g->param_id] > 1;
-        } else if (h->type == CLAP_EVENT_PARAM_GESTURE_END) {
-            const auto* g = reinterpret_cast<const clap_event_param_gesture_t*>(h);
-            strayEnd |= --depth[g->param_id] < 0;
+            const int i = params::indexOf(g->param_id);
+            if (i < 0) return unknownParam = true;
+            if (h->type == CLAP_EVENT_PARAM_GESTURE_BEGIN)
+                nested |= ++depth[i] > 1;
+            else
+                strayEnd |= --depth[i] < 0;
         } else if (h->type == CLAP_EVENT_PARAM_VALUE) {
             const auto* v = reinterpret_cast<const clap_event_param_value_t*>(h);
-            lastValue[v->param_id] = v->value;
+            const int i = params::indexOf(v->param_id);
+            if (i < 0) return unknownParam = true;
+            lastValue[i] = v->value;
+            sawValue[i] = true;
         } else if (h->type == CLAP_EVENT_NOTE_END) {
-            noteEnds.push_back(*reinterpret_cast<const clap_event_note_t*>(h));
+            if (noteEnds.size() < noteEnds.capacity())
+                noteEnds.push_back(*reinterpret_cast<const clap_event_note_t*>(h));
         }
         return true;
     }
     bool balanced() const {
-        for (const auto& [id, d] : depth)
+        for (int d : depth)
             if (d != 0) return false;
-        return !nested && !strayEnd;
+        return !nested && !strayEnd && !unknownParam;
     }
 };
 
@@ -398,9 +407,8 @@ TEST(editor_edits_reach_a_stopped_host_through_flush) {
     }
     CHECK(out.balanced());
     for (size_t k = 0; k < params::kCount; ++k) {
-        const clap_id id = params::at(k).id;
-        if (out.lastValue.count(id)) CHECK_MSG(out.lastValue[id] == last[k], "%s: host has %g, editor set %g",
-                                               params::at(k).name, out.lastValue[id], last[k]);
+        if (out.sawValue[k]) CHECK_MSG(out.lastValue[k] == last[k], "%s: host has %g, editor set %g",
+                                       params::at(k).name, out.lastValue[k], last[k]);
         CHECK(i.value(k) == last[k]);
     }
     CHECK(i.host.flushRequests > 0);

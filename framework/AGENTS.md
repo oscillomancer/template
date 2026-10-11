@@ -36,6 +36,7 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 cmake --preset debug  && cmake --build --preset debug  && ctest --preset debug   # warnings are errors
 cmake --preset asan   && cmake --build --preset asan   && ctest --preset asan    # AddressSanitizer + UBSan
 cmake --preset tsan   && cmake --build --preset tsan   && ctest --preset tsan    # ThreadSanitizer, no GUI
+cmake --preset rtsan  && cmake --build --preset rtsan  && ctest --preset rtsan   # RealtimeSanitizer (clang 20+)
 ./build/release/gui-preview panel.png [--scale 2] [--set "Name=value"] [--hover NAME] [--menu NAME] [--text NAME]
 ./build/release/render-cli --list
 ./build/release/render-cli in.wav out.wav --set "Name=value" --at 48000 "Name=value" --block 257
@@ -113,7 +114,12 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 
 - `prepare(setup, values)` runs on the main thread: allocate and size
   everything here. `update` and `process` run on the audio thread and
-  never allocate, lock, log, wait or touch files.
+  never allocate, lock, log, wait or touch files. The `rtsan` preset
+  enforces it: every test that renders aborts on the first violation.
+- `reset()` clears every trace of earlier audio. After a state load and a
+  reset, output must equal a fresh instance's (core-tests and host-smoke
+  check it), so nothing may survive reset: not a filter's memory, not a
+  random generator's position, not an envelope.
 - The framework calls `update` with `initial()` true after `prepare` and
   after `reset`; snap smoothers then. Otherwise smooth per sample.
 - `process(Block&)` is double precision and in place. The block may be one
@@ -194,7 +200,7 @@ and must not overlap.
 
 ## Done means
 
-- `ctest` passes in release, debug, asan and tsan, plus `clap-validator`
+- `ctest` passes in release, debug, asan, tsan and rtsan, plus `clap-validator`
   (register it with `-DSUPPLE_CLAP_VALIDATOR=...`).
 - `product/test` measures every claim the product makes.
 - The editor has been looked at with `gui-preview` at 1x and 2x, with menus

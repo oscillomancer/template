@@ -37,6 +37,7 @@
 #include "core/ParamTable.h"
 #include "core/ParamValues.h"
 #include "core/ProcessorBase.h"
+#include "core/Realtime.h"
 #include "core/Telemetry.h"
 #include "Processor.h"
 
@@ -188,8 +189,12 @@ class BasicEngine {
 
     // --- audio thread ----------------------------------------------------------
 
-    void reset() {
+    // Clears every trace of earlier audio, and adopts whatever the store holds
+    // now -- a state loaded just before reset() included -- snapped, not
+    // glided to: what follows depends only on the current state.
+    void reset() SUPPLE_REALTIME {
         if (!active_) return;
+        syncStore();
         processor_.reset();
         for (auto& d : bypassDelay_) d.clear();
         bypass_.set(bypassOn() ? 1.0 : 0.0, true);
@@ -198,7 +203,7 @@ class BasicEngine {
 
     // Parameter events with no audio (CLAP params.flush). Valid active or not.
     template <class Source>
-    void flush(Source& events) {
+    void flush(Source& events) SUPPLE_REALTIME {
         noteEnds_.clear();
         noteEnds_.setOffset(0);
         syncStore();
@@ -209,7 +214,7 @@ class BasicEngine {
 
     template <class T, class Source>
     void process(const T* const* in, T* const* out, int frames, Source& events,
-                 const Transport* transport = nullptr) {
+                 const Transport* transport = nullptr) SUPPLE_REALTIME {
         noteEnds_.clear();
         if (!active_ || frames <= 0 || !out) return;
         ScopedFlushDenormals noDenormals;
@@ -256,7 +261,7 @@ class BasicEngine {
 
     // Convenience for tools and tests: one block with no events.
     template <class T>
-    void process(const T* const* in, T* const* out, int frames) {
+    void process(const T* const* in, T* const* out, int frames) SUPPLE_REALTIME {
         NoEvents none;
         process(in, out, frames, none, nullptr);
     }

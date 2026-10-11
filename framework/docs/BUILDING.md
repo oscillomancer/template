@@ -13,6 +13,11 @@ network access are needed for the first configure. There are no submodules.
 | `debug` | `build/debug` | Debugging; warnings in framework and product code are errors |
 | `asan` | `build/asan` | AddressSanitizer + UBSan over our code (framework, product, tests, the built plugin's own objects); clap-wrapper and the SDKs are linked uninstrumented |
 | `tsan` | `build/tsan` | ThreadSanitizer over our code, without the GUI: the cross-thread tests are the point |
+| `rtsan` | `build/rtsan` | RealtimeSanitizer (LLVM clang 20 or later): every audio-thread entry point is a real-time context, and an allocation, lock, blocking call or file access anywhere beneath it -- the product's processor included -- aborts the test with a stack trace |
+
+The presets are defined in `framework/cmake/presets.json`, which the root
+`CMakePresets.json` includes, so a framework update brings new ones. A
+product adds its own presets to the root file.
 
 ```sh
 cmake --preset release
@@ -22,7 +27,7 @@ ctest --preset release
 
 Options, for a hand-made build directory: `SUPPLE_BUILD_PLUGIN`,
 `SUPPLE_BUILD_GUI`, `SUPPLE_BUILD_TESTS` (all on), `SUPPLE_WARNINGS_AS_ERRORS`,
-`SUPPLE_SANITIZE` (`address` or `thread`), `SUPPLE_METAL` (macOS, on),
+`SUPPLE_SANITIZE` (`address`, `thread` or `realtime`), `SUPPLE_METAL` (macOS, on),
 `SUPPLE_CLAP_VALIDATOR` (path to clap-validator). A configure without a build
 type defaults to Release.
 
@@ -91,11 +96,11 @@ last when it exists.
 
 | Test | Proves |
 | --- | --- |
-| `core-tests` | Parameter text and tapers for every product parameter; DSP blocks; the Engine's contracts (bit-identical output under random automation at any block sizes, float = double, in place = separate buffers, bypass exact after its fade, telemetry rate independent of event density, NaN never reaching the host from the processor, through bypass or by float overflow, the transport each split sees, reset); state format; the edit bridge, single- and multi-threaded and against a host that takes one event at a time |
+| `core-tests` | Parameter text and tapers for every product parameter; DSP blocks; the Engine's contracts (bit-identical output under random automation at any block sizes, float = double, in place = separate buffers, bypass exact after its fade, telemetry rate independent of event density, NaN never reaching the host from the processor, through bypass or by float overflow, the transport each split sees, reset preserving values, and a state loaded before reset rendering exactly what a fresh instance renders); state format; the edit bridge, single- and multi-threaded and against a host that takes one event at a time |
 | `processor-tests` | The product's own claims (`product/test/`) |
 | `ui-tests` | Interaction rules (drag, Shift, wheel, keys, text entry, menus, focus loss); repaint on host-side changes; layout lint; a 20 000-event fuzz of the real editor that fails on any nested or unbalanced gesture |
 | `plugin-tests` | The CLAP surface in process: descriptor, parameter list, state into a fresh instance, every bus layout, bypass, editor edits reaching a stopped host, edits and preset recalls during playback on real threads, telemetry gating, the restart protocol, the output constant hint cleared, tail changes announced, an instrument ending every note it was given |
-| `host-smoke-<n>ch` | The built `.clap` loaded from disk, once per bus width: ports, text round trips and rejection, float/double and in-place renders, no restart storms, the latency protocol when `PRODUCT_SMOKE_LATENCY_PARAM` is set, state into a fresh instance and byte-identical resave |
+| `host-smoke-<n>ch` | The built `.clap` loaded from disk, once per bus width: ports, text round trips and rejection, float/double and in-place renders, no restart storms, the latency protocol when `PRODUCT_SMOKE_LATENCY_PARAM` is set, state into a fresh instance and byte-identical resave, and CLAP's reset contract: a state loaded into a used instance and reset renders bit-identically to a fresh instance with that state |
 | `patch-*` | Each clap-wrapper and Pugl patch is still applied to the pinned checkout |
 | `probe-audio-tests` | Probe audio buffers match mono, multichannel and instrument ports, with separate input/output storage |
 | `framework-update` | `update_framework.cmake` makes a product's `framework/` the template's and changes no other file; a refused update changes nothing |

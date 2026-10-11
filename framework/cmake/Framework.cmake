@@ -29,8 +29,12 @@ option(SUPPLE_BUILD_PLUGIN "Build the CLAP, VST3 and AUv2 plugins" ON)
 option(SUPPLE_BUILD_GUI "Build the editor" ON)
 option(SUPPLE_BUILD_TESTS "Build the tests, tools and probes" ON)
 option(SUPPLE_WARNINGS_AS_ERRORS "Treat warnings in framework and product code as errors" OFF)
-set(SUPPLE_SANITIZE "" CACHE STRING "Instrument our code: empty, address (with undefined), or thread")
-set_property(CACHE SUPPLE_SANITIZE PROPERTY STRINGS "" address thread)
+set(SUPPLE_SANITIZE "" CACHE STRING "Instrument our code: empty, address (with undefined), thread, or realtime")
+set_property(CACHE SUPPLE_SANITIZE PROPERTY STRINGS "" address thread realtime)
+if (SUPPLE_SANITIZE STREQUAL "realtime" AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "SUPPLE_SANITIZE=realtime needs clang 20 or later (RealtimeSanitizer); "
+                        "this build uses ${CMAKE_CXX_COMPILER_ID}")
+endif()
 if (APPLE)
     # Apple deprecated OpenGL in 2018. It still works, but the direction is
     # not in doubt: macOS renders through Metal, GL everywhere else.
@@ -39,7 +43,7 @@ else()
     set(SUPPLE_METAL OFF)
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -51,8 +55,27 @@ function(supple_sanitize target)
         set(flags -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
     elseif (SUPPLE_SANITIZE STREQUAL "thread")
         set(flags -fsanitize=thread)
+    elseif (SUPPLE_SANITIZE STREQUAL "realtime")
+        # Every function marked SUPPLE_REALTIME (core/Realtime.h) becomes a
+        # real-time context at run time: an allocation, lock, blocking system
+        # call or I/O anywhere beneath it aborts with a stack trace.
+        set(flags -fsanitize=realtime)
+        target_compile_definitions(${target} PRIVATE SUPPLE_RTSAN=1)
+        if (UNIX AND NOT APPLE)
+            # On Linux the runtime is a static archive, linked into
+            # executables only. A plugin module resolves it from the host
+            # that loads it, so test executables export their symbols, and
+            # modules may leave the runtime's undefined -- the VST3 wrapper
+            # links with --no-undefined, which this must come after.
+            get_target_property(type ${target} TYPE)
+            if (type STREQUAL "EXECUTABLE")
+                target_link_options(${target} PRIVATE -rdynamic)
+            elseif (type STREQUAL "MODULE_LIBRARY" OR type STREQUAL "SHARED_LIBRARY")
+                target_link_libraries(${target} PRIVATE "-Wl,-z,undefs")
+            endif()
+        endif()
     else()
-        message(FATAL_ERROR "SUPPLE_SANITIZE must be empty, address or thread")
+        message(FATAL_ERROR "SUPPLE_SANITIZE must be empty, address, thread or realtime")
     endif()
     target_compile_options(${target} PRIVATE ${flags})
     target_link_options(${target} PRIVATE ${flags})

@@ -147,7 +147,10 @@ if (SUPPLE_BUILD_PLUGIN)
     # https://github.com/free-audio/clap-validator), or pointed to with
     # -DSUPPLE_CLAP_VALIDATOR=/path/to/clap-validator.
     find_program(SUPPLE_CLAP_VALIDATOR clap-validator)
-    if (SUPPLE_CLAP_VALIDATOR)
+    if (SUPPLE_CLAP_VALIDATOR AND NOT SUPPLE_SANITIZE STREQUAL "")
+        # It cannot load a module that expects a sanitizer runtime from its host.
+        message(STATUS "clap-validator is not run against a sanitizer build")
+    elseif (SUPPLE_CLAP_VALIDATOR)
         if (APPLE)
             set(validated "${SUPPLE_ASSETS}/${PRODUCT_NAME}.clap")
         else()

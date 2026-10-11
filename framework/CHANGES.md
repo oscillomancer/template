@@ -4,6 +4,35 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.5.0
+
+Foundations for the features that follow: a newer language, a sanitizer for
+the real-time rules, and CLAP's reset contract kept exactly.
+
+- **C++20.** Framework and product code compile as C++20. A product that
+  relied on something C++20 removed (implicit `this` capture in `[=]`,
+  `volatile` compound assignment, comparison rewrites) gets a compiler error
+  pointing at it.
+- **The presets moved into `framework/cmake/presets.json`**, which the root
+  `CMakePresets.json` includes, so future framework updates bring new presets
+  with them. **A product must replace its root `CMakePresets.json` with the
+  template's** (three lines), adding back any presets of its own.
+- **`rtsan` preset**: clang's RealtimeSanitizer. The framework's audio-thread
+  entry points (`Engine::process`, `flush`, `reset`; CLAP `process`,
+  `params.flush`, `reset`) are marked `SUPPLE_REALTIME` (`core/Realtime.h`),
+  so every test that renders aborts, with a stack trace, on any allocation,
+  lock, blocking call or file access beneath them -- in the product's
+  processor included. Needs LLVM clang 20 or later. A test host's output
+  event list that allocates is caught too: `plugin-tests`' now does not.
+- **Reset adopts a state loaded just before it.** `Engine::reset()` read the
+  values the processor already had, so a state loaded and then reset glided
+  from the old values instead of snapping to the new ones, and a reused
+  instance did not render what a fresh one with the same state renders.
+  `core-tests` (`after_reset_output_depends_only_on_the_state`) and
+  `host-smoke` (through the built `.clap`) now check that contract
+  bit-for-bit. A product whose `reset()` leaves anything behind -- a filter's
+  memory, a random generator's position, an envelope -- fails them.
+
 ## 1.4.0
 
 What the first product moved onto the framework (Ferric) needed. Nothing

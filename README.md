@@ -54,7 +54,7 @@ control and every pattern the framework expects; replace it.
 ## Status
 
 Built and tested on Linux (X11/OpenGL): every test in the release, debug,
-AddressSanitizer and ThreadSanitizer presets, clap-validator, X11 embedding,
+AddressSanitizer, ThreadSanitizer and RealtimeSanitizer presets, clap-validator, X11 embedding,
 and REAPER loading the CLAP. macOS (Metal, AUv2) is built and tested by CI
 (see [BUILDING.md](framework/docs/BUILDING.md#continuous-integration)):
 every test, `auval`, pluginval, clap-validator, and the editor opening in a

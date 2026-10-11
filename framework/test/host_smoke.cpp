@@ -450,6 +450,84 @@ int main(int argc, char** argv) {
         fresh->destroy(fresh);
     }
 
+    // --- reset ---
+    //
+    // CLAP's reset() promises that what follows depends only on the state. A
+    // host that reuses one instance across renders (an offline bounce, a
+    // render farm, an agent's sandbox) relies on it: load a state, reset,
+    // render, and expect exactly what a fresh instance with that state
+    // renders. Bypass is held off so the DSP itself is what is compared.
+    {
+        auto setAll = [&](double position) {
+            for (uint32_t i = 0; i < np; ++i) {
+                clap_param_info_t info{};
+                if (!params->get_info(plug, i, &info) || (info.flags & CLAP_PARAM_IS_READONLY)) continue;
+                double v = info.min_value + position * (info.max_value - info.min_value);
+                if (info.flags & CLAP_PARAM_IS_STEPPED) v = std::round(v);
+                if (info.flags & CLAP_PARAM_IS_BYPASS) v = info.min_value;
+                setParamEvent(info.id, v);
+                for (uint32_t k = 0; k < block; ++k) l[k] = r[k] = 0.0f;
+                plug->process(plug, &proc);
+            }
+            g_events.active = false;
+        };
+        uint32_t seed = 12345;
+        auto noise = [&] {
+            seed = seed * 1664525u + 1013904223u;
+            return (float)((int32_t)seed) * (0.25f / 2147483648.0f);
+        };
+        auto render = [&](const clap_plugin_t* p, int blocks) {
+            seed = 777;
+            std::vector<float> out;
+            clap_process_t pr = proc;
+            for (int b = 0; b < blocks; ++b) {
+                for (uint32_t k = 0; k < block; ++k) l[k] = r[k] = isInstrument ? 0.0f : noise();
+                p->process(p, &pr);
+                out.insert(out.end(), l.begin(), l.end());
+                if (channels > 1) out.insert(out.end(), r.begin(), r.end());
+            }
+            return out;
+        };
+
+        setAll(0.35);
+        MemStream wanted;
+        clap_ostream_t ow{&wanted, memWrite};
+        state->save(plug, &ow);
+        setAll(0.8);
+        for (int b = 0; b < 40; ++b) {
+            for (uint32_t k = 0; k < block; ++k) l[k] = r[k] = isInstrument ? 0.0f : noise();
+            plug->process(plug, &proc);
+        }
+        clap_istream_t iw{&wanted, memRead};
+        check(state->load(plug, &iw), "a state loads into the active instance");
+        plug->reset(plug);
+        const std::vector<float> reused = render(plug, 60);
+
+        const clap_plugin_t* fresh = fac->create_plugin(fac, &host, desc->id);
+        fresh->init(fresh);
+        host_contract::selectLayout(fresh, channels);
+        auto* freshState = (const clap_plugin_state_t*)fresh->get_extension(fresh, CLAP_EXT_STATE);
+        wanted.pos = 0;
+        clap_istream_t iw2{&wanted, memRead};
+        freshState->load(fresh, &iw2);
+        fresh->activate(fresh, 48000.0, 32, block);
+        fresh->start_processing(fresh);
+        const std::vector<float> clean = render(fresh, 60);
+        fresh->stop_processing(fresh);
+        fresh->deactivate(fresh);
+        fresh->destroy(fresh);
+        size_t first = reused.size();
+        for (size_t k = 0; k < reused.size() && k < clean.size(); ++k)
+            if (reused[k] != clean[k]) {
+                first = k;
+                break;
+            }
+        if (first < reused.size())
+            std::printf("     first difference at sample %zu: %g vs %g\n", first, reused[first], clean[first]);
+        check(reused.size() == clean.size() && first == reused.size(),
+              "after state + reset(), output equals a fresh instance's");
+    }
+
     plug->stop_processing(plug);
     plug->deactivate(plug);
     plug->destroy(plug);
