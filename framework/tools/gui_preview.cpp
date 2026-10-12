@@ -476,6 +476,7 @@ int preview(const char* output, std::vector<std::string> args) {
 
     EditorBase& editor = gui.editor();
     auto centre = [&](const char* name, float& x, float& y) {
+        editor.idle(0.0);  // a preceding staged click may have changed an enabledWhen rule
         int c = -1;
         const Ui& ui = editor.layout();
         if (!std::strcmp(name, "Presets")) {
