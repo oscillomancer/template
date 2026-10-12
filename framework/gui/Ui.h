@@ -527,6 +527,7 @@ class Ui {
     std::string presetName_;
     bool presetModified_ = false;
     int presetSlot_ = 0;
+    uint64_t presetRevision_ = 0;
     double presetPoll_ = 0.0;
 };
 

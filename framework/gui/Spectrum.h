@@ -109,7 +109,8 @@ class Spectrum {
 };
 
 // A signal's RMS over a sliding 300 ms (an exponential window), in dBFS: a
-// full-scale sine reads -3 dB. Push every new sample.
+// full-scale sine reads -3 dB. Push every new sample; EditorBase's own
+// meters fall by themselves once the host stops sending any.
 class RmsMeter {
   public:
     static constexpr float kFloorDb = -72.0f;
@@ -122,6 +123,10 @@ class RmsMeter {
     float levelDb() const {
         return std::max(kFloorDb, static_cast<float>(10.0 * std::log10(meanSquare_ + 1e-30)));
     }
+    // No samples for `seconds` (the host stopped): fall as that much silence
+    // would.
+    void fall(double seconds) { meanSquare_ *= std::exp(-std::max(0.0, seconds) / kWindowSeconds); }
+    bool moving() const { return levelDb() > kFloorDb; }
     void reset() { meanSquare_ = 0.0; }
 
   private:

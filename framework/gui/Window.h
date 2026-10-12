@@ -73,6 +73,12 @@ class Window : public Clipboard {
     // Called from the pugl event thunk; not part of the API.
     void handleEvent(const void* event);
 
+    // The most pixels a view spans (PuglSpan is 16 bits), and host units at
+    // a backing scale in whole pixels: past that span kMaxSpan + 1, never a
+    // size that wrapped round to a small one.
+    static constexpr uint32_t kMaxSpan = 0xFFFF;
+    static uint32_t pixels(uint32_t hostUnits, double scale);
+
     // Clipboard
     bool copy(std::string_view text) override;
     bool paste(std::function<void(std::string_view)> done) override;

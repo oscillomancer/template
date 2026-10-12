@@ -146,6 +146,9 @@ class Reader {
 };
 
 inline constexpr size_t kMaxPresetName = 255;
+// The most state any reader takes -- a host's stream, a preset file, the
+// clipboard -- so that nothing unbounded is read into memory.
+inline constexpr size_t kMaxBytes = 64u << 20;
 
 // Everything a state blob can carry, decoded and validated. Defaults until
 // something sets them; `property[i]` holds a value only where `hasProperty[i]`.
@@ -203,7 +206,7 @@ inline std::vector<uint8_t> save(uint32_t magic, const Snapshot& s, Context cont
         w.f64(s.editorScale);
         w.endChunk(editor);
     }
-    if (!preset && s.hasPreset) {
+    if (!preset && s.hasPreset && s.presetName.size() <= kMaxPresetName) {
         const size_t named = w.beginChunk(kPresetChunk);
         w.u32(s.presetModified ? 1u : 0u);
         w.text(s.presetName);
@@ -211,6 +214,21 @@ inline std::vector<uint8_t> save(uint32_t magic, const Snapshot& s, Context cont
     }
     return w.bytes();
 }
+
+// The longest blob save() can write, every property at its limit: no more
+// than kMaxBytes, or a session could save what no reader would load back.
+template <class Properties = PropertyTable>
+constexpr size_t maxSavedBytes() {
+    size_t n = 4 + 4;                                                // magic, version
+    n += 8 + 4 + (4 + 8) * (params::kCount - params::kOutputCount);  // PARM
+    if (Properties::kCount > 0) n += 8 + 4;                           // PROP
+    for (size_t i = 0; i < Properties::kCount; ++i) n += 4 + 4 + Properties::at(i).limit;
+    n += 8 + 8;                       // EDIT
+    n += 8 + 4 + 4 + kMaxPresetName;  // PRST
+    return n;
+}
+static_assert(maxSavedBytes() <= kMaxBytes,
+              "the properties' limits add up to more state than will load back (64 MiB): lower some maxBytes()");
 
 enum class LoadResult { Ok, NotOurs, Corrupt };
 

@@ -79,6 +79,22 @@ TEST(nonautomatable_modifiers_clear_every_modulation_scope) {
         CHECK(!p.is(pflag::kAutomatable | pflag::kModulatable | pflag::kPolyMod));
 }
 
+TEST(nan_or_infinite_parameter_numbers_do_not_build) {
+    // What the product table's static_assert runs, on tables of one.
+    constexpr double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
+    constexpr ParamDef good = decibels(0, "Gain", -24.0, 24.0, 0.0);
+    constexpr auto table = [](ParamDef p) { return std::array<ParamDef, 1>{p}; };
+    constexpr auto with = [](ParamDef p, double ParamDef::*field, double v) {
+        p.*field = v;
+        return p;
+    };
+    static_assert(params::detail::rangesValid(table(good)));
+    for (double ParamDef::*field : {&ParamDef::min, &ParamDef::max, &ParamDef::def, &ParamDef::curve, &ParamDef::smoothing})
+        for (double bad : {nan, inf, -inf}) CHECK(!params::detail::rangesValid(table(with(good, field, bad))));
+    static_assert(!params::detail::rangesValid(table(with(good, &ParamDef::def, nan))));
+    static_assert(!params::detail::rangesValid(table(with(good, &ParamDef::max, inf))));
+}
+
 TEST(frequency_text_switches_units_where_the_rounded_value_does) {
     const ParamDef f = frequency(0, "F", 20.0, 20000.0, 1000.0);
     CHECK(text(f, toHost(f, 1000.0)) == "1.00 kHz");
@@ -1991,6 +2007,35 @@ TEST(edit_bridge_is_safe_across_threads) {
     for (size_t i = 0; i < params::kCount; ++i) bridge.end(i);
     done = true;
     consumer.join();
+}
+
+namespace {
+template <size_t N>
+struct FullProperties {
+    static constexpr size_t kCount = N, kSlots = N;
+    static constexpr PropertyDef at(size_t i) {
+        return property(static_cast<uint32_t>(i), "Blob").maxBytes(properties::kMaxBytes);
+    }
+};
+}  // namespace
+
+TEST(properties_cannot_add_up_to_more_state_than_loads_back) {
+    // What the product's static_assert checks: 63 full properties fit, 64 do not.
+    static_assert(state::maxSavedBytes<FullProperties<63>>() <= state::kMaxBytes);
+    static_assert(state::maxSavedBytes<FullProperties<64>>() > state::kMaxBytes);
+    // And the bound is the real worst case: every property at its limit,
+    // the editor's scale and the longest preset name kept.
+    state::Snapshot s;
+    s.defaultProperties();
+    for (size_t i = 0; i < properties::kCount; ++i) s.property[i].assign(properties::at(i).limit, 'x');
+    s.editorScale = 1.5;
+    s.hasPreset = true;
+    s.presetName.assign(state::kMaxPresetName, 'n');
+    CHECK(state::save(state::fourcc("TEST"), s).size() == state::maxSavedBytes());
+    // A longer name would not load, so it is not saved.
+    s.presetName += 'n';
+    CHECK(state::save(state::fourcc("TEST"), s).size() < state::maxSavedBytes());
+    std::printf("      at most %zu bytes of state in this product\n", state::maxSavedBytes());
 }
 
 namespace {

@@ -6,6 +6,7 @@
 // logic in a test with no display.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
@@ -74,6 +75,26 @@ inline NVGcontext* createFillRecorder(std::vector<std::vector<int>>* windings) {
             fills.back().push_back(area < 0.0f ? 1 : -1);  // NanoVG's fill vertices run against its winding
         }
     };
+    return nvgCreateInternal(&p);
+}
+
+// Records the clip each fill and stroke is drawn under, as {left, top,
+// right, bottom}; an unclipped one as all zeros. Drawn untransformed.
+using Clip = std::array<float, 4>;
+inline NVGcontext* createClipRecorder(std::vector<Clip>* clips) {
+    NVGparams p = headlessParams();
+    p.userPtr = clips;
+    static constexpr auto record = [](void* user, const NVGscissor* s) {
+        Clip clip{};
+        if (s->extent[0] >= 0.0f)
+            clip = {s->xform[4] - s->extent[0], s->xform[5] - s->extent[1], s->xform[4] + s->extent[0],
+                    s->xform[5] + s->extent[1]};
+        static_cast<std::vector<Clip>*>(user)->push_back(clip);
+    };
+    p.renderFill = [](void* user, NVGpaint*, NVGcompositeOperationState, NVGscissor* s, float, const float*,
+                      const NVGpath*, int) { record(user, s); };
+    p.renderStroke = [](void* user, NVGpaint*, NVGcompositeOperationState, NVGscissor* s, float, float,
+                        const NVGpath*, int) { record(user, s); };
     return nvgCreateInternal(&p);
 }
 

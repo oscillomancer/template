@@ -227,7 +227,8 @@ if (SUPPLE_BUILD_GUI)
     # Classes with the same product name may live in both CLAP and VST3
     # modules. NULL selects another module's class; keep creation and cleanup
     # tied to the DLL that registered it, so unloading one cannot strand a
-    # window procedure in the other.
+    # window procedure in the other. And on macOS, a drop lands where the
+    # mouse would: pugl passed the window's coordinates through unconverted.
     supple_apply_patches(pugl)
     if (SUPPLE_METAL)
         supple_declare(nanovg_metal)

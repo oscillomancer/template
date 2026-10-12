@@ -19,7 +19,6 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr uint32_t kMagic = state::fourcc(product::info::kStateTag);
-constexpr size_t kMaxFile = 64u << 20;
 
 std::string lower(std::string_view s) {
     std::string out(s);
@@ -117,6 +116,7 @@ void PresetLibrary::refresh() {
         entries_.insert(entries_.end(), user.begin(), user.end());
     }
     current_ = currentName.empty() ? -1 : findEntry(currentName, currentUser);
+    ++revision_;
 }
 
 int PresetLibrary::findEntry(std::string_view name, bool user) const {
@@ -193,7 +193,7 @@ bool PresetLibrary::loadFactory(size_t index) {
 
 bool PresetLibrary::loadFile(const fs::path& file) {
     std::vector<uint8_t> bytes;
-    if (!files::readBounded(file, bytes, kMaxFile) || !apply(bytes)) return false;
+    if (!files::readBounded(file, bytes, state::kMaxBytes) || !apply(bytes)) return false;
     // A file in the user folder is listed under its name; one from
     // elsewhere (a host's browser) is current by name only.
     std::error_code ec;
@@ -393,7 +393,7 @@ std::string encode(const std::vector<uint8_t>& bytes) {
 
 bool decode(std::string_view text, std::vector<uint8_t>& out) {
     out.clear();
-    if (text.empty() || text.size() % 4 != 0 || text.size() > kMaxFile) return false;
+    if (text.empty() || text.size() % 4 != 0 || text.size() > (state::kMaxBytes + 2) / 3 * 4) return false;
     for (size_t i = 0; i < text.size(); i += 4) {
         const bool last = i + 4 == text.size();
         const int pad = last ? (text[i + 3] == '=') + (text[i + 2] == '=') : 0;

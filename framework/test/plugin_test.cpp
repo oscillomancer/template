@@ -846,7 +846,7 @@ TEST(preset_discovery_lists_the_factory_and_the_users_folder) {
     CHECK(junk.presets.empty() && junk.errors == 1);
     const auto huge = folder.path / "Huge.preset";
     std::ofstream(huge).close();
-    std::filesystem::resize_file(huge, (64u << 20) + 1);
+    std::filesystem::resize_file(huge, state::kMaxBytes + 1);
     const auto directory = folder.path / "Directory.preset";
     std::filesystem::create_directory(directory);
     for (const auto& bad : {huge, directory, folder.path / "Unreadable.preset"}) {

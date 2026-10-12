@@ -1145,7 +1145,8 @@ void list(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& 
         return;
     }
     const int n = c.source->size(), rows = Ui::listRows(c), selected = c.source->selected();
-    nvgScissor(vg, b.x + 2.0f, b.y + 2.0f, b.w - 4.0f, b.h - 4.0f);
+    nvgSave(vg);
+    nvgIntersectScissor(vg, b.x + 2.0f, b.y + 2.0f, b.w - 4.0f, b.h - 4.0f);
     const bool scrolls = n > rows;
     for (int r = c.scroll; r < std::min(n, c.scroll + rows + 1); ++r) {
         Rect row = Ui::listRow(c, r);
@@ -1164,7 +1165,7 @@ void list(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& 
         fittedLabel(vg, row.x + 8.0f, row.cy() + 0.5f, text.c_str(), 11.5f, 9.0f, row.w - 16.0f,
                     on ? rgb(t.text) : rgb(t.textMuted), Align::Left, on);
     }
-    nvgResetScissor(vg);
+    nvgRestore(vg);
     if (scrolls) {
         const Rect track{b.right() - 8.0f, b.y + 5.0f, 3.0f, b.h - 10.0f};
         const float thumb = std::max(16.0f, track.h * static_cast<float>(rows) / static_cast<float>(n));
@@ -1303,7 +1304,7 @@ void levelGrid(NVGcontext* vg, const Theme& t, Rect r, const Axis& db, double st
 void plot(NVGcontext* vg, Rect r, const Axis& x, const Axis& y, const std::function<double(double)>& f,
           NVGcolor colour, float width, const double* fillTo) {
     nvgSave(vg);
-    nvgScissor(vg, r.x, r.y, r.w, r.h);
+    nvgIntersectScissor(vg, r.x, r.y, r.w, r.h);
     const int points = std::max(2, static_cast<int>(r.w / 2.0f) + 1);
     auto trace = [&] {
         nvgBeginPath(vg);
@@ -1337,7 +1338,7 @@ void plot(NVGcontext* vg, Rect r, const Axis& x, const Axis& y, const std::funct
 void trace(NVGcontext* vg, Rect r, const ValueHistory& values, const Axis& y, NVGcolor colour, float width) {
     const size_t n = values.size();
     nvgSave(vg);
-    nvgScissor(vg, r.x, r.y, r.w, r.h);
+    nvgIntersectScissor(vg, r.x, r.y, r.w, r.h);
     nvgBeginPath(vg);
     for (size_t k = 0; k < n; ++k) {
         const float px = r.x + r.w * static_cast<float>(k) / static_cast<float>(n - 1);
@@ -1354,7 +1355,7 @@ void trace(NVGcontext* vg, Rect r, const ValueHistory& values, const Axis& y, NV
 
 void spectrum(NVGcontext* vg, Rect r, const Spectrum& s, const Axis& hz, const Axis& db, NVGcolor colour) {
     nvgSave(vg);
-    nvgScissor(vg, r.x, r.y, r.w, r.h);
+    nvgIntersectScissor(vg, r.x, r.y, r.w, r.h);
     const float step = 2.0f;
     auto shape = [&] {
         nvgBeginPath(vg);
@@ -1403,7 +1404,7 @@ void waveform(NVGcontext* vg, Rect r, const AudioHistory& audio, Signal signal, 
     }
     const float mid = r.cy(), half = r.h * 0.5f;
     nvgSave(vg);
-    nvgScissor(vg, r.x, r.y, r.w, r.h);
+    nvgIntersectScissor(vg, r.x, r.y, r.w, r.h);
     nvgBeginPath(vg);
     for (int col = 0; col < columns; ++col) {
         const float px = r.x + r.w * static_cast<float>(col) / static_cast<float>(columns - 1);
@@ -1435,7 +1436,7 @@ void oscilloscope(NVGcontext* vg, Rect r, const AudioHistory& audio, Signal sign
     const float mid = r.cy(), half = r.h * 0.5f;
     const int points = std::max(2, static_cast<int>(std::min<double>(static_cast<double>(window), r.w * 2.0)));
     nvgSave(vg);
-    nvgScissor(vg, r.x, r.y, r.w, r.h);
+    nvgIntersectScissor(vg, r.x, r.y, r.w, r.h);
     nvgBeginPath(vg);
     for (int i = 0; i < points; ++i) {
         const double along = static_cast<double>(i) / (points - 1) * static_cast<double>(window - 1);

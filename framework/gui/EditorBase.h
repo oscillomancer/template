@@ -156,6 +156,7 @@ class EditorBase {
     // the last 2.7 seconds (at 48 kHz) of the main input and output.
     const AudioHistory& audio() const { return *audio_; }
     // Their RMS levels, per channel (kAudioFeed): -3 dB for a full-scale sine.
+    // When the host stops they fall as silence would, repainting as they do.
     const RmsMeter* inputRms() const { return inputRms_; }
     const RmsMeter* outputRms() const { return outputRms_; }
 
@@ -208,6 +209,7 @@ class EditorBase {
     std::vector<FeedFrame> feedScratch_;
     RmsMeter inputRms_[2], outputRms_[2];
     double silentFrames_ = 0.0;
+    double starved_ = 0.0;  // seconds since any audio arrived
     int held_ = -1;  // the button of a press onPointerDown() took, until it is released
     bool dropping_ = false;
     float dropX_ = 0.0f, dropY_ = 0.0f;

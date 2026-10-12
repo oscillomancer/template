@@ -158,13 +158,17 @@ double Window::pixelsPerUnit() const {
 #endif
 }
 
-uint32_t Window::toPixels(uint32_t hostUnits) const {
-    return static_cast<uint32_t>(std::lround(hostUnits * pixelsPerUnit()));
+uint32_t Window::pixels(uint32_t hostUnits, double scale) {
+    // In double throughout: a host's size times a 2x scale can pass 32 bits,
+    // and lround's long is 32 bits on Windows.
+    const double p = std::round(static_cast<double>(hostUnits) * scale);
+    return p <= kMaxSpan ? static_cast<uint32_t>(p) : kMaxSpan + 1;
 }
 
+uint32_t Window::toPixels(uint32_t hostUnits) const { return pixels(hostUnits, pixelsPerUnit()); }
+
 bool Window::setSize(uint32_t w, uint32_t h) {
-    // PuglSpan is 16 bits: a larger size would wrap, not clip.
-    constexpr uint32_t kMaxSpan = 0xFFFF;
+    // A larger size would wrap PuglSpan, not clip.
     if (w == 0 || h == 0 || toPixels(w) > kMaxSpan || toPixels(h) > kMaxSpan) return false;
     // Pugl applies CURRENT_SIZE only to a view that already has a native
     // window, and fails it otherwise; a view is realized at DEFAULT_SIZE.

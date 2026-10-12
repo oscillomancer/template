@@ -126,7 +126,7 @@ struct FunctionRows : ListSource {
 };
 
 // The presets as list rows: each factory category's header and presets,
-// then the user's. Rebuilt on every call; libraries are small.
+// then the user's.
 struct PresetRow {
     std::string text;
     int entry = -1;  // -1 for a header
@@ -152,6 +152,22 @@ std::vector<PresetRow> presetRows(const PresetLibrary& library) {
     }
     return rows;
 }
+
+// Those rows, built again only when the library's list has changed: a list
+// asks for them for every row it draws.
+struct PresetRowCache {
+    const PresetLibrary* library = nullptr;
+    uint64_t revision = 0;
+    std::vector<PresetRow> rows;
+    const std::vector<PresetRow>& of(const PresetLibrary& l) {
+        if (library != &l || revision != l.revision()) {
+            rows = presetRows(l);
+            library = &l;
+            revision = l.revision();
+        }
+        return rows;
+    }
+};
 
 }  // namespace
 
@@ -201,32 +217,36 @@ Control& Ui::add(uint32_t param, Widget widget, Rect bounds) {
 
 Control& Ui::presetList(Rect r) {
     auto rows = std::make_unique<FunctionRows>();
-    rows->count = [this] {
+    auto cache = std::make_shared<PresetRowCache>();
+    // No library, no rows.
+    const auto rowsNow = [this, cache]() -> const std::vector<PresetRow>& {
+        static const std::vector<PresetRow> none;
         const PresetLibrary* library = host_.presetLibrary();
-        return library ? static_cast<int>(presetRows(*library).size()) : 0;
+        return library ? cache->of(*library) : none;
     };
-    rows->text = [this](int row) {
-        const auto rowsNow = presetRows(*host_.presetLibrary());
-        return row >= 0 && row < static_cast<int>(rowsNow.size()) ? rowsNow[static_cast<size_t>(row)].text : std::string();
+    rows->count = [rowsNow] { return static_cast<int>(rowsNow().size()); };
+    rows->text = [rowsNow](int row) {
+        const auto& all = rowsNow();
+        return row >= 0 && row < static_cast<int>(all.size()) ? all[static_cast<size_t>(row)].text : std::string();
     };
-    rows->isHeader = [this](int row) {
-        const auto rowsNow = presetRows(*host_.presetLibrary());
-        return row >= 0 && row < static_cast<int>(rowsNow.size()) && rowsNow[static_cast<size_t>(row)].entry < 0;
+    rows->isHeader = [rowsNow](int row) {
+        const auto& all = rowsNow();
+        return row >= 0 && row < static_cast<int>(all.size()) && all[static_cast<size_t>(row)].entry < 0;
     };
-    rows->current = [this] {
-        PresetLibrary* library = host_.presetLibrary();
+    rows->current = [this, rowsNow] {
+        const PresetLibrary* library = host_.presetLibrary();
         if (!library || library->current() < 0) return -1;
-        const auto rowsNow = presetRows(*library);
-        for (size_t k = 0; k < rowsNow.size(); ++k)
-            if (rowsNow[k].entry == library->current()) return static_cast<int>(k);
+        const auto& all = rowsNow();
+        for (size_t k = 0; k < all.size(); ++k)
+            if (all[k].entry == library->current()) return static_cast<int>(k);
         return -1;
     };
-    rows->pick = [this](int row) {
+    rows->pick = [this, rowsNow](int row) {
         PresetLibrary* library = host_.presetLibrary();
         if (!library) return;
-        const auto rowsNow = presetRows(*library);
-        if (row >= 0 && row < static_cast<int>(rowsNow.size()) && rowsNow[static_cast<size_t>(row)].entry >= 0)
-            library->load(rowsNow[static_cast<size_t>(row)].entry);
+        const auto& all = rowsNow();
+        if (row >= 0 && row < static_cast<int>(all.size()) && all[static_cast<size_t>(row)].entry >= 0)
+            library->load(all[static_cast<size_t>(row)].entry);
         syncPresets(true);
     };
     if (PresetLibrary* library = host_.presetLibrary()) library->refresh();
@@ -430,9 +450,11 @@ int Ui::partAt(int i, float x, float y) const {
             return -1;
         }
         case Widget::List: {
-            if (!c.source) return -1;
+            // Whatever part of a row is drawn, including the last row cut
+            // off by the bottom edge, takes the click.
+            if (!c.source || !c.bounds.inset(2.0f, 2.0f).contains(x, y)) return -1;
             const int rows = listRows(c);
-            for (int r = c.scroll; r < std::min(c.source->size(), c.scroll + rows); ++r)
+            for (int r = c.scroll; r < std::min(c.source->size(), c.scroll + rows + 1); ++r)
                 if (listRow(c, r).contains(x, y)) return c.source->header(r) ? -1 : r;
             return -1;
         }
@@ -1864,10 +1886,12 @@ void Ui::syncPresets(bool force) {
     if (!shown && !force) return;
     presetPoll_ = 0.0;
     const bool modified = library->modified();
-    if (library->currentName() != presetName_ || modified != presetModified_ || library->slot() != presetSlot_) {
+    if (library->currentName() != presetName_ || modified != presetModified_ || library->slot() != presetSlot_ ||
+        library->revision() != presetRevision_) {
         presetName_ = library->currentName();
         presetModified_ = modified;
         presetSlot_ = library->slot();
+        presetRevision_ = library->revision();
         // A preset list follows the preset that loaded, wherever it came from.
         for (int i = 0; i < count(); ++i)
             if (controls_[static_cast<size_t>(i)].widget == Widget::List) listReveal(i);

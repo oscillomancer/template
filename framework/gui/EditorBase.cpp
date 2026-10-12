@@ -101,6 +101,16 @@ void EditorBase::idle(double seconds) {
         }
         // Three seconds of silence scroll through and settle; then nothing moves.
         if (arrived > 0 && silentFrames_ < 3.0 * rate) onAudio(arrived);
+        // The host stopped (longer than any block takes): the RMS meters fall
+        // as silence would make them.
+        if (arrived > 0) {
+            starved_ = 0.0;
+        } else if ((starved_ += seconds) > 0.25) {
+            for (RmsMeter* m : {&inputRms_[0], &inputRms_[1], &outputRms_[0], &outputRms_[1]}) {
+                if (m->moving()) dirty_ = true;
+                m->fall(seconds);
+            }
+        }
     }
     if (dropping_ && (dropAge_ += seconds) > 0.3) {  // the drag left, or was let go elsewhere
         dropping_ = false;

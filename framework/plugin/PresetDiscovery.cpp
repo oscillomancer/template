@@ -77,7 +77,7 @@ bool CLAP_ABI providerMetadata(const clap_preset_discovery_provider_t*, uint32_t
     const std::filesystem::path file = PresetLibrary::fromUtf8(location);
     std::vector<uint8_t> bytes;
     state::Snapshot snapshot;
-    if (!files::readBounded(file, bytes, 64u << 20) ||
+    if (!files::readBounded(file, bytes, state::kMaxBytes) ||
         state::load(bytes.data(), bytes.size(), state::fourcc(info::kStateTag), snapshot) != state::LoadResult::Ok) {
         receiver->on_error(receiver, 0, "not a preset of this plugin");
         return false;

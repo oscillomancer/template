@@ -8,12 +8,15 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <csignal>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <random>
 #include <set>
 #include <string>
+#include <thread>
 
 #include "Check.h"
 #include "HeadlessCanvas.h"
@@ -33,6 +36,7 @@
 #include "gui/Plot.h"
 #include "gui/Spectrum.h"
 #include "gui/Widgets.h"
+#include "gui/Window.h"
 #include "ProductInfo.h"
 #include "gui/Ui.h"
 
@@ -782,6 +786,31 @@ TEST(a_file_slot_chooses_takes_drops_clears_and_shows_its_state) {
     nvgDeleteInternal(vg);
 }
 
+TEST(a_preset_list_follows_every_change_to_the_library) {
+    MockHost host;
+    PresetLibrary& lib = *host.presets;
+    Ui ui(host, 800.0f, 600.0f);
+    ui.presetList({20, 20, 200, 300});
+    const ListSource& rows = *ui.control(0).source;
+    auto shows = [&](const char* name) {
+        for (int r = 0; r < rows.size(); ++r)
+            if (rows.item(r) == name && !rows.header(r)) return r;
+        return -1;
+    };
+    // Rows are kept between changes, and built again at each.
+    uint64_t revision = lib.revision();
+    CHECK(lib.save("Kept", false) == PresetLibrary::SaveResult::Ok);
+    CHECK(lib.revision() != revision);
+    CHECK(shows("Kept") >= 0 && rows.selected() == shows("Kept") && rows.header(shows("Kept") - 1));
+    revision = lib.revision();
+    CHECK(lib.rename(lib.current(), "Renamed"));
+    CHECK(lib.revision() != revision && shows("Kept") < 0 && shows("Renamed") >= 0);
+    CHECK(lib.remove(lib.current()));
+    bool userHeader = false;
+    for (int r = 0; r < rows.size(); ++r) userHeader = userHeader || (rows.header(r) && rows.item(r) == "User");
+    CHECK(shows("Renamed") < 0 && !userHeader);
+}
+
 TEST(the_preset_bar_steps_compares_saves_renames_and_deletes) {
     MockHost host;
     Ui ui{host, 800.0f, 600.0f};
@@ -966,6 +995,18 @@ TEST(a_click_in_a_scrolled_text_field_lands_on_the_character_under_it) {
     CHECK_MSG(e.caret == 35, "caret %d", e.caret);
     CHECK(e.scroll == scroll);  // nothing slid under the pointer
     editor.detach();
+    nvgDeleteInternal(vg);
+}
+
+TEST(a_product_font_that_will_not_load_draws_in_inter) {
+    NVGcontext* vg = test::createHeadlessCanvas();
+    CHECK(loadFonts(vg));
+    static const unsigned char broken[] = "not a font at all";
+    CHECK(nvgFindFont(vg, "Broken") < 0);
+    CHECK(loadFace(vg, "Broken", broken, sizeof(broken)));
+    CHECK(nvgFindFont(vg, "Broken") >= 0);
+    const float inter = widgets::textWidth(vg, "Level 12 dB", 12.0f, font::kUi);
+    CHECK(inter > 0.0f && widgets::textWidth(vg, "Level 12 dB", 12.0f, "Broken") == inter);
     nvgDeleteInternal(vg);
 }
 
@@ -1367,6 +1408,18 @@ TEST(a_list_scrolls_and_chooses_with_the_pointer_the_wheel_and_keys) {
     CHECK(rows.chosen == 11);  // past the header at 10
     CHECK(host.begins == 0);
 
+    // A row cut off by the bottom edge takes a click on the part drawn,
+    // and comes into view; below the list nothing does.
+    Rows cut;
+    Ui partial(host, 800.0f, 600.0f);
+    partial.list({20, 20, 200, 8 + Ui::kListRow * 6.5f}, cut);
+    CHECK(Ui::listRows(partial.control(0)) == 6);
+    const float bottom = partial.control(0).bounds.bottom();
+    partial.pointerDown(100, bottom + 1, 0, 0, false);
+    CHECK(cut.chosen == -1);
+    partial.pointerDown(100, bottom - 4, 0, 0, false);
+    CHECK(cut.chosen == 6 && partial.control(0).scroll == 1);
+
     // A choice parameter's options, chosen in one edit each.
     const int c = findParam([](const ParamDef& p) { return p.kind == ParamKind::Choice; });
     if (c < 0) return;
@@ -1377,6 +1430,30 @@ TEST(a_list_scrolls_and_chooses_with_the_pointer_the_wheel_and_keys) {
     other.key(key::kEnd, 0);
     CHECK(host.values[static_cast<size_t>(c)] == p.hostMax());
     CHECK(host.begins == 1 && host.ends == 1 && host.clean());
+}
+
+TEST(widgets_clip_inside_an_enclosing_clip_and_leave_it_in_place) {
+    MockHost host;
+    Ui ui(host, 400.0f, 400.0f);
+    Rows rows;
+    ui.list({50, 50, 200, 200}, rows);
+    std::vector<test::Clip> clips;
+    NVGcontext* vg = test::createClipRecorder(&clips);
+    nvgBeginFrame(vg, 400, 400, 1.0f);
+    nvgScissor(vg, 0, 0, 100, 100);
+    const Rect r{50, 50, 200, 200};
+    widgets::plot(vg, r, Axis::linear(0, 1, r.x, r.right()), Axis::linear(0, 1, r.bottom(), r.y),
+                  [](double v) { return v; }, nvgRGB(255, 255, 255));
+    widgets::control(vg, Theme{}, ui.control(0), ui.state(0));
+    nvgBeginPath(vg);
+    nvgRect(vg, 0, 0, 10, 10);
+    nvgFill(vg);
+    nvgEndFrame(vg);
+    nvgDeleteInternal(vg);
+    CHECK(clips.size() > 3);
+    for (const test::Clip& c : clips)  // never outside the enclosing clip
+        CHECK(c[0] >= 0.0f && c[1] >= 0.0f && c[2] > c[0] && c[3] > c[1] && c[2] <= 100.0f && c[3] <= 100.0f);
+    CHECK(clips.back() == (test::Clip{0.0f, 0.0f, 100.0f, 100.0f}));
 }
 
 TEST(the_keyboard_plays_a_note_slides_to_the_next_and_always_ends_it) {
@@ -1466,6 +1543,18 @@ TEST(the_spectrum_reads_a_full_scale_sine_at_0_dB_and_its_rms_at_minus_3) {
     for (size_t n = 0; n < sine.size(); ++n) sine[n] = static_cast<float>(std::sin(0.1 * static_cast<double>(n)));
     rms.push(sine.data(), sine.size(), rate);
     CHECK_NEAR(rms.levelDb(), -3.01, 0.05);
+    // With no samples, it falls as silence would: one time constant, -4.34 dB.
+    RmsMeter silent = rms;
+    std::vector<float> zeros(static_cast<size_t>(RmsMeter::kWindowSeconds * rate));
+    silent.push(zeros.data(), zeros.size(), rate);
+    rms.fall(RmsMeter::kWindowSeconds);
+    CHECK_NEAR(rms.levelDb(), silent.levelDb(), 1e-3);
+    CHECK_NEAR(rms.levelDb(), -3.01 - 4.34, 0.05);
+    rms.fall(-1.0);
+    CHECK_NEAR(rms.levelDb(), silent.levelDb(), 1e-3);
+    CHECK(rms.moving());
+    rms.fall(10.0);
+    CHECK(rms.levelDb() == RmsMeter::kFloorDb && !rms.moving());
 }
 
 TEST(svgs_parse_and_draw_and_every_asset_is_found) {
@@ -1536,6 +1625,51 @@ TEST(dropped_uri_lists_become_paths_and_dialog_commands_are_built) {
     const std::vector<std::string> kdialog = linuxDialogCommand("kdialog", o, true, 0);
     CHECK(kdialog[1] == "--getsavefilename" && kdialog[2] == "/tmp/Mine.preset");
 }
+
+#if defined(__linux__)
+TEST(a_linux_dialog_finishes_even_when_the_host_reaps_it) {
+    // A stand-in zenity that answers at once, chosen or cancelled.
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "supple-dialog-test";
+    std::filesystem::create_directories(dir);
+    const std::string savedPath = std::getenv("PATH") ? std::getenv("PATH") : "";
+    const std::string savedDesktop = std::getenv("XDG_CURRENT_DESKTOP") ? std::getenv("XDG_CURRENT_DESKTOP") : "";
+    setenv("PATH", dir.c_str(), 1);
+    unsetenv("XDG_CURRENT_DESKTOP");
+    auto run = [&](const char* script) {
+        {
+            std::ofstream out(dir / "zenity");
+            out << "#!/bin/sh\n" << script << "\n";
+        }
+        std::filesystem::permissions(dir / "zenity", std::filesystem::perms::owner_all);
+        NativeFiles files(0);
+        bool done = false;
+        std::vector<std::string> chosen{"unset"};
+        CHECK(files.open({}, [&](const std::vector<std::string>& paths) {
+            done = true;
+            chosen = paths;
+        }));
+        for (int i = 0; i < 500 && !done; ++i) {
+            files.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        CHECK(done);
+        return chosen;
+    };
+    const std::vector<std::string> picked{"/home/someone/a b.wav"};
+    CHECK(run("echo '/home/someone/a b.wav'") == picked);
+    CHECK(run("exit 1").empty());
+    // A host that collects every child itself: the exit status never comes.
+    struct sigaction ignore{}, saved{};
+    ignore.sa_handler = SIG_IGN;
+    sigaction(SIGCHLD, &ignore, &saved);
+    CHECK(run("echo '/home/someone/a b.wav'") == picked);
+    CHECK(run("exit 1").empty());
+    sigaction(SIGCHLD, &saved, nullptr);
+    setenv("PATH", savedPath.c_str(), 1);
+    if (!savedDesktop.empty()) setenv("XDG_CURRENT_DESKTOP", savedDesktop.c_str(), 1);
+    std::filesystem::remove_all(dir);
+}
+#endif
 
 // --- the product's editor -------------------------------------------------------------------
 
@@ -1784,6 +1918,66 @@ TEST(the_last_meter_frame_repaints_before_the_editor_idles) {
     CHECK(!editor.needsRepaint());
     editor.detach();
     nvgDeleteInternal(vg);
+}
+
+TEST(rms_meters_fall_and_repaint_when_the_host_stops) {
+    if constexpr (!product::Processor::kAudioFeed) {
+        std::printf("      (no audio feed in this product)\n");
+        return;
+    }
+    struct FeedHost : MockHost {
+        size_t pending = 0;
+        size_t readAudio(FeedFrame* out, size_t max) override {
+            const size_t n = std::min(pending, max);
+            for (size_t k = 0; k < n; ++k) out[k] = {{0.5f, 0.5f}, {0.5f, 0.5f}};
+            pending -= n;
+            return n;
+        }
+    };
+    struct RmsEditor : EditorBase {
+        explicit RmsEditor(EditorHost& host) : EditorBase(host, Theme{}, 100, 100) {}
+        void paint(NVGcontext*) override {}
+        void onAudio(size_t) override {}  // only the meters ask to repaint
+        float level() const { return outputRms()[0].levelDb(); }
+    };
+    FeedHost host;
+    RmsEditor editor(host);
+    NVGcontext* vg = test::createHeadlessCanvas();
+    CHECK(editor.attach(vg));
+    auto draw = [&] {
+        nvgBeginFrame(vg, 100, 100, 1.0f);
+        editor.render(vg);
+        nvgEndFrame(vg);
+    };
+    host.pending = static_cast<size_t>(10 * host.sampleRate());
+    editor.idle(0.016);
+    CHECK_NEAR(editor.level(), -6.02, 0.05);  // 0.5 held: settled
+    draw();
+    editor.idle(0.1);  // a gap between blocks: nothing falls yet
+    CHECK_NEAR(editor.level(), -6.02, 0.05);
+    CHECK(!editor.needsRepaint());
+    editor.idle(0.2);
+    CHECK(editor.level() < -6.5);
+    int ticks = 0;
+    for (; ticks < 200 && editor.level() > RmsMeter::kFloorDb; ++ticks) {
+        CHECK(editor.needsRepaint());  // including the tick that reaches the floor
+        draw();
+        editor.idle(0.05);
+    }
+    CHECK(ticks < 200 && editor.needsRepaint());
+    draw();
+    editor.idle(0.05);
+    CHECK(!editor.needsRepaint());
+    editor.detach();
+    nvgDeleteInternal(vg);
+}
+
+TEST(host_sizes_become_pixels_without_wrapping) {
+    CHECK(Window::pixels(800, 1.0) == 800 && Window::pixels(800, 2.0) == 1600);
+    CHECK(Window::pixels(0x7FFF, 2.0) == 0xFFFE);
+    CHECK(Window::pixels(0x8000, 2.0) == Window::kMaxSpan + 1);
+    CHECK(Window::pixels(0x80000000u, 2.0) == Window::kMaxSpan + 1);  // 2^32 pixels: once 0, and accepted
+    CHECK(Window::pixels(0xFFFFFFFFu, 1.0) == Window::kMaxSpan + 1);  // past a 32-bit long
 }
 
 TEST(an_idle_editor_repaints_when_the_host_changes_a_value) {

@@ -3,8 +3,8 @@
 //
 // Binds the framework to the product's parameter table (product/Params.h) and
 // checks that table at compile time. A duplicated ID, a default outside its
-// range or a log taper that starts at zero is a build error, not a session
-// that misbehaves in a host months later.
+// range, a NaN or infinite bound or a log taper that starts at zero is a
+// build error, not a session that misbehaves in a host months later.
 //
 // Parameter IDs are session ABI and need not be dense: a product may reserve
 // ranges (globals 0..63, band b at 64 + 32 * b, ...). Storage everywhere is by
@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 
 #include "core/Param.h"
 #include "Params.h"
@@ -59,8 +60,17 @@ constexpr bool namesUnique() {
     return true;
 }
 
-constexpr bool rangesValid() {
-    for (const auto& p : product::kParams) {
+// Not NaN and not infinite, by comparison alone (std::isfinite is not
+// constexpr before C++23).
+constexpr bool finite(double v) {
+    return v >= -std::numeric_limits<double>::max() && v <= std::numeric_limits<double>::max();
+}
+
+template <class Table>
+constexpr bool rangesValid(const Table& table) {
+    for (const auto& p : table) {
+        if (!finite(p.min) || !finite(p.max) || !finite(p.def) || !finite(p.curve) || !finite(p.smoothing))
+            return false;
         if (!(p.max > p.min) || p.def < p.min || p.def > p.max) return false;
         if (p.taper == Taper::Log && p.min <= 0.0) return false;
         if (p.taper == Taper::Power && p.curve <= 0.0) return false;
@@ -129,9 +139,9 @@ constexpr bool modifiersValid() {
 
 static_assert(detail::idsUnique(), "two parameters share an ID");
 static_assert(detail::namesUnique(), "parameter names must be present and unique");
-static_assert(detail::rangesValid(),
-              "a parameter has max <= min, a default outside its range, a log taper with "
-              "min <= 0, or a power taper with curve <= 0");
+static_assert(detail::rangesValid(product::kParams),
+              "a parameter has a NaN or infinite number, max <= min, a default outside its range, a log "
+              "taper with min <= 0, or a power taper with curve <= 0");
 static_assert(detail::labelsValid(),
               "a choice's label count does not match its range, a toggle is not 0..1, or a "
               "stepped default is not a whole number");

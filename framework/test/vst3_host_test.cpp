@@ -13,7 +13,13 @@
 //     carries them as parameters) and reach the processor: the same notes,
 //     pitch bend, mod wheel, automation and audio rendered through both
 //     formats give the same output on every bus, and the same notes and
-//     MIDI out.
+//     MIDI out;
+//   - and so do 96 notes held at once -- three times clap-wrapper's stock
+//     room for 32 -- across a stop and start of processing.
+//
+// Every VST3 process call is a real-time context (core/Realtime.h): under
+// the rtsan preset, an allocation or lock anywhere in it -- the wrapper's
+// own work around the CLAP call included -- fails the test.
 //
 // Linux only, like vst3-unload: it opens the modules with dlopen.
 #include <dlfcn.h>
@@ -36,6 +42,7 @@
 #include <pluginterfaces/vst/vstspeaker.h>
 
 #include "core/ParamTable.h"
+#include "core/Realtime.h"
 #include "host_contract.h"
 #include "Check.h"
 #include "ProductInfo.h"
@@ -178,6 +185,27 @@ constexpr int kNoteOnBlock = 2, kBendBlock = 10, kWheelBlock = 14, kParamBlock =
 constexpr int kKey = 69, kNoteId = 5;
 constexpr float kVelocity = 0.75f;
 
+// The dense performance: 48 notes struck in one block and 48 more in
+// another, every one held, processing stopped and started in between (which
+// clap-wrapper turns into a reset), then all released together.
+constexpr int kDenseBlocks = 20, kStrikeBlock = 2, kRestartBlock = 5, kStrikeAgainBlock = 8, kReleaseBlock = 12;
+constexpr int kDenseNotes = 48;
+struct DenseNote {
+    bool on;
+    int key, id, offset;
+};
+// This block's notes, in time order.
+std::vector<DenseNote> denseNotes(int block) {
+    std::vector<DenseNote> notes;
+    for (int k = 0; k < kDenseNotes; ++k) {
+        if (block == kStrikeBlock) notes.push_back({true, 30 + k, 100 + k, k * 5});
+        if (block == kStrikeAgainBlock) notes.push_back({true, 30 + kDenseNotes + k, 200 + k, k * 5});
+    }
+    for (int k = 0; block == kReleaseBlock && k < 2 * kDenseNotes; ++k)
+        notes.push_back({false, 30 + k, k < kDenseNotes ? 100 + k : 200 + k - kDenseNotes, k * 2});
+    return notes;
+}
+
 // The parameter both formats automate: the one host-smoke uses.
 int automatedParam() {
     for (size_t i = 0; i < supple::params::kCount; ++i)
@@ -297,7 +325,12 @@ std::string narrow(const Vst::String128 s) {
     return out;
 }
 
-Result renderVst3(Vst3Module& m, const info::LayoutInfo& layout) {
+// The host's call into the VST3, as a real-time context.
+tresult processRealtime(Vst::IAudioProcessor* processor, Vst::ProcessData& data) SUPPLE_REALTIME {
+    return processor->process(data);
+}
+
+Result renderVst3(Vst3Module& m, const info::LayoutInfo& layout, bool dense = false) {
     Result r;
     Vst3Instance v(m);
     if (!v.processor) return Result(false);
@@ -329,9 +362,13 @@ Result renderVst3(Vst3Module& m, const info::LayoutInfo& layout) {
     const bool mapped = v.midi && v.midi->getMidiControllerAssignment(0, 0, Vst::kPitchBend, bendId) == kResultOk &&
                         v.midi->getMidiControllerAssignment(0, 0, 1, wheelId) == kResultOk;
     if (info::kNoteInput && !mapped) return Result(false);
-    const int param = automatedParam();
+    const int param = dense ? -1 : automatedParam();
 
-    for (int block = 0; block < kBlocks; ++block) {
+    for (int block = 0; block < (dense ? kDenseBlocks : kBlocks); ++block) {
+        if (dense && block == kRestartBlock) {
+            v.processor->setProcessing(false);
+            v.processor->setProcessing(true);
+        }
         // The sidechain follows the main input among the inputs.
         for (size_t b = 0; b < in.size(); ++b)
             for (size_t c = 0; c < width; ++c)
@@ -357,11 +394,20 @@ Result renderVst3(Vst3Module& m, const info::LayoutInfo& layout) {
             int32 index = 0, at = 0;
             changes.addParameterData(id, index)->addPoint(0, value, at);
         };
-        if (info::kNoteInput && block == kNoteOnBlock) note(true);
-        if (info::kNoteInput && block == kNoteOffBlock) note(false);
-        if (info::kNoteInput && block == kBendBlock) point(bendId, 1.0);
-        if (info::kNoteInput && block == kBendBackBlock) point(bendId, 0.0);
-        if (info::kNoteInput && block == kWheelBlock) point(wheelId, 1.0);
+        const bool performance = info::kNoteInput && !dense;
+        if (performance && block == kNoteOnBlock) note(true);
+        if (performance && block == kNoteOffBlock) note(false);
+        if (performance && block == kBendBlock) point(bendId, 1.0);
+        if (performance && block == kBendBackBlock) point(bendId, 0.0);
+        if (performance && block == kWheelBlock) point(wheelId, 1.0);
+        for (const DenseNote& n : dense ? denseNotes(block) : std::vector<DenseNote>{}) {
+            Vst::Event e{};
+            e.sampleOffset = n.offset;
+            e.type = n.on ? Vst::Event::kNoteOnEvent : Vst::Event::kNoteOffEvent;
+            if (n.on) e.noteOn = {0, static_cast<int16>(n.key), 0.0f, kVelocity, 0, n.id};
+            else e.noteOff = {0, static_cast<int16>(n.key), kVelocity, n.id, 0.0f};
+            events.addEvent(e);
+        }
         if (param >= 0 && block == kParamBlock) point(supple::params::at(static_cast<size_t>(param)).id, kAutomated);
 
         Vst::ProcessData data{};
@@ -376,7 +422,7 @@ Result renderVst3(Vst3Module& m, const info::LayoutInfo& layout) {
         data.outputEvents = &sent;
         data.inputParameterChanges = &changes;
         data.outputParameterChanges = &outChanges;
-        if (v.processor->process(data) != kResultOk) r.ok = false;
+        if (processRealtime(v.processor, data) != kResultOk) r.ok = false;
         for (auto& bus : out)
             for (auto& c : bus) r.audio.insert(r.audio.end(), c.begin(), c.end());
         for (const Vst::Event& e : sent.events) {
@@ -399,7 +445,7 @@ Result renderVst3(Vst3Module& m, const info::LayoutInfo& layout) {
 
 // --- CLAP --------------------------------------------------------------------------------
 
-Result renderClap(const clap_plugin_factory_t* factory, const info::LayoutInfo& layout) {
+Result renderClap(const clap_plugin_factory_t* factory, const info::LayoutInfo& layout, bool dense = false) {
     Result r;
     host_contract::RenderInstance instance(factory, info::kId);
     const clap_plugin_t* plug = instance.plug;
@@ -437,9 +483,15 @@ Result renderClap(const clap_plugin_factory_t* factory, const info::LayoutInfo& 
         }
     } outEvents{&r, 0};
     clap_output_events_t outList{&outEvents, Out::push};
-    const int param = automatedParam();
+    const int param = dense ? -1 : automatedParam();
+    std::vector<clap_event_note_t> notes;
 
-    for (int block = 0; block < kBlocks; ++block) {
+    for (int block = 0; block < (dense ? kDenseBlocks : kBlocks); ++block) {
+        if (dense && block == kRestartBlock) {  // what clap-wrapper does for setProcessing(false), then (true)
+            plug->stop_processing(plug);
+            plug->reset(plug);
+            plug->start_processing(plug);
+        }
         outEvents.block = block;
         for (size_t b = 0; b < buses.inPointers.size(); ++b)
             for (size_t c = 0; c < buses.inPointers[b].size(); ++c)
@@ -458,7 +510,8 @@ Result renderClap(const clap_plugin_factory_t* factory, const info::LayoutInfo& 
             midi.data[2] = b;
             events.events.push_back(&midi.header);
         };
-        if (info::kNoteInput && (block == kNoteOnBlock || block == kNoteOffBlock)) {
+        const bool performance = info::kNoteInput && !dense;
+        if (performance && (block == kNoteOnBlock || block == kNoteOffBlock)) {
             note.header = {sizeof(note), 10, CLAP_CORE_EVENT_SPACE_ID,
                            static_cast<uint16_t>(block == kNoteOnBlock ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF), 0};
             note.note_id = kNoteId;
@@ -469,9 +522,22 @@ Result renderClap(const clap_plugin_factory_t* factory, const info::LayoutInfo& 
             events.events.push_back(&note.header);
         }
         // What clap-wrapper makes of the VST3 values above: 16383, 0 and 127.
-        if (info::kNoteInput && block == kBendBlock) midiAt(0xE0, 0x7F, 0x7F);
-        if (info::kNoteInput && block == kBendBackBlock) midiAt(0xE0, 0, 0);
-        if (info::kNoteInput && block == kWheelBlock) midiAt(0xB0, 1, 127);
+        if (performance && block == kBendBlock) midiAt(0xE0, 0x7F, 0x7F);
+        if (performance && block == kBendBackBlock) midiAt(0xE0, 0, 0);
+        if (performance && block == kWheelBlock) midiAt(0xB0, 1, 127);
+        notes.clear();
+        for (const DenseNote& n : dense ? denseNotes(block) : std::vector<DenseNote>{}) {
+            clap_event_note_t e{};
+            e.header = {sizeof(e), static_cast<uint32_t>(n.offset), CLAP_CORE_EVENT_SPACE_ID,
+                        static_cast<uint16_t>(n.on ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF), 0};
+            e.note_id = n.id;
+            e.port_index = 0;
+            e.channel = 0;
+            e.key = static_cast<int16_t>(n.key);
+            e.velocity = kVelocity;
+            notes.push_back(e);
+        }
+        for (const clap_event_note_t& e : notes) events.events.push_back(&e.header);
         if (param >= 0 && block == kParamBlock) {
             const supple::ParamDef& p = supple::params::at(static_cast<size_t>(param));
             value.header = {sizeof(value), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0};
@@ -587,6 +653,20 @@ int main(int argc, char** argv) {
             }
             check(!a.sent.empty() && a.sent == b.sent, "and send the same notes and MIDI");
         }
+    }
+
+    // Many notes at once, across a stop and start.
+    if (info::kNoteInput) {
+        const info::LayoutInfo& l = info::kLayouts[0];
+        const Result a = renderVst3(vst3, l, true), b = renderClap(factory, l, true);
+        double worst = a.audio.size() == b.audio.size() ? 0.0 : INFINITY;
+        for (size_t k = 0; k < a.audio.size() && k < b.audio.size(); ++k)
+            worst = std::max(worst, supple::test::finiteDifference(a.audio[k], b.audio[k]));
+        if (!(worst <= 1e-6)) std::printf("     largest difference %g\n", worst);
+        check(a.ok && b.ok && worst <= 1e-6 && a.sent == b.sent,
+              "96 notes held across a restart: VST3 and CLAP alike");
+    } else {
+        std::printf("      (no note input in this product)\n");
     }
 
     entry->deinit();

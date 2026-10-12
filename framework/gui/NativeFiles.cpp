@@ -331,11 +331,27 @@ bool NativeFiles::start(const Options& o, bool saving, Done done) {
 void NativeFiles::poll() {
     if (!platform_) return;
     char buffer[4096];
-    for (ssize_t n; (n = read(platform_->out, buffer, sizeof(buffer))) > 0;) platform_->text.append(buffer, static_cast<size_t>(n));
+    // Whatever the dialog has printed; true once it has closed its end.
+    const auto drain = [&] {
+        ssize_t n;
+        while ((n = read(platform_->out, buffer, sizeof(buffer))) > 0) platform_->text.append(buffer, static_cast<size_t>(n));
+        return n == 0;
+    };
+    const bool closed = drain();
     int status = 0;
-    if (waitpid(platform_->pid, &status, WNOHANG) != platform_->pid) return;
+    const pid_t reaped = waitpid(platform_->pid, &status, WNOHANG);
+    if (reaped == 0) return;  // still open
+    if (reaped == platform_->pid) {
+        drain();
+    } else {
+        // The host collected it first: a SIGCHLD handler that reaps every
+        // child, or SA_NOCLDWAIT. The exit status is gone, but the dialog
+        // prints only what was chosen (nothing when cancelled), so its
+        // output, once all of it is here, is the answer.
+        if (errno != ECHILD || !closed) return;
+        status = 0;
+    }
     platform_->pid = -1;
-    for (ssize_t n; (n = read(platform_->out, buffer, sizeof(buffer))) > 0;) platform_->text.append(buffer, static_cast<size_t>(n));
     std::vector<std::string> paths;
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {  // 1 is cancelled
         std::string_view rest = platform_->text;

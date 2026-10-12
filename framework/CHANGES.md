@@ -4,6 +4,52 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.15.0
+
+Small fixes, each with the test that would have caught it. What a product
+must do: nothing, unless its tables now fail to build -- a parameter with a
+NaN or infinite number, or properties whose limits add up past 64 MiB of
+state -- which were saving or showing something no host could use.
+
+- A list's last row, cut off by its bottom edge, takes a click on the part
+  drawn (Pulse's preset list had one) and scrolls into view.
+- Lists and the graph widgets (`plot`, `trace`, `spectrum`, `waveform`,
+  `oscilloscope`) clip within a clip they are drawn inside, rather than
+  replacing it, and leave it as it was.
+- The RMS meters (`inputRms()`, `outputRms()`) fall, as silence would make
+  them, once the host has stopped sending audio, and the editor repaints
+  until they reach the floor.
+- Parameter tables with a NaN or infinite minimum, maximum, default, curve or
+  smoothing time are build errors. So is a set of properties that, all at
+  their limits, would save more state than the 64 MiB every reader takes
+  (`state::kMaxBytes`, `state::maxSavedBytes()`, now one limit for hosts'
+  streams, preset files, preset discovery and pasted text). A preset name
+  too long to load back is no longer saved in a session.
+- `new_product` refuses Windows device names (CON, PRN, AUX, NUL, COM1-9,
+  LPT1-9, before any dot) and names ending in a dot.
+- `product-package` refuses an ARM64 Windows build: the installer is x64
+  only until ARM64 is supported.
+- macOS: a host's `set_size` that would overflow in pixels is refused
+  instead of wrapping to a small size (`Window::pixels`); and a new Pugl
+  patch (`pugl-mac-drop-location`) gives file drops the view's own
+  coordinates, as the mouse has, so a drop lands on the file slot under it.
+  Neither has run on macOS yet.
+- Linux: a file dialog finishes even when the host reaps its process first
+  (a SIGCHLD handler, or children ignored), from the dialog's output.
+- A product font (`.ttf`, `.otf` asset) that will not load is drawn in
+  Inter, as documented (`loadFace`).
+- `gui-preview` refuses `--menu` or `--context` on a control that opens no
+  menu, and a scenario that leads back to itself; a click it stages reaches
+  the DSP (and a `restartOnChange()` parameter restarts it), as a host's
+  edit would. Drive's `shape-menu` scenario, on a segmented control that
+  never had a menu, is now `shape-context`.
+- `vst3-host` makes every VST3 process call a real-time context, so the
+  rtsan preset checks clap-wrapper's own work too, and with note input
+  plays 96 notes held at once across a stop and start; it fails without
+  the wrapper's note-capacity patch (`clap-wrapper-vst3-note-capacity`).
+- The preset list's rows are built once per change to the library
+  (`PresetLibrary::revision()`), not for every row drawn.
+
 ## 1.14.0
 
 Text fields, custom drags, long text, SVG fill rules and long audio files.

@@ -25,6 +25,17 @@ extern const size_t supple_font_plex_sans_condensed_semibold_size;
 
 namespace supple::gui {
 
+bool loadFace(NVGcontext* vg, const char* name, const unsigned char* data, size_t size) {
+    if (nvgFindFont(vg, name) >= 0) return true;
+    // NanoVG reads the data in place and, with freeData 0, never frees it.
+    if (nvgCreateFontMem(vg, name, const_cast<unsigned char*>(data), static_cast<int>(size), 0) < 0 &&
+        nvgCreateFontMem(vg, name, const_cast<unsigned char*>(supple_font_inter_regular),
+                         static_cast<int>(supple_font_inter_regular_size), 0) < 0)
+        return false;
+    nvgAddFallbackFont(vg, name, font::kUi);
+    return true;
+}
+
 bool loadFonts(NVGcontext* vg) {
     struct Face {
         const char* name;
@@ -53,10 +64,7 @@ bool loadFonts(NVGcontext* vg) {
         const assets::Asset a = assets::at(i);
         if (!assets::hasExtension(a.name, ".ttf") && !assets::hasExtension(a.name, ".otf")) continue;
         const std::string face(a.name.substr(0, a.name.size() - 4));
-        if (nvgFindFont(vg, face.c_str()) >= 0) continue;
-        if (nvgCreateFontMem(vg, face.c_str(), const_cast<unsigned char*>(a.data), static_cast<int>(a.size), 0) < 0)
-            continue;  // an unreadable face of the product's is drawn in Inter
-        nvgAddFallbackFont(vg, face.c_str(), font::kUi);
+        if (!loadFace(vg, face.c_str(), a.data, a.size)) return false;
     }
     return true;
 }

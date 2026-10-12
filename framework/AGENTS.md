@@ -176,9 +176,9 @@ Further modifiers:
 - A product that already shipped with plain values for a tapered
   parameter marks it `.plainHostValue()`: the knob keeps its taper and the
   host keeps the values it saved. New parameters do not use it.
-- The table is checked when it compiles: duplicate IDs or names, a default
-  outside its range, a log taper from zero, or a wrong label count are build
-  errors.
+- The table is checked when it compiles: duplicate IDs or names, a NaN or
+  infinite number, a default outside its range, a log taper from zero, or a
+  wrong label count are build errors.
 - Text comes from the unit. Do not format values anywhere else. The editor,
   the host, `render-cli` and the text field all use `formatValue` and
   `parseValue`. Add a `Unit` to `core/Param.h` (in the template) rather than
@@ -206,7 +206,9 @@ byte (`core/StateFormat.h`). There is nothing to write for it.
   them. A custom chord typed as text, an instance's label, a drawn curve
   serialised by the product. Declared like parameters:
   `supple::property(kIntervals, "Intervals", "0 4 7").maxBytes(64)`. IDs are
-  session ABI. A value is bytes, normally UTF-8; a product keeping its own
+  session ABI. Each holds at most 1 MiB, and together, with every property
+  full, they must fit the 64 MiB a host's state may be (a build error
+  otherwise). A value is bytes, normally UTF-8; a product keeping its own
   encoding in one versions it there. `.perProject()` marks one that belongs
   to the session, not the sound: presets leave it out, and loading one leaves
   it alone. The editor edits one with `ui().textField(id, rect)` or reads and
@@ -467,14 +469,17 @@ drive example). Write your own once the product is past its sketch.
   `reductionMeter`, and `meter` with RMS.
 - The audio (`kAudioFeed`): `audio()` is the last 2.7 s of input and output
   (`Signal::input()`, `Signal::output(channel)`), `inputRms()` and
-  `outputRms()` their levels; `gui/Spectrum.h` analyses it and
+  `outputRms()` their levels (falling, as silence would, when the host
+  stops); `gui/Spectrum.h` analyses it and
   `widgets::spectrum`, `waveform` and `oscilloscope` draw it. `onAudio()`
   hears when more arrived; analyse in `animate()`, at most 30 times a
   second. The starter's spectrum, the duck's history.
 - Pictures: files in `PRODUCT_ASSETS` are compiled in and found by name.
   `drawSvg(vg, "logo.svg", rect)` draws an SVG as vectors, with a tint for a
   one-colour icon; `drawImage(vg, "skin.png", rect)` an image. A `.ttf` is a
-  face named by its stem (`nvgFontFace(vg, "Orbitron")`). Convert an SVG's
+  face named by its stem (`nvgFontFace(vg, "Orbitron")`), drawn in Inter if
+  the file will not load. The graph widgets and lists clip within whatever
+  clip they are drawn in (`nvgIntersectScissor`). Convert an SVG's
   text to paths; gradients draw with their first and last stops.
 - Files: `fileDialogs()->open(options, done)` and `save(...)` show the
   system's dialog without blocking the host; `done` runs later with the

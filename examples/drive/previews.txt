@@ -3,6 +3,6 @@
 # always rendered too. `gui-preview --all <folder>` renders every one, and
 # ctest's `previews` renders them into build/<preset>/previews.
 hard-8x        --set "Shape=Hard" --set "Quality=8x" --set "Drive=24 dB"
-shape-menu     --menu "Shape"
+shape-context  --context "Shape"
 tooltip        --tooltip "Quality"
 presets        --menu Presets

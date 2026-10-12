@@ -1263,7 +1263,7 @@ bool readAll(const clap_istream_t* stream, std::vector<uint8_t>& bytes) {
         if (n < 0) return false;
         if (n == 0) return true;
         bytes.insert(bytes.end(), chunk, chunk + n);
-        if (bytes.size() > (64u << 20)) return false;  // not ours, whatever it is
+        if (bytes.size() > state::kMaxBytes) return false;  // not ours, whatever it is
     }
 }
 

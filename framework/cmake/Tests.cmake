@@ -86,6 +86,16 @@ if (SUPPLE_BUILD_GUI)
     # Check the exit status as well as the diagnostic: a missing display must
     # not accidentally make this negative test pass.
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/preview-invalid.cmake" CONTENT [=[
+# Scenarios that lead back to themselves are refused, before any window.
+file(WRITE "${CMAKE_CURRENT_LIST_DIR}/preview-loops.txt" "loop --scenario loop\nping --scenario pong\npong --scenario ping\n")
+foreach(name loop ping)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env "SUPPLE_PREVIEWS_FILE=${CMAKE_CURRENT_LIST_DIR}/preview-loops.txt"
+        "$<TARGET_FILE:gui-preview>" invalid.png --scenario ${name}
+        RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    if(NOT result EQUAL 2 OR NOT err MATCHES "leads back to itself")
+        message(FATAL_ERROR "Expected scenario ${name} to be refused, got ${result}: ${out}${err}")
+    endif()
+endforeach()
 if(CMAKE_HOST_UNIX AND NOT CMAKE_HOST_APPLE AND "$ENV{DISPLAY}" STREQUAL "")
     message("No display: skipped")
     return()
@@ -94,8 +104,18 @@ execute_process(COMMAND "$<TARGET_FILE:gui-preview>" invalid.png --seconds 0 --h
     RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
 if(result EQUAL 77)
     message("No display: skipped")
+    return()
 elseif(NOT result EQUAL 2 OR NOT err MATCHES "no control for")
     message(FATAL_ERROR "Expected an unknown-control error, got ${result}: ${out}${err}")
+endif()
+# A menu asked of a control that opens none (the starter's Mix knob) is an
+# error, not a picture of the knob.
+execute_process(COMMAND "$<TARGET_FILE:gui-preview>" invalid.png --seconds 0 --menu Mix
+    RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(err MATCHES "no control for")
+    message("(no control named Mix in this product)")
+elseif(NOT result EQUAL 2 OR NOT err MATCHES "has no menu")
+    message(FATAL_ERROR "Expected a no-menu error, got ${result}: ${out}${err}")
 endif()
 ]=])
     add_test(NAME preview-invalid-control COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/preview-invalid.cmake")
@@ -111,6 +131,11 @@ if (SUPPLE_BUILD_PLUGIN)
     # with no installer, identity or notarization.
     add_test(NAME package COMMAND ${SUPPLE_PACKAGE_COMMAND} -DOUT=${CMAKE_BINARY_DIR}/package-test -DTEST=ON
         -P ${SUPPLE_FRAMEWORK}/cmake/Package.cmake)
+    # An ARM64 Windows build is refused before anything is staged.
+    add_test(NAME package-windows-arm64 COMMAND ${SUPPLE_PACKAGE_COMMAND} -DPLATFORM=windows-arm64 -DINSTALLER=ON
+        -DOUT=${CMAKE_BINARY_DIR}/package-arm64-test -P ${SUPPLE_FRAMEWORK}/cmake/Package.cmake)
+    set_tests_properties(package-windows-arm64 PROPERTIES
+        PASS_REGULAR_EXPRESSION "x64 only; windows-arm64 is not supported")
 
     supple_test(probe-audio-tests SOURCES ${SUPPLE_FRAMEWORK}/test/probe_audio_test.cpp LINK product-core clap)
     # The CLAP surface, in process: a scripted host with real threads.

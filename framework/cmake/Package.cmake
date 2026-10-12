@@ -42,6 +42,13 @@ foreach(var SUPPLE_SIGN_IDENTITY SUPPLE_INSTALLER_IDENTITY SUPPLE_NOTARY_PROFILE
     endif()
 endforeach()
 
+# The installer declares x64 (Inno Setup's x64compatible): an ARM64 build in
+# it would install on x64 machines that cannot load it. Until ARM64 is
+# supported, there is no Windows package of one.
+if (INSTALLER AND PLATFORM MATCHES "^windows" AND NOT PLATFORM STREQUAL "windows-x86_64")
+    message(FATAL_ERROR "package: the Windows installer is for x64 only; ${PLATFORM} is not supported yet")
+endif()
+
 function(run)
     execute_process(COMMAND ${ARGN} RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out)
     if (NOT result EQUAL 0)

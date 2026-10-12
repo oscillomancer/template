@@ -4,11 +4,14 @@
 // Renders the real editor offscreen and writes a PNG, for reviewing layout
 // and look without a host -- by a person or by an agent that can read
 // images. Transient states can be staged: a hovered or focused control, an
-// open menu, an open text field, values set by name.
+// open menu, an open text field, values set by name. Each must take: a
+// control that is not there, is hidden or disabled, or opens no menu for
+// --menu or --context, is an error (exit 2), not a picture of something
+// else. A click staged on a control reaches the DSP, as an edit would.
 //
 //   gui-preview out.png
 //   gui-preview out.png --scale 2 --set "Low Cut Enabled=On" --hover "Low Cut"
-//   gui-preview menu.png --menu "Slope"
+//   gui-preview menu.png --menu "Mode"              a dropdown's menu
 //   gui-preview presets.png --preset "Wide Pan" --menu Presets
 //   gui-preview text.png --property "Label=Strings" --text "Label"
 //   gui-preview context.png --context "Depth"
@@ -20,7 +23,7 @@
 // one per line -- a name, then the options above -- so anyone (and CI) can
 // render the same ones:
 //
-//   gui-preview menu.png --scenario shape-menu
+//   gui-preview menu.png --scenario context-menu
 //   gui-preview --all previews/ [--scale 2]    every scenario, as previews/<name>.png
 //   gui-preview --list
 //
@@ -128,7 +131,12 @@ class PreviewHost : public EditorHost, public StateAccess {
         return engine_ && params::at(i).isOutput() ? engine_->store().get(i) : values_[i];
     }
     void beginEdit(uint32_t) override {}
-    void setValue(uint32_t id, double v) override { values_[slot(id)] = sanitizeHost(*params::find(id), v); }
+    // A click reaches the DSP, as a host's edit would.
+    void setValue(uint32_t id, double v) override {
+        const size_t i = slot(id);
+        values_[i] = sanitizeHost(*params::find(id), v);
+        if (engine_) engine_->store().set(i, values_[i]);
+    }
     void endEdit(uint32_t) override {}
     bool popTelemetry(TelemetryFrame& f) override { return ring_.pop(f); }
     size_t readAudio(FeedFrame* out, size_t max) override {
@@ -157,6 +165,9 @@ class PreviewHost : public EditorHost, public StateAccess {
             for (size_t i = 0; i < properties::kCount; ++i) engine_->setProperty(i, properties_.get(i), true);
             engine_->activate(kRate, kPeriodMax, product::info::kAudioInput ? width : 0, width);
             engine_->setMetering(true);
+        } else if (engine_->takeRestartRequest()) {  // a restartOnChange() parameter moved: as a host restarts
+            engine_->deactivate();
+            engine_->activate(kRate, kPeriodMax, product::info::kAudioInput ? width : 0, width);
         }
         const int period = std::min(kPeriodMax, static_cast<int>(std::lround(kRate / kTelemetryHz)));
         std::vector<double> l(static_cast<size_t>(period)), r(static_cast<size_t>(period));
@@ -334,9 +345,16 @@ struct Scenario {
     std::vector<std::string> args;
 };
 
+// The product's, or (for gui-preview's own tests) the file the environment
+// names.
+const char* previewsFile() {
+    const char* file = std::getenv("SUPPLE_PREVIEWS_FILE");
+    return file && *file ? file : SUPPLE_PREVIEWS_FILE;
+}
+
 std::vector<Scenario> scenarios() {
     std::vector<Scenario> out{{"default", {}}};
-    std::ifstream f(SUPPLE_PREVIEWS_FILE);
+    std::ifstream f(previewsFile());
     for (std::string line; std::getline(f, line);) {
         std::vector<std::string> words;
         std::string word;
@@ -372,12 +390,16 @@ const Scenario* findScenario(const std::vector<Scenario>& all, const std::string
 // One preview: the editor in the state the options stage, written as a PNG.
 int preview(const char* output, std::vector<std::string> args) {
     // A scenario's options, in place of its name.
-    for (size_t i = 0; i + 1 < args.size(); ++i) {
+    for (size_t i = 0, expanded = 0; i + 1 < args.size(); ++i) {
         if (args[i] != "--scenario") continue;
         const std::vector<Scenario> all = scenarios();
         const Scenario* s = findScenario(all, args[i + 1]);
         if (!s) {
-            std::fprintf(stderr, "no scenario \"%s\" in %s\n", args[i + 1].c_str(), SUPPLE_PREVIEWS_FILE);
+            std::fprintf(stderr, "no scenario \"%s\" in %s\n", args[i + 1].c_str(), previewsFile());
+            return 2;
+        }
+        if (++expanded > 100) {
+            std::fprintf(stderr, "scenario \"%s\" leads back to itself\n", args[i + 1].c_str());
             return 2;
         }
         args.erase(args.begin() + static_cast<std::ptrdiff_t>(i), args.begin() + static_cast<std::ptrdiff_t>(i + 2));
@@ -525,10 +547,18 @@ int preview(const char* output, std::vector<std::string> args) {
     if (menu) {
         if (!centre(menu, x, y)) return 2;
         editor.pointerDown(x, y, 0, 0, false);
+        if (!editor.layout().menu().open) {
+            std::fprintf(stderr, "control \"%s\" has no menu\n", menu);
+            return 2;
+        }
     }
     if (context) {
         if (!centre(context, x, y)) return 2;
         editor.pointerDown(x, y, 1, 0, false);
+        if (!editor.layout().menu().open) {
+            std::fprintf(stderr, "control \"%s\" has no context menu\n", context);
+            return 2;
+        }
     }
     if (text) {
         if (!centre(text, x, y)) return 2;

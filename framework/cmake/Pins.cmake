@@ -51,7 +51,7 @@ set(SUPPLE_PATCHES_clap-wrapper
     clap-wrapper-vst3-surround.patch clap-wrapper-vst3-midi-out.patch clap-wrapper-vst3-tail-on-main.patch
     clap-wrapper-vst3-note-capacity.patch clap-wrapper-auv2-restart.patch clap-wrapper-auv2-state-errors.patch
     clap-wrapper-auv2-bypass-sync.patch)
-set(SUPPLE_PATCHES_pugl pugl-win-module-class.patch)
+set(SUPPLE_PATCHES_pugl pugl-win-module-class.patch pugl-mac-drop-location.patch)
 
 # What a vendored checkout records about itself (tools/vendor.cmake writes
 # it, Dependencies.cmake compares it): the repository and the pin.

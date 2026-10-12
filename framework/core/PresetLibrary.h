@@ -67,6 +67,8 @@ class PresetLibrary {
     // --- the list: factory presets in table order, then the user's by name ---
     void refresh();
     const std::vector<Entry>& entries() const { return entries_; }
+    // Changes whenever entries() may have, for what is built from the list.
+    uint64_t revision() const { return revision_; }
     const std::filesystem::path& userFolder() const { return folder_; }
 
     // --- what is loaded -------------------------------------------------------
@@ -136,6 +138,7 @@ class PresetLibrary {
     StateAccess& state_;
     std::filesystem::path folder_;
     std::vector<Entry> entries_;
+    uint64_t revision_ = 0;
     int current_ = -1;
     std::string name_ = "Default";
     std::vector<uint8_t> baseline_;  // the preset state as loaded; empty: not known
