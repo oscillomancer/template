@@ -1422,6 +1422,40 @@ TEST(a_preset_file_dropped_on_the_editor_loads) {
     std::filesystem::remove(file, ec);
 }
 
+TEST(custom_pointer_hooks_preserve_gestures_and_respect_overlays) {
+    const auto ids = continuousParams(1);
+    if (ids.empty()) return;
+    struct HookEditor : EditorBase {
+        using EditorBase::ui;
+        int moves = 0;
+        explicit HookEditor(EditorHost& host, uint32_t id) : EditorBase(host, Theme{}, 800, 600) {
+            ui().knob(id, {20, 20, 100, 120});
+        }
+        void paint(NVGcontext*) override {}
+        bool onPointerDown(float, float, int, uint32_t, bool) override {
+            ui().dragEdit(0, 0.25);
+            return true;
+        }
+        bool onPointerMove(float, float, uint32_t) override { ++moves; return true; }
+    };
+    MockHost host;
+    host.values[MockHost::slot(ids[0])] = 0.75;
+    HookEditor editor(host, ids[0]);
+    editor.pointerDown(400, 300, 0, 0, false);
+    CHECK(host.openCount == 1 && host.ends == 0);
+    editor.ui().endDragEdit();
+    editor.ui().openTextEdit(0);
+    editor.pointerMove(50, 50, 0);
+    CHECK(editor.moves == 0);
+    editor.key(key::kEscape, 0);
+    editor.ui().openContextMenu(0, 50, 50);
+    editor.pointerMove(60, 60, 0);
+    CHECK(editor.moves == 0);
+    editor.key(key::kEscape, 0);
+    editor.pointerMove(400, 300, 0);
+    CHECK(editor.moves == 1 && host.clean());
+}
+
 TEST(the_last_meter_frame_repaints_before_the_editor_idles) {
     struct MeterEditor : EditorBase {
         explicit MeterEditor(EditorHost& host) : EditorBase(host, Theme{}, 100, 100) {}

@@ -177,7 +177,6 @@ bool EditorBase::pointerDown(float x, float y, int button, uint32_t mods, bool d
     // Overlays belong to Ui and sit above any custom drawing.
     const bool overlay = ui_.menu().open || ui_.textEdit().open;
     if (!overlay && onPointerDown(x, y, button, mods, doubleClick)) {
-        ui_.focusLost();
         dirty_ = true;
         return true;
     }
@@ -185,7 +184,8 @@ bool EditorBase::pointerDown(float x, float y, int button, uint32_t mods, bool d
 }
 
 void EditorBase::pointerMove(float x, float y, uint32_t mods) {
-    if (!ui_.dragging() && onPointerMove(x, y, mods)) {
+    const bool overlay = ui_.menu().open || ui_.textEdit().open;
+    if (!overlay && !ui_.dragging() && onPointerMove(x, y, mods)) {
         dirty_ = true;
         return;
     }
