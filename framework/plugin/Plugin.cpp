@@ -105,7 +105,7 @@ class ClapEvents {
     bool next(EngineEvent& e) {
         while (index_ < count_) {
             const clap_event_header_t* h = in_->get(in_, index_++);
-            if (!h) continue;
+            if (!h || h->size < sizeof(clap_event_header_t)) continue;
             if (h->space_id == tuningSpace_ && h->space_id != CLAP_CORE_EVENT_SPACE_ID) {
                 if (h->size < sizeof(clap_event_tuning_t)) continue;
                 const auto* t = reinterpret_cast<const clap_event_tuning_t*>(h);
@@ -122,6 +122,7 @@ class ClapEvents {
             e.time = h->time;
             switch (h->type) {
                 case CLAP_EVENT_PARAM_VALUE: {
+                    if (h->size < sizeof(clap_event_param_value_t)) continue;
                     const auto* v = reinterpret_cast<const clap_event_param_value_t*>(h);
                     e.index = params::indexOf(v->param_id);
                     if (e.index < 0 || params::at(static_cast<size_t>(e.index)).isOutput()) continue;
@@ -130,6 +131,7 @@ class ClapEvents {
                     return true;
                 }
                 case CLAP_EVENT_PARAM_MOD: {
+                    if (h->size < sizeof(clap_event_param_mod_t)) continue;
                     const auto* m = reinterpret_cast<const clap_event_param_mod_t*>(h);
                     e.index = params::indexOf(m->param_id);
                     if (e.index < 0 || params::at(static_cast<size_t>(e.index)).isOutput()) continue;
@@ -144,6 +146,7 @@ class ClapEvents {
                     return true;
                 }
                 case CLAP_EVENT_NOTE_EXPRESSION: {
+                    if (h->size < sizeof(clap_event_note_expression_t)) continue;
                     if (!info::kNoteInput) continue;
                     const auto* x = reinterpret_cast<const clap_event_note_expression_t*>(h);
                     if (x->expression_id < CLAP_NOTE_EXPRESSION_VOLUME || x->expression_id > CLAP_NOTE_EXPRESSION_PRESSURE)
@@ -157,6 +160,7 @@ class ClapEvents {
                 case CLAP_EVENT_NOTE_ON:
                 case CLAP_EVENT_NOTE_OFF:
                 case CLAP_EVENT_NOTE_CHOKE: {
+                    if (h->size < sizeof(clap_event_note_t)) continue;
                     if (!info::kNoteInput) continue;
                     const auto* n = reinterpret_cast<const clap_event_note_t*>(h);
                     e.type = EngineEvent::Type::Note;
@@ -171,6 +175,7 @@ class ClapEvents {
                     return true;
                 }
                 case CLAP_EVENT_MIDI: {
+                    if (h->size < sizeof(clap_event_midi_t)) continue;
                     if (!info::kNoteInput) continue;
                     const auto* m = reinterpret_cast<const clap_event_midi_t*>(h);
                     const uint8_t status = m->data[0] & 0xF0;

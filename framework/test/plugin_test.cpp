@@ -1299,6 +1299,25 @@ struct MixedEvents {
 
 }  // namespace
 
+TEST(truncated_parameter_events_are_ignored) {
+    Instance i;
+    i.activate();
+    size_t index = 0;
+    while (index < params::kCount && params::at(index).isOutput()) ++index;
+    if (index == params::kCount) return;
+    const auto& p = params::at(index);
+    const double before = i.value(index);
+    MixedEvents events;
+    auto& e = events.add<clap_event_param_value_t>(CLAP_EVENT_PARAM_VALUE, 0);
+    e.param_id = p.id;
+    e.value = before == p.hostMax() ? p.hostMin() : p.hostMax();
+    e.header.size = sizeof(clap_event_header_t);
+    events.finish();
+    Audio audio(i.channels());
+    audio.run(i.plugin, &events.events, nullptr);
+    CHECK(i.value(index) == before);
+}
+
 TEST(polyphonic_modulation_is_advertised_to_the_host) {
     Instance i;
     const auto* extension = static_cast<const clap_plugin_params_t*>(i.plugin->get_extension(i.plugin, CLAP_EXT_PARAMS));
