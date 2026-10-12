@@ -84,7 +84,7 @@ class Processor : public supple::ProcessorBase<Processor> {
         for (Voice& voice : sound_) voice.envelope.setTimes(v[kAttack], v[kDecay], v[kSustain], v[kRelease], sampleRate_);
         releaseSeconds_ = v[kRelease] * 0.001;
         voices_.setBendRange(v[kBendRange]);
-        voices_.setMode(static_cast<Voices::Mode>(v.choice(kMode)));
+        voices_.setMode(static_cast<Voices::Mode>(v.choice(kMode)), *this);
         voices_.setGlide(v[kGlide]);
         // A voice's modulated level follows the parameter under it.
         for (Voice& voice : sound_) voice.levelTarget = levelOffset(voice.levelMod);

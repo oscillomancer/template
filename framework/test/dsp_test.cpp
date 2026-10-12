@@ -657,6 +657,37 @@ TEST(voices_steal_the_oldest_and_end_each_note_once) {
     CHECK(log.ended.size() == 4);
 }
 
+TEST(changing_voice_mode_releases_tails_and_forgets_held_keys) {
+    using Mode = Voices<4>::Mode;
+    for (Mode from : {Mode::Poly, Mode::Mono, Mode::Legato}) {
+        for (Mode to : {Mode::Poly, Mode::Mono, Mode::Legato}) {
+            if (from == to) continue;
+            Voices<4> v;
+            VoiceLog log;
+            v.setMode(from, log);
+            v.note(on(60), log);
+            v.note(on(64), log);
+            v.midi(cc(64, 127), log);
+            v.setMode(to, log);
+            CHECK(log.stopped.empty());
+            for (int k = 0; k < 4; ++k) {
+                if (!v[k].active) continue;
+                CHECK(!v[k].held && !v[k].pedal);
+                CHECK(log.endedKey(v[k].note.key) == 0);
+                v.finished(k, log);
+            }
+            CHECK(log.endedKey(60) == 1 && log.endedKey(64) == 1);
+            v.midi(cc(64, 0), log);
+            v.note(off(60), log);
+            v.note(off(64), log);
+            v.note(on(67), log);
+            v.note(off(67), log);
+            v.reset(log);
+            CHECK(log.ended.size() == 3);
+        }
+    }
+}
+
 TEST(sustain_pedal_holds_released_notes_until_it_lifts) {
     Voices<4> v;
     v.prepare(kRate);
@@ -673,9 +704,9 @@ TEST(mono_plays_the_newest_key_and_returns_to_the_last) {
     for (auto mode : {Voices<4>::Mode::Mono, Voices<4>::Mode::Legato}) {
         Voices<4> v;
         v.prepare(kRate);
-        v.setMode(mode);
-        CHECK(v.voiceCount() == 1);
         VoiceLog log;
+        v.setMode(mode, log);
+        CHECK(v.voiceCount() == 1);
         v.note(on(60), log);
         v.note(on(64), log);
         CHECK(v[0].note.key == 64);
@@ -743,8 +774,8 @@ TEST(every_note_ends_exactly_once_whatever_happens) {
     for (auto mode : {Voices<3>::Mode::Poly, Voices<3>::Mode::Mono, Voices<3>::Mode::Legato}) {
         Voices<3> v;
         v.prepare(kRate);
-        v.setMode(mode);
         VoiceLog log;
+        v.setMode(mode, log);
         Random r(static_cast<uint64_t>(mode) + 1);
         std::vector<int32_t> started;
         int32_t id = 0;
