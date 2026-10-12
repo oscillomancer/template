@@ -199,12 +199,12 @@ if (SUPPLE_BUILD_PLUGIN)
     # - auv2-bypass-sync: the native BypassEffect property followed only the
     #   host setting it; it now follows the bypass parameter however it moves
     #   (automation, the plugin's editor, a loaded state), and tells the host.
+    #   The bypass parameter's ID, which SetParameter reads on the host's
+    #   automation thread, is atomic, and a rescan no longer clears it.
     # - auv2-rescan-race: every state load rescans the parameters, and the
-    #   rescan rewrote what SetParameter reads unlocked on the host's
-    #   automation thread: each parameter's info, and the bypass parameter's
-    #   ID, cleared and set again. Now info is rewritten only when it changed,
-    #   the ID is atomic and never cleared in passing, and GetParameterList
-    #   takes the tree's lock (au-parameter-race, under tsan, found it).
+    #   rescan rewrote each parameter's info, which SetParameter reads
+    #   unlocked; now only when it changed. GetParameterList takes the
+    #   tree's lock. (au-parameter-race, under tsan, found both.)
     supple_apply_patches(clap-wrapper)
 endif()
 
