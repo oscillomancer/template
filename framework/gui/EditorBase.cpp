@@ -36,12 +36,15 @@ void EditorBase::watch(uint32_t id) {
 
 bool EditorBase::attach(NVGcontext* vg) {
     attached_ = loadFonts(vg);
+    if (attached_)
+        ui_.setTextWidth([vg](std::string_view text, bool ascii) { return widgets::textEntryWidth(vg, text, ascii); });
     dirty_ = true;
     return attached_;
 }
 
 void EditorBase::detach() {
     focusLost();
+    ui_.setTextWidth(nullptr);
     // The context frees its images itself as it goes.
     images_.detach(nullptr);
     attached_ = false;
@@ -176,7 +179,8 @@ void EditorBase::drawControl(NVGcontext* vg, const Control& c, const ControlStat
 bool EditorBase::pointerDown(float x, float y, int button, uint32_t mods, bool doubleClick) {
     // Overlays belong to Ui and sit above any custom drawing.
     const bool overlay = ui_.menu().open || ui_.textEdit().open;
-    if (!overlay && onPointerDown(x, y, button, mods, doubleClick)) {
+    if (!overlay && (onPointerDown(x, y, button, mods, doubleClick) || held_ >= 0)) {
+        if (held_ < 0) held_ = button;
         dirty_ = true;
         return true;
     }
@@ -185,6 +189,11 @@ bool EditorBase::pointerDown(float x, float y, int button, uint32_t mods, bool d
 
 void EditorBase::pointerMove(float x, float y, uint32_t mods) {
     const bool overlay = ui_.menu().open || ui_.textEdit().open;
+    if (!overlay && held_ >= 0) {
+        onPointerMove(x, y, mods);
+        dirty_ = true;
+        return;
+    }
     if (!overlay && !ui_.dragging() && onPointerMove(x, y, mods)) {
         dirty_ = true;
         return;
@@ -193,24 +202,31 @@ void EditorBase::pointerMove(float x, float y, uint32_t mods) {
 }
 
 void EditorBase::pointerUp(float x, float y, int button, uint32_t mods) {
-    if (!ui_.dragging() && onPointerUp(x, y, button, mods)) {
-        dirty_ = true;
+    if (held_ < 0) {
+        ui_.pointerUp(x, y, button, mods);
         return;
     }
-    ui_.pointerUp(x, y, button, mods);
+    if (button == held_) held_ = -1;
+    onPointerUp(x, y, button, mods);
+    dirty_ = true;
 }
 
 void EditorBase::pointerLeave() { ui_.pointerLeave(); }
 
 bool EditorBase::wheel(float x, float y, float dx, float dy, uint32_t mods) {
+    if (held_ >= 0) return true;  // a custom drag is under way
     return ui_.wheel(x, y, dx, dy, mods);
 }
 
-bool EditorBase::key(uint32_t code, uint32_t mods) { return ui_.key(code, mods); }
+bool EditorBase::key(uint32_t code, uint32_t mods) {
+    if (held_ >= 0 && !ui_.menu().open && !ui_.textEdit().open) return true;
+    return ui_.key(code, mods);
+}
 
 bool EditorBase::text(uint32_t codepoint) { return ui_.text(codepoint); }
 
 void EditorBase::focusLost() {
+    held_ = -1;
     onCancel();
     ui_.focusLost();
     dirty_ = true;

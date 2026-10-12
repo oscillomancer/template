@@ -56,6 +56,51 @@ int nextChar(const char* text, int at, int length) {
     return at;
 }
 
+// A typed character as the text field takes it, in UTF-8: 0 bytes when it
+// is refused (a control character; anything but ASCII in a value, where a
+// typographic minus becomes '-').
+int acceptedChar(uint32_t codepoint, bool ascii, char bytes[4]) {
+    if (ascii && codepoint == 0x2212) codepoint = '-';
+    if (codepoint < 0x20 || codepoint == 0x7F || (codepoint >= 0x80 && codepoint < 0xA0)) return 0;
+    if (codepoint > 0x7E && (ascii || codepoint > 0x10FFFF || (codepoint >= 0xD800 && codepoint < 0xE000)))
+        return 0;
+    int n = 0;
+    if (codepoint < 0x80) {
+        bytes[n++] = static_cast<char>(codepoint);
+    } else if (codepoint < 0x800) {
+        bytes[n++] = static_cast<char>(0xC0 | codepoint >> 6);
+        bytes[n++] = static_cast<char>(0x80 | (codepoint & 0x3F));
+    } else if (codepoint < 0x10000) {
+        bytes[n++] = static_cast<char>(0xE0 | codepoint >> 12);
+        bytes[n++] = static_cast<char>(0x80 | (codepoint >> 6 & 0x3F));
+        bytes[n++] = static_cast<char>(0x80 | (codepoint & 0x3F));
+    } else {
+        bytes[n++] = static_cast<char>(0xF0 | codepoint >> 18);
+        bytes[n++] = static_cast<char>(0x80 | (codepoint >> 12 & 0x3F));
+        bytes[n++] = static_cast<char>(0x80 | (codepoint >> 6 & 0x3F));
+        bytes[n++] = static_cast<char>(0x80 | (codepoint & 0x3F));
+    }
+    return n;
+}
+
+// The character at text[i], advancing i past it; a malformed byte is
+// skipped and reads as 0, which acceptedChar() refuses.
+uint32_t decodeChar(std::string_view text, size_t& i) {
+    const auto lead = static_cast<unsigned char>(text[i++]);
+    if (lead < 0x80) return lead;
+    const int more = lead >= 0xF0 && lead < 0xF5 ? 3 : lead >= 0xE0 ? 2 : lead >= 0xC2 && lead < 0xE0 ? 1 : -1;
+    if (more < 0 || i + static_cast<size_t>(more) > text.size()) return 0;
+    uint32_t c = lead & (0x3Fu >> more);
+    for (int k = 0; k < more; ++k) {
+        if (!continuation(text[i])) return 0;
+        c = c << 6 | (static_cast<unsigned char>(text[i++]) & 0x3Fu);
+    }
+    const uint32_t least = more == 1 ? 0x80 : more == 2 ? 0x800 : 0x10000;
+    return c < least ? 0 : c;  // an overlong form
+}
+
+bool command(uint32_t mods) { return (mods & (mod::kCtrl | mod::kSuper)) && !(mods & mod::kAlt); }
+
 // The longest prefix of `text` within `limit` bytes that ends on a whole
 // character.
 size_t wholePrefix(std::string_view text, size_t limit) {
@@ -633,9 +678,18 @@ bool Ui::pointerDown(float x, float y, int button, uint32_t mods, bool doubleCli
     tooltipArmed_ = false;
     if (text_.open) {
         if (text_.bounds.contains(x, y)) {
-            text_.selectAll = false;
-            text_.caret = text_.length;
-            dirty_ = true;
+            TextEdit& t = text_;
+            t.caret = caretAt(x);
+            if (doubleClick) {
+                // The word under the pointer: the run between spaces.
+                t.anchor = t.caret;
+                while (t.anchor > 0 && t.buffer[t.anchor - 1] != ' ') --t.anchor;
+                while (t.caret < t.length && t.buffer[t.caret] != ' ') ++t.caret;
+            } else {
+                if (!(mods & mod::kShift)) t.anchor = t.caret;
+                t.selecting = button == 0;
+            }
+            textChanged();
         } else if (text_.commit) {
             cancelText();  // a prompt is abandoned by clicking away
         } else {
@@ -842,6 +896,14 @@ void Ui::envelopeDrag(int i, float x, float y) {
 bool Ui::pointerMove(float x, float y, uint32_t mods) {
     pointerX_ = x;
     pointerY_ = y;
+    if (text_.open && text_.selecting) {
+        const int at = caretAt(x);
+        if (at != text_.caret) {
+            text_.caret = at;
+            textChanged();
+        }
+        return true;
+    }
     if (drag_.control >= 0) {
         const int i = drag_.control;
         const Control& c = controls_[static_cast<size_t>(i)];
@@ -927,6 +989,10 @@ bool Ui::pointerMove(float x, float y, uint32_t mods) {
 }
 
 bool Ui::pointerUp(float, float, int button, uint32_t) {
+    if (button == 0 && text_.selecting) {
+        text_.selecting = false;
+        return true;
+    }
     if (button != 0 || drag_.control < 0) return false;
     const int i = drag_.control;
     const Widget w = controls_[static_cast<size_t>(i)].widget;
@@ -1158,47 +1224,138 @@ void Ui::setFocus(int control) {
 
 bool Ui::text(uint32_t codepoint) {
     if (!text_.open) return false;
-    if (text_.ascii && codepoint == 0x2212) codepoint = '-';
-    if (codepoint < 0x20 || codepoint == 0x7F || (codepoint >= 0x80 && codepoint < 0xA0)) return true;
-    if (codepoint > 0x7E && (text_.ascii || codepoint > 0x10FFFF || (codepoint >= 0xD800 && codepoint < 0xE000)))
-        return true;
     char bytes[4];
-    int n = 0;
-    if (codepoint < 0x80) {
-        bytes[n++] = static_cast<char>(codepoint);
-    } else if (codepoint < 0x800) {
-        bytes[n++] = static_cast<char>(0xC0 | codepoint >> 6);
-        bytes[n++] = static_cast<char>(0x80 | (codepoint & 0x3F));
-    } else if (codepoint < 0x10000) {
-        bytes[n++] = static_cast<char>(0xE0 | codepoint >> 12);
-        bytes[n++] = static_cast<char>(0x80 | (codepoint >> 6 & 0x3F));
-        bytes[n++] = static_cast<char>(0x80 | (codepoint & 0x3F));
-    } else {
-        bytes[n++] = static_cast<char>(0xF0 | codepoint >> 18);
-        bytes[n++] = static_cast<char>(0x80 | (codepoint >> 12 & 0x3F));
-        bytes[n++] = static_cast<char>(0x80 | (codepoint >> 6 & 0x3F));
-        bytes[n++] = static_cast<char>(0x80 | (codepoint & 0x3F));
+    const int n = acceptedChar(codepoint, text_.ascii, bytes);
+    if (n > 0) insertText(std::string_view(bytes, static_cast<size_t>(n)));
+    return true;
+}
+
+// Whole characters of `bytes` (valid UTF-8) in place of the selection, as
+// many as fit.
+void Ui::insertText(std::string_view bytes) {
+    TextEdit& t = text_;
+    eraseSelection();
+    const int room = std::min(t.limit, TextEdit::kCapacity - 1) - t.length;
+    const int n = static_cast<int>(wholePrefix(bytes, static_cast<size_t>(std::max(0, room))));
+    std::memmove(t.buffer + t.caret + n, t.buffer + t.caret, static_cast<size_t>(t.length - t.caret));
+    std::memcpy(t.buffer + t.caret, bytes.data(), static_cast<size_t>(n));
+    t.caret += n;
+    t.length += n;
+    t.buffer[t.length] = '\0';
+    t.anchor = t.caret;
+    textChanged();
+}
+
+void Ui::eraseSelection() {
+    TextEdit& t = text_;
+    if (!t.selected()) return;
+    const int from = t.from(), to = t.to();
+    std::memmove(t.buffer + from, t.buffer + to, static_cast<size_t>(t.length - to));
+    t.length -= to - from;
+    t.buffer[t.length] = '\0';
+    t.caret = t.anchor = from;
+}
+
+// Clipboard text, as if typed: line breaks and other control characters
+// go, and a value keeps only what it would take from the keyboard.
+void Ui::pasteText(std::string_view text) {
+    std::string accepted;
+    for (size_t i = 0; i < text.size();) {
+        char bytes[4];
+        const int n = acceptedChar(decodeChar(text, i), text_.ascii, bytes);
+        accepted.append(bytes, static_cast<size_t>(n));
     }
-    if (text_.selectAll) {
-        text_.length = text_.caret = 0;
-        text_.selectAll = false;
+    insertText(accepted);
+}
+
+float Ui::measureText(int bytes) const {
+    const std::string_view s(text_.buffer, static_cast<size_t>(bytes));
+    if (textWidth_) return textWidth_(s, text_.ascii);
+    float width = 0.0f;
+    for (char c : s) width += continuation(c) ? 0.0f : 7.0f;
+    return width;
+}
+
+float Ui::textStart(const TextEdit& e, float width) {
+    constexpr float kPad = 8.0f;
+    return e.ascii ? e.bounds.cx() - width * 0.5f : e.bounds.x + kPad - e.scroll;
+}
+
+// The character boundary nearest x.
+int Ui::caretAt(float x) const {
+    const TextEdit& t = text_;
+    const float start = textStart(t, measureText(t.length));
+    int best = 0;
+    float nearest = std::fabs(x - start);
+    for (int at = 0; at < t.length;) {
+        at = nextChar(t.buffer, at, t.length);
+        const float d = std::fabs(x - (start + measureText(at)));
+        if (d >= nearest) break;  // widths only grow: it is only further from here
+        nearest = d;
+        best = at;
     }
-    if (text_.length + n > std::min(text_.limit, TextEdit::kCapacity - 1)) return true;
-    std::memmove(text_.buffer + text_.caret + n, text_.buffer + text_.caret,
-                 static_cast<size_t>(text_.length - text_.caret));
-    std::memcpy(text_.buffer + text_.caret, bytes, static_cast<size_t>(n));
-    text_.caret += n;
-    text_.length += n;
-    text_.buffer[text_.length] = '\0';
+    return best;
+}
+
+// Text slides so the caret stays inside the field, and no further.
+void Ui::revealCaret() {
+    TextEdit& t = text_;
+    if (t.ascii) {
+        t.scroll = 0.0f;
+        return;
+    }
+    const float inner = t.bounds.w - 16.0f;
+    const float caret = measureText(t.caret);
+    t.scroll = std::min(std::max(t.scroll, caret - inner), caret);
+    t.scroll = std::max(0.0f, std::min(t.scroll, measureText(t.length) - inner));
+}
+
+void Ui::textChanged() {
+    revealCaret();
     text_.rejected = false;
     text_.caretOn = true;
     text_.blink = 0.0;
     dirty_ = true;
-    return true;
 }
 
 bool Ui::textKey(uint32_t code, uint32_t mods) {
     TextEdit& t = text_;
+    const bool shift = (mods & mod::kShift) != 0;
+    if (command(mods)) {
+        // pugl gives a letter key as its unshifted character.
+        const std::string_view selection(t.buffer + t.from(), static_cast<size_t>(t.to() - t.from()));
+        switch (code) {
+            case 'a':
+                t.anchor = 0;
+                t.caret = t.length;
+                break;
+            case 'c':
+                if (clipboard_ && t.selected()) clipboard_->copy(selection);
+                return true;
+            case 'x':
+                if (!clipboard_ || !t.selected() || !clipboard_->copy(selection)) return true;
+                eraseSelection();
+                break;
+            case 'v':
+                if (clipboard_) {
+                    const unsigned serial = textSerial_;
+                    clipboard_->paste([this, serial](std::string_view text) {
+                        if (text_.open && textSerial_ == serial) pasteText(text);
+                    });
+                }
+                return true;
+            default: break;
+        }
+        if (code == 'a' || code == 'x') {
+            textChanged();
+            return true;
+        }
+    }
+    // Moving the caret without Shift drops the selection, from its own end.
+    const auto move = [&](int to) {
+        t.caret = to;
+        if (!shift) t.anchor = t.caret;
+    };
     switch (code) {
         case key::kEnter:
         case key::kPadEnter: commitText(); return true;
@@ -1206,47 +1363,29 @@ bool Ui::textKey(uint32_t code, uint32_t mods) {
         case key::kTab:
             commitText();
             if (t.open) cancelText();
-            moveFocus((mods & mod::kShift) ? -1 : 1);
+            moveFocus(shift ? -1 : 1);
             return true;
         case key::kBackspace:
         case key::kDelete:
-            if (t.selectAll) {
-                t.length = t.caret = 0;
-                t.selectAll = false;
-            } else if (code == key::kBackspace && t.caret > 0) {
-                const int from = previousChar(t.buffer, t.caret);
-                std::memmove(t.buffer + from, t.buffer + t.caret, static_cast<size_t>(t.length - t.caret));
-                t.length -= t.caret - from;
-                t.caret = from;
-            } else if (code == key::kDelete && t.caret < t.length) {
-                const int to = nextChar(t.buffer, t.caret, t.length);
-                std::memmove(t.buffer + t.caret, t.buffer + to, static_cast<size_t>(t.length - to));
-                t.length -= to - t.caret;
+            if (!t.selected()) {
+                if (code == key::kBackspace) t.anchor = previousChar(t.buffer, t.caret);
+                else t.anchor = nextChar(t.buffer, t.caret, t.length);
             }
-            t.buffer[t.length] = '\0';
+            eraseSelection();
             break;
         case key::kLeft:
-            t.caret = t.selectAll ? 0 : previousChar(t.buffer, t.caret);
-            t.selectAll = false;
+            move(t.selected() && !shift ? t.from() : previousChar(t.buffer, t.caret));
             break;
         case key::kRight:
-            t.caret = t.selectAll ? t.length : nextChar(t.buffer, t.caret, t.length);
-            t.selectAll = false;
+            move(t.selected() && !shift ? t.to() : nextChar(t.buffer, t.caret, t.length));
             break;
         case key::kHome:
-            t.caret = 0;
-            t.selectAll = false;
-            break;
+        case key::kUp: move(0); break;
         case key::kEnd:
-            t.caret = t.length;
-            t.selectAll = false;
-            break;
+        case key::kDown: move(t.length); break;
         default: return true;  // printable keys arrive through text()
     }
-    t.rejected = false;
-    t.caretOn = true;
-    t.blink = 0.0;
-    dirty_ = true;
+    textChanged();
     return true;
 }
 
@@ -1530,9 +1669,10 @@ void Ui::openTextEdit(int i) {
     text_.limit = 47;
     formatValue(*p, currentValue(i), text_.buffer, static_cast<size_t>(text_.limit) + 1);
     text_.length = text_.caret = static_cast<int>(std::strlen(text_.buffer));
-    text_.selectAll = true;
+    text_.anchor = 0;  // all of it: typing replaces it
+    ++textSerial_;
     focus_ = i;
-    dirty_ = true;
+    textChanged();
 }
 
 void Ui::prompt(Rect box, std::string_view initial, int limit, std::function<bool(std::string_view)> commit,
@@ -1550,10 +1690,11 @@ void Ui::prompt(Rect box, std::string_view initial, int limit, std::function<boo
     std::memcpy(text_.buffer, initial.data(), n);
     text_.buffer[n] = '\0';
     text_.length = text_.caret = static_cast<int>(n);
-    text_.selectAll = true;
+    text_.anchor = 0;
     text_.commit = std::move(commit);
+    ++textSerial_;
     if (control >= 0) focus_ = control;
-    dirty_ = true;
+    textChanged();
 }
 
 void Ui::commitText() {
@@ -1563,6 +1704,7 @@ void Ui::commitText() {
         // confirmation), which must survive.
         TextEdit was = text_;
         text_.open = false;
+        text_.selecting = false;
         text_.commit = nullptr;
         dirty_ = true;
         if (!was.commit(std::string_view(was.buffer, static_cast<size_t>(was.length))) && !text_.open &&
@@ -1581,6 +1723,7 @@ void Ui::commitText() {
         return;
     }
     text_.open = false;
+    text_.selecting = false;
     oneShot(i, v);
     dirty_ = true;
 }
@@ -1588,6 +1731,7 @@ void Ui::commitText() {
 void Ui::cancelText() {
     if (!text_.open) return;
     text_.open = false;
+    text_.selecting = false;
     text_.commit = nullptr;
     dirty_ = true;
 }

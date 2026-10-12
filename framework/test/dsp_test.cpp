@@ -1205,6 +1205,31 @@ TEST(float_file_non_finite_samples_become_zero_in_loads_and_streams) {
     for (size_t n = 0; n < 5; ++n) CHECK(samples[n] == output.channel[0][n]);
 }
 
+TEST(a_long_file_loads_only_as_far_as_asked) {
+    const auto path = scratchFolder("max-seconds") / "long.wav";
+    AudioData input;
+    input.sampleRate = 1000.0;
+    input.channel.assign(2, std::vector<float>(3000));
+    for (size_t n = 0; n < 3000; ++n) input.channel[0][n] = input.channel[1][n] = static_cast<float>(n) / 3000.0f;
+    CHECK(saveWavFile(path.string(), input));
+    AudioData whole, start;
+    CHECK(loadAudioFile(path.string(), whole) && whole.frames() == 3000);
+    CHECK(loadAudioFile(path.string(), start, nullptr, 1.25) && start.frames() == 1250 && start.channels() == 2);
+    CHECK(std::equal(start.channel[1].begin(), start.channel[1].end(), whole.channel[1].begin()));
+    // A limit past the end, or none, is the whole file.
+    CHECK(loadAudioFile(path.string(), start, nullptr, 60.0) && start.frames() == 3000);
+    CHECK(loadAudioFile(path.string(), start, nullptr, -1.0) && start.frames() == 3000);
+    // So is one that does not say how long it is, cut where asked.
+    const auto flac = scratchFolder("max-seconds") / "unknown.flac";
+    std::vector<unsigned char> bytes(std::begin(kRampFlac), std::end(kRampFlac));
+    bytes[21] &= 0xf0;
+    std::fill(bytes.begin() + 22, bytes.begin() + 26, 0);
+    std::ofstream(flac, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    AudioData ramp;
+    CHECK(loadAudioFile(flac.string(), ramp) && ramp.frames() == 100);
+    CHECK(loadAudioFile(flac.string(), ramp, nullptr, 40.0 / ramp.sampleRate) && ramp.frames() == 40);
+}
+
 TEST(unknown_length_flac_loads_whole_but_is_refused_for_streaming) {
     const auto path = scratchFolder("unknown-length") / "unknown.flac";
     std::vector<unsigned char> bytes(std::begin(kRampFlac), std::end(kRampFlac));

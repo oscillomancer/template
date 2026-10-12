@@ -59,6 +59,11 @@ class EditorBase {
     // call markDirty() when something on screen moved.
     virtual void animate(double seconds) { (void)seconds; }
     // Custom interactive drawing: return true to take the event before Ui.
+    // A press taken here holds the pointer until that button is released:
+    // every move and the release come to these hooks, and the wheel and
+    // keys do nothing meanwhile, so nothing else closes the gesture a drag
+    // opened with Ui::dragEdit. A menu or text field Ui has open still
+    // comes first.
     virtual bool onPointerDown(float x, float y, int button, uint32_t mods, bool doubleClick) {
         (void)x, (void)y, (void)button, (void)mods, (void)doubleClick;
         return false;
@@ -203,6 +208,7 @@ class EditorBase {
     std::vector<FeedFrame> feedScratch_;
     RmsMeter inputRms_[2], outputRms_[2];
     double silentFrames_ = 0.0;
+    int held_ = -1;  // the button of a press onPointerDown() took, until it is released
     bool dropping_ = false;
     float dropX_ = 0.0f, dropY_ = 0.0f;
     double dropAge_ = 0.0;

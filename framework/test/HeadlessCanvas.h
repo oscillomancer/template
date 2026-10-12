@@ -9,15 +9,14 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <vector>
 
 #include <nanovg.h>
 
 namespace supple::test {
 
-// An optional hash records stroke geometry for editor drawing regressions.
-inline NVGcontext* createHeadlessCanvas(uint64_t* strokeHash = nullptr) {
+inline NVGparams headlessParams() {
     NVGparams p{};
-    p.userPtr = strokeHash;
     p.renderCreate = [](void*) { return 1; };
     p.renderCreateTexture = [](void*, int, int, int, int, const unsigned char*) { return 1; };
     p.renderDeleteTexture = [](void*, int) { return 1; };
@@ -31,6 +30,18 @@ inline NVGcontext* createHeadlessCanvas(uint64_t* strokeHash = nullptr) {
     p.renderFlush = [](void*) {};
     p.renderFill = [](void*, NVGpaint*, NVGcompositeOperationState, NVGscissor*, float, const float*, const NVGpath*,
                       int) {};
+    p.renderStroke = [](void*, NVGpaint*, NVGcompositeOperationState, NVGscissor*, float, float, const NVGpath*,
+                        int) {};
+    p.renderTriangles = [](void*, NVGpaint*, NVGcompositeOperationState, NVGscissor*, const NVGvertex*, int,
+                           float) {};
+    p.renderDelete = [](void*) {};
+    return p;
+}
+
+// An optional hash records stroke geometry for editor drawing regressions.
+inline NVGcontext* createHeadlessCanvas(uint64_t* strokeHash = nullptr) {
+    NVGparams p = headlessParams();
+    p.userPtr = strokeHash;
     p.renderStroke = [](void* user, NVGpaint*, NVGcompositeOperationState, NVGscissor*, float, float,
                         const NVGpath* paths, int count) {
         if (!user) return;
@@ -43,9 +54,26 @@ inline NVGcontext* createHeadlessCanvas(uint64_t* strokeHash = nullptr) {
             }
         }
     };
-    p.renderTriangles = [](void*, NVGpaint*, NVGcompositeOperationState, NVGscissor*, const NVGvertex*, int,
-                           float) {};
-    p.renderDelete = [](void*) {};
+    return nvgCreateInternal(&p);
+}
+
+// Records, for each path of each fill, which way NanoVG winds it: +1 solid,
+// -1 a hole (nvgPathWinding), as its nonzero fill will count it.
+inline NVGcontext* createFillRecorder(std::vector<std::vector<int>>* windings) {
+    NVGparams p = headlessParams();
+    p.userPtr = windings;
+    p.renderFill = [](void* user, NVGpaint*, NVGcompositeOperationState, NVGscissor*, float, const float*,
+                      const NVGpath* paths, int count) {
+        auto& fills = *static_cast<std::vector<std::vector<int>>*>(user);
+        fills.emplace_back();
+        for (int p = 0; p < count; ++p) {
+            float area = 0.0f;
+            const NVGvertex* v = paths[p].fill;
+            for (int i = 2; i < paths[p].nfill; ++i)
+                area += (v[i - 1].x - v[0].x) * (v[i].y - v[0].y) - (v[i].x - v[0].x) * (v[i - 1].y - v[0].y);
+            fills.back().push_back(area < 0.0f ? 1 : -1);  // NanoVG's fill vertices run against its winding
+        }
+    };
     return nvgCreateInternal(&p);
 }
 

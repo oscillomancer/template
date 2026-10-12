@@ -4,6 +4,39 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.14.0
+
+Text fields, custom drags, long text, SVG fill rules and long audio files.
+Nothing a product must do; what it may:
+
+- Every text field -- a value's, a property's, `ui().prompt()` -- selects
+  by click and drag, a word by double-click, extends with Shift (click or
+  arrows), takes Ctrl/Cmd-A, -C, -X and -V through the window's clipboard,
+  and puts the caret where a click lands, in text scrolled along or not.
+  `Ui::TextEdit` has `anchor` (with `selected()`, `from()`, `to()`) and
+  `scroll` in place of `selectAll`; `Ui::setTextWidth()`, which EditorBase
+  sets from its fonts, measures for it.
+- A press a product's `onPointerDown` takes holds the pointer until that
+  button is released: the moves and the release come to the hooks, and
+  the wheel and keys wait, so nothing else ends the gesture its
+  `dragEdit` opened. A release the hooks never took the press for goes to
+  `Ui`, not to `onPointerUp`.
+- Long text follows one rule everywhere: shrink toward a minimum, then cut
+  at a character with an ellipsis (`widgets::fitText`, for a product's own
+  drawing). Knob names and values, slider and readout names (which give way
+  to the value), dropdowns, menus, lists, tabs, buttons, the preset name,
+  text fields and file slots. A tooltip stays inside the editor: it wraps
+  narrower when the editor is, and its last line ends in an ellipsis when
+  more would not fit.
+- SVGs honour `fill-rule="evenodd"` where contours nest without crossing,
+  as icons' holes do.
+- `dsp::loadAudioFile(path, out, error, maxSeconds)` and
+  `ProcessorBase::loadFile(request, error, maxSeconds)` decode only a long
+  file's start; the room example reads ten seconds of an impulse response,
+  not the whole file.
+- Documented: tempo is constant across a host block; a ramp or a transport
+  jump within one is seen from the next.
+
 ## 1.13.0
 
 An audit: fixes across the framework, its tools and the examples, each with

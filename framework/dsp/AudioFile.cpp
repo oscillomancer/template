@@ -108,17 +108,21 @@ bool AudioReader::seek(uint64_t frame) {
 
 // --- whole files ---------------------------------------------------------------------
 
-bool loadAudioFile(const std::string& path, AudioData& out, std::string* error) {
+bool loadAudioFile(const std::string& path, AudioData& out, std::string* error, double maxSeconds) {
     AudioReader reader;
     if (!reader.open(path, error)) return false;
     const int channels = reader.channels();
-    // A file that does not say how long it is is read to its end.
+    // A file that does not say how long it is is read to its end, or to the limit.
+    uint64_t limit = UINT64_MAX;
+    if (const double most = maxSeconds * reader.sampleRate(); most > 0.0 && most < 9.0e18)
+        limit = static_cast<uint64_t>(std::ceil(most));
     std::vector<float> interleaved;
     std::vector<float> chunk(static_cast<size_t>(channels) * 65536);
-    for (;;) {
-        const size_t n = reader.read(chunk.data(), 65536);
+    for (uint64_t total = 0; total < limit;) {
+        const size_t n = reader.read(chunk.data(), static_cast<size_t>(std::min<uint64_t>(65536, limit - total)));
         if (n == 0) break;
         interleaved.insert(interleaved.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(n * static_cast<size_t>(channels)));
+        total += n;
     }
     const size_t frames = interleaved.size() / static_cast<size_t>(channels);
     if (frames == 0) {

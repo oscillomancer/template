@@ -99,10 +99,37 @@ float fitSize(NVGcontext* vg, const char* text, float size, float minSize, float
     return w > width && w > 0.0f ? std::max(minSize, size * width / w) : size;
 }
 
+// Words in `width` by the rule (fitText), drawn as label() does.
+void fittedLabel(NVGcontext* vg, float x, float y, const char* text, float size, float minSize, float width,
+                 NVGcolor colour, Align align, bool bold) {
+    if (!text || !*text) return;
+    std::string fitted(text);
+    const float at = fitText(vg, fitted, size, minSize, width, bold ? font::kUiBold : font::kUi);
+    label(vg, x, y, fitted.c_str(), at, colour, align, bold);
+}
+
+// A number likewise, as number() draws it; how wide it came out.
+float fittedNumber(NVGcontext* vg, float x, float y, const char* text, float size, float minSize, float width,
+                   NVGcolor colour, Align align, bool medium = true) {
+    if (!text || !*text) return 0.0f;
+    std::string fitted(text);
+    const char* face = medium ? font::kMonoMedium : font::kMono;
+    const float at = fitText(vg, fitted, size, minSize, width, face);
+    number(vg, x, y, fitted.c_str(), at, colour, align, medium);
+    return textWidth(vg, fitted.c_str(), at, face);
+}
+
 const char* optionLabel(const ParamDef& p, int index, char* scratch, size_t size) {
     if (p.labels && index >= 0 && index < p.labelCount) return p.labels[index];
     std::snprintf(scratch, size, "%d", static_cast<int>(p.hostMin()) + index);
     return scratch;
+}
+
+// The text field's face: a value in Plex Mono, text in Inter.
+void textEntryFont(NVGcontext* vg, bool ascii) {
+    nvgFontFace(vg, ascii ? font::kMonoMedium : font::kUi);
+    nvgFontSize(vg, ascii ? 12.0f : 11.5f);
+    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
 }
 
 }  // namespace
@@ -158,6 +185,51 @@ float textWidth(NVGcontext* vg, const char* text, float size, const char* face) 
     nvgFontFace(vg, face);
     nvgFontSize(vg, size);
     const float w = nvgTextBounds(vg, 0, 0, text, nullptr, nullptr);
+    nvgRestore(vg);
+    return w;
+}
+
+float fitText(NVGcontext* vg, std::string& text, float size, float minSize, float width, const char* face) {
+    if (text.empty()) return size;
+    width = std::max(0.0f, width);
+    size = fitSize(vg, text.c_str(), size, std::min(minSize, size), width, face);
+    nvgSave(vg);
+    nvgFontFace(vg, face);
+    nvgFontSize(vg, size);
+    const auto widthOf = [&](const std::string& t) {
+        return t.empty() ? 0.0f : nvgTextBounds(vg, 0, 0, t.data(), t.data() + t.size(), nullptr);
+    };
+    // NanoVG sizes a font in tenths, so a shrunken fit can read a hair over.
+    const auto fits = [&](const std::string& t) { return widthOf(t) <= width + 0.5f; };
+    if (!fits(text)) {
+        // The longest run of whole characters that fits with an ellipsis
+        // after it; a longer run is never narrower.
+        std::vector<size_t> cuts;
+        for (size_t i = 1; i < text.size(); ++i)
+            if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) cuts.push_back(i);
+        const auto cut = [&](size_t k) {
+            std::string t = text.substr(0, k > 0 ? cuts[k - 1] : 0);
+            while (!t.empty() && t.back() == ' ') t.pop_back();
+            return t + "\xE2\x80\xA6";
+        };
+        size_t lo = 0, hi = cuts.size();
+        while (lo < hi) {
+            const size_t mid = (lo + hi + 1) / 2;
+            if (fits(cut(mid))) lo = mid;
+            else hi = mid - 1;
+        }
+        text = cut(lo);
+        if (!fits(text)) text.clear();  // not even the ellipsis
+    }
+    nvgRestore(vg);
+    return size;
+}
+
+float textEntryWidth(NVGcontext* vg, std::string_view text, bool ascii) {
+    if (text.empty()) return 0.0f;
+    nvgSave(vg);
+    textEntryFont(vg, ascii);
+    const float w = nvgTextBounds(vg, 0, 0, text.data(), text.data() + text.size(), nullptr);
     nvgRestore(vg);
     return w;
 }
@@ -254,13 +326,12 @@ void textField(NVGcontext* vg, const Theme& t, const Control& c, const ControlSt
         nvgStroke(vg);
     }
     if (!s.editing) {
-        nvgScissor(vg, b.x + 4.0f, b.y, b.w - 8.0f, b.h);
         const std::string text(s.text);
+        const float width = b.w - 18.0f;
         if (!text.empty())
-            label(vg, b.x + 9.0f, b.cy() + 0.5f, text.c_str(), 11.5f, rgb(t.text));
+            fittedLabel(vg, b.x + 9.0f, b.cy() + 0.5f, text.c_str(), 11.5f, 11.5f, width, rgb(t.text), Align::Left, false);
         else if (c.label)
-            label(vg, b.x + 9.0f, b.cy() + 0.5f, c.label, 11.5f, rgb(t.textFaint));
-        nvgResetScissor(vg);
+            fittedLabel(vg, b.x + 9.0f, b.cy() + 0.5f, c.label, 11.5f, 11.5f, width, rgb(t.textFaint), Align::Left, false);
     }
     if (s.focused && !s.editing) focusOutline(vg, t, b, radius);
     nvgRestore(vg);
@@ -318,13 +389,13 @@ void fileSlot(NVGcontext* vg, const Theme& t, const Control& c, const ControlSta
         }
     }
     const float left = x + w + 9.0f;
-    nvgScissor(vg, left, b.y, std::max(0.0f, right - left), b.h);
     const std::string name = files::fileName(s.text);
     if (!name.empty())
-        label(vg, left, b.cy() + 0.5f, name.c_str(), 11.5f, s.file == State::Missing ? rgb(t.textMuted) : rgb(t.text));
+        fittedLabel(vg, left, b.cy() + 0.5f, name.c_str(), 11.5f, 11.5f, right - left,
+                    s.file == State::Missing ? rgb(t.textMuted) : rgb(t.text), Align::Left, false);
     else
-        label(vg, left, b.cy() + 0.5f, c.label ? c.label : "Choose or drop a file", 11.5f, rgb(t.textFaint));
-    nvgResetScissor(vg);
+        fittedLabel(vg, left, b.cy() + 0.5f, c.label ? c.label : "Choose or drop a file", 11.5f, 11.5f, right - left,
+                    rgb(t.textFaint), Align::Left, false);
     if (s.focused) focusOutline(vg, t, b, radius);
     nvgRestore(vg);
 }
@@ -369,11 +440,12 @@ void presetBar(NVGcontext* vg, const Theme& t, const Control& c, const ControlSt
         if (part == presetbar::kName) {
             std::string name = s.available ? std::string(s.text) : std::string("Presets");
             if (name.empty()) name = "No preset";
-            if (s.modified) name += " *";
-            nvgScissor(vg, r.x + 4.0f, r.y, r.w - 8.0f, r.h);
-            const float size = fitSize(vg, name.c_str(), 11.5f, 9.5f, r.w - 12.0f, font::kUiBold);
+            // A cut name keeps its mark of being modified.
+            const char* mark = s.modified ? " *" : "";
+            const float size = fitText(vg, name, 11.5f, 9.5f, r.w - 12.0f - textWidth(vg, mark, 11.5f, font::kUiBold),
+                                       font::kUiBold);
+            name += mark;
             label(vg, r.cx(), r.cy() + 0.5f, name.c_str(), size, rgb(t.text), Align::Center, true);
-            nvgResetScissor(vg);
         } else {
             if (part == presetbar::kNext) hairline(vg, r.x, r.y + 5.0f, r.x, r.bottom() - 5.0f, rgba(t.line, 0.9f));
             else hairline(vg, r.right(), r.y + 5.0f, r.right(), r.bottom() - 5.0f, rgba(t.line, 0.9f));
@@ -464,14 +536,16 @@ void knob(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& 
     // Value in the face, unit beneath it.
     if (!s.editing) {
         const ValueText v = valueText(s);
-        const float numberSize = std::clamp(body * 0.36f, 9.5f, 15.0f);
+        const float numberSize = std::clamp(body * 0.36f, 9.5f, 15.0f), face = 2.0f * body - 6.0f;
         const float shift = v.unit[0] ? numberSize * 0.30f : 0.0f;
-        number(vg, cx, cy - shift, v.number, numberSize, rgb(t.text), Align::Center);
-        if (v.unit[0]) label(vg, cx, cy + numberSize * 0.62f, v.unit, numberSize * 0.66f, rgb(t.textMuted), Align::Center);
+        fittedNumber(vg, cx, cy - shift, v.number, numberSize, 8.0f, face, rgb(t.text), Align::Center);
+        if (v.unit[0])
+            fittedLabel(vg, cx, cy + numberSize * 0.62f, v.unit, numberSize * 0.66f, numberSize * 0.66f, face,
+                        rgb(t.textMuted), Align::Center, false);
     }
 
-    label(vg, cx, b.y + size + labelHeight * 0.45f, s.label(c), 11.0f,
-          hot || s.focused ? rgb(t.text) : rgb(t.textMuted), Align::Center, true);
+    fittedLabel(vg, cx, b.y + size + labelHeight * 0.45f, s.label(c), 11.0f, 9.0f, b.w,
+                hot || s.focused ? rgb(t.text) : rgb(t.textMuted), Align::Center, true);
 
     if (s.focused) {
         nvgBeginPath(vg);
@@ -485,11 +559,12 @@ void knob(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& 
 
 namespace {
 
-void sliderValueText(NVGcontext* vg, const Theme& t, const ControlState& s, float x, float y, Align a) {
-    if (s.editing) return;
+// The value, in at most `width`; how wide it came out.
+float sliderValueText(NVGcontext* vg, const Theme& t, const ControlState& s, float x, float y, Align a, float width) {
+    if (s.editing) return 0.0f;
     char text[64];
     joined(valueText(s), text, sizeof(text));
-    number(vg, x, y, text, 11.0f, rgb(t.text), a);
+    return fittedNumber(vg, x, y, text, 11.0f, 9.0f, width, rgb(t.text), a);
 }
 
 void thumb(NVGcontext* vg, const Theme& t, float x, float y, bool hot) {
@@ -521,8 +596,10 @@ void hslider(NVGcontext* vg, const Theme& t, const Control& c, const ControlStat
     const bool hot = s.hover || s.active;
     nvgSave(vg);
     if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
-    label(vg, b.x, b.y + 8.0f, s.label(c), 11.0f, hot || s.focused ? rgb(t.text) : rgb(t.textMuted), Align::Left, true);
-    sliderValueText(vg, t, s, b.right(), b.y + 8.0f, Align::Right);
+    // The value first; the name has what is left of the line.
+    const float valueWidth = sliderValueText(vg, t, s, b.right(), b.y + 8.0f, Align::Right, b.w);
+    fittedLabel(vg, b.x, b.y + 8.0f, s.label(c), 11.0f, 9.0f, b.w - valueWidth - 8.0f,
+                hot || s.focused ? rgb(t.text) : rgb(t.textMuted), Align::Left, true);
 
     const float y = b.bottom() - 9.0f, x0 = b.x + 7.0f, x1 = b.right() - 7.0f;
     well(vg, t, {b.x, y - 3.0f, b.w, 6.0f}, 3.0f);
@@ -559,9 +636,9 @@ void vslider(NVGcontext* vg, const Theme& t, const Control& c, const ControlStat
         hairline(vg, x + 8.0f, yv, x + 8.0f, ym, rgb(t.modulation), 2.0f);
     }
     thumb(vg, t, x, yv, hot);
-    sliderValueText(vg, t, s, x, b.bottom() - 25.0f, Align::Center);
-    label(vg, x, b.bottom() - 9.0f, s.label(c), 11.0f, hot || s.focused ? rgb(t.text) : rgb(t.textMuted),
-          Align::Center, true);
+    sliderValueText(vg, t, s, x, b.bottom() - 25.0f, Align::Center, b.w);
+    fittedLabel(vg, x, b.bottom() - 9.0f, s.label(c), 11.0f, 9.0f, b.w, hot || s.focused ? rgb(t.text) : rgb(t.textMuted),
+                Align::Center, true);
     if (s.focused) focusOutline(vg, t, b, 4.0f);
     nvgRestore(vg);
 }
@@ -570,10 +647,11 @@ void readout(NVGcontext* vg, const Theme& t, const Control& c, const ControlStat
     const Rect b = c.bounds;
     nvgSave(vg);
     if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
-    label(vg, b.x, b.y + 8.0f, s.label(c), 11.0f, rgb(t.textMuted), Align::Left, true);
     char text[64];
     joined(valueText(s), text, sizeof(text));
-    number(vg, b.right(), b.y + 8.0f, text, 11.0f, rgb(t.text), Align::Right);
+    const float valueWidth = fittedNumber(vg, b.right(), b.y + 8.0f, text, 11.0f, 9.0f, b.w, rgb(t.text), Align::Right);
+    fittedLabel(vg, b.x, b.y + 8.0f, s.label(c), 11.0f, 9.0f, b.w - valueWidth - 8.0f, rgb(t.textMuted), Align::Left,
+                true);
     // The bar is lit in the meters' colour: it reports, it does not adjust.
     const Rect bar{b.x, b.bottom() - 6.0f, b.w, 6.0f};
     well(vg, t, bar, 3.0f);
@@ -632,11 +710,9 @@ void toggle(NVGcontext* vg, const Theme& t, const Control& c, const ControlState
         nvgFillColor(vg, rgb(hot ? t.textMuted : t.textFaint));
         nvgFill(vg);
     }
-    const char* text = s.label(c);
     const float left = lampX + 9.0f, avail = b.right() - left - 8.0f;
-    const float size = fitSize(vg, text, 11.5f, 9.0f, avail, font::kUiBold);
-    label(vg, left + avail * 0.5f, b.cy() + 0.5f, text, size, on || hot ? rgb(t.text) : rgb(t.textMuted),
-          Align::Center, true);
+    fittedLabel(vg, left + avail * 0.5f, b.cy() + 0.5f, s.label(c), 11.5f, 9.0f, avail,
+                on || hot ? rgb(t.text) : rgb(t.textMuted), Align::Center, true);
     if (s.focused) focusOutline(vg, t, b, radius);
     nvgRestore(vg);
 }
@@ -671,10 +747,9 @@ void segmented(NVGcontext* vg, const Theme& t, const Control& c, const ControlSt
             hairline(vg, seg.x, seg.y + 6.0f, seg.x, seg.bottom() - 6.0f, rgba(t.line, 0.9f));
         char scratch[16];
         const char* text = optionLabel(p, i, scratch, sizeof(scratch));
-        const float size = fitSize(vg, text, 11.0f, 8.5f, w - 10.0f, font::kUiBold);
-        label(vg, seg.cx(), seg.cy() + 0.5f, text, size,
-              isSelected ? rgb(t.text) : isHover ? lerp(rgb(t.textMuted), rgb(t.text), 0.5f) : rgb(t.textMuted),
-              Align::Center, true);
+        fittedLabel(vg, seg.cx(), seg.cy() + 0.5f, text, 11.0f, 8.5f, w - 10.0f,
+                    isSelected ? rgb(t.text) : isHover ? lerp(rgb(t.textMuted), rgb(t.text), 0.5f) : rgb(t.textMuted),
+                    Align::Center, true);
     }
     if (s.focused) focusOutline(vg, t, b, radius);
     nvgRestore(vg);
@@ -697,8 +772,7 @@ void dropdown(NVGcontext* vg, const Theme& t, const Control& c, const ControlSta
     nvgStroke(vg);
 
     const ValueText v = valueText(s);
-    const float size = fitSize(vg, v.number, 11.5f, 9.0f, b.w - 34.0f, font::kUiBold);
-    label(vg, b.x + 10.0f, b.cy() + 0.5f, v.number, size, rgb(t.text), Align::Left, true);
+    fittedLabel(vg, b.x + 10.0f, b.cy() + 0.5f, v.number, 11.5f, 9.0f, b.w - 34.0f, rgb(t.text), Align::Left, true);
     const float ax = b.right() - 13.0f, ay = b.cy();
     nvgBeginPath(vg);
     nvgMoveTo(vg, ax - 4.0f, ay - 2.0f);
@@ -752,9 +826,8 @@ void overlays(NVGcontext* vg, const Theme& t, const Ui& ui) {
             const NVGcolor colour = !item.enabled                    ? rgb(t.textFaint)
                                     : i == m.hover || item.checked ? rgb(t.text)
                                                                    : rgb(t.textMuted);
-            const float size = fitSize(vg, item.label.c_str(), 11.5f, 9.0f, row.w - 28.0f, font::kUi);
-            label(vg, row.x + 20.0f, row.cy() + 0.5f, item.label.c_str(), size, colour, Align::Left,
-                  item.checked);
+            fittedLabel(vg, row.x + 20.0f, row.cy() + 0.5f, item.label.c_str(), 11.5f, 9.0f, row.w - 28.0f, colour,
+                        Align::Left, item.checked);
         }
         nvgResetScissor(vg);
         // More above or below: a small arrow at that edge.
@@ -788,28 +861,25 @@ void overlays(NVGcontext* vg, const Theme& t, const Ui& ui) {
         nvgStroke(vg);
 
         // A value is centred in Plex Mono; text is left-aligned in Inter and
-        // slides along to keep the caret in view.
-        nvgFontFace(vg, e.ascii ? font::kMonoMedium : font::kUi);
-        nvgFontSize(vg, e.ascii ? 12.0f : 11.5f);
-        nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
-        const char* end = e.buffer + e.length;
-        const float width = nvgTextBounds(vg, 0, 0, e.buffer, end, nullptr);
-        const float caretAt = e.caret > 0 ? nvgTextBounds(vg, 0, 0, e.buffer, e.buffer + e.caret, nullptr) : 0.0f;
-        const float inner = r.w - 16.0f;
-        float x = e.ascii ? r.cx() - width * 0.5f : r.x + 8.0f;
-        if (!e.ascii && caretAt > inner) x -= caretAt - inner;
+        // slides along to keep the caret in view (Ui::textStart).
+        textEntryFont(vg, e.ascii);
+        const auto widthTo = [&](int bytes) {
+            return bytes > 0 ? nvgTextBounds(vg, 0, 0, e.buffer, e.buffer + bytes, nullptr) : 0.0f;
+        };
+        const float x = Ui::textStart(e, widthTo(e.length));
         const float y = r.cy() + 0.5f;
         nvgScissor(vg, r.x + 3.0f, r.y, r.w - 6.0f, r.h);
-        if (e.selectAll && e.length > 0) {
-            roundedRect(vg, {x - 2.0f, r.y + 4.0f, width + 4.0f, r.h - 8.0f}, 2.0f);
+        if (e.selected()) {
+            const float from = x + widthTo(e.from()), to = x + widthTo(e.to());
+            roundedRect(vg, {from - 1.0f, r.y + 4.0f, to - from + 2.0f, r.h - 8.0f}, 2.0f);
             nvgFillColor(vg, rgba(t.accent, 0.30f));
             nvgFill(vg);
         }
         nvgFillColor(vg, rgb(t.text));
-        nvgText(vg, x, y, e.buffer, end);
-        if (e.caretOn && !e.selectAll) {
+        nvgText(vg, x, y, e.buffer, e.buffer + e.length);
+        if (e.caretOn && !e.selected()) {
             nvgBeginPath(vg);
-            nvgRect(vg, std::round(x + caretAt), r.y + 5.0f, 1.0f, r.h - 10.0f);
+            nvgRect(vg, std::round(x + widthTo(e.caret)), r.y + 5.0f, 1.0f, r.h - 10.0f);
             nvgFillColor(vg, rgb(t.accent));
             nvgFill(vg);
         }
@@ -819,19 +889,40 @@ void overlays(NVGcontext* vg, const Theme& t, const Ui& ui) {
 
     const Ui::Tooltip& tip = ui.tooltip();
     if (tip.open && !m.open && !e.open) {
+        // At most 220 wide and inside the editor: the body wraps, the title
+        // and the last line that fits end in an ellipsis if they must.
         nvgSave(vg);
-        const float wrap = 220.0f, pad = 8.0f, size = 11.0f;
-        nvgFontSize(vg, size);
-        nvgTextLineHeight(vg, 1.3f);
-        nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
-        float bounds[4] = {};
+        const float pad = 8.0f, size = 11.0f;
+        const float widest = std::max(0.0f, ui.designWidth() - 8.0f - pad * 2.0f);
+        const float wrap = std::min(220.0f, widest);
         nvgFontFace(vg, font::kUi);
-        nvgTextBoxBounds(vg, 0, 0, wrap, tip.text.c_str(), nullptr, bounds);
-        float width = bounds[2] - bounds[0], height = bounds[3] - bounds[1];
+        nvgFontSize(vg, size);
+        float lineHeight = 0.0f;
+        nvgTextMetrics(vg, nullptr, nullptr, &lineHeight);
+        lineHeight *= 1.3f;
         const float titleHeight = tip.title.empty() ? 0.0f : 16.0f;
-        if (!tip.title.empty()) width = std::max(width, textWidth(vg, tip.title.c_str(), size, font::kUiBold));
+        const int room = std::max(1, static_cast<int>((ui.designHeight() - 8.0f - pad * 2.0f - titleHeight) / lineHeight));
+        NVGtextRow rows[24];
+        const char* end = tip.text.c_str() + tip.text.size();
+        const int count = tip.text.empty() ? 0 : nvgTextBreakLines(vg, tip.text.c_str(), end, wrap, rows, 24);
+        const int shown = std::min(count, room);
+        std::vector<std::string> lines;
+        float width = 0.0f;
+        for (int i = 0; i < shown; ++i) {
+            lines.emplace_back(rows[i].start, rows[i].end);
+            if (i == shown - 1 && rows[i].next < end) {  // more than fits
+                lines.back() += "\xE2\x80\xA6";
+                fitText(vg, lines.back(), size, size, wrap, font::kUi);
+            }
+            width = std::max(width, textWidth(vg, lines.back().c_str(), size, font::kUi));
+        }
+        std::string title = tip.title;
+        if (!title.empty()) {
+            fitText(vg, title, size, size, widest, font::kUiBold);
+            width = std::max(width, textWidth(vg, title.c_str(), size, font::kUiBold));
+        }
         const Rect a = tip.anchor;
-        Rect box{0, 0, width + pad * 2.0f, height + titleHeight + pad * 2.0f};
+        Rect box{0, 0, width + pad * 2.0f, lineHeight * static_cast<float>(shown) + titleHeight + pad * 2.0f};
         box.x = std::clamp(a.cx() - box.w * 0.5f, 4.0f, std::max(4.0f, ui.designWidth() - box.w - 4.0f));
         box.y = a.bottom() + 6.0f;
         if (box.bottom() > ui.designHeight() - 4.0f) box.y = std::max(4.0f, a.y - 6.0f - box.h);
@@ -843,12 +934,14 @@ void overlays(NVGcontext* vg, const Theme& t, const Ui& ui) {
         nvgStrokeColor(vg, rgb(t.lineLit));
         nvgStrokeWidth(vg, 1.0f);
         nvgStroke(vg);
-        if (!tip.title.empty()) label(vg, box.x + pad, box.y + pad + 6.0f, tip.title.c_str(), size, rgb(t.text), Align::Left, true);
+        if (!title.empty()) label(vg, box.x + pad, box.y + pad + 6.0f, title.c_str(), size, rgb(t.text), Align::Left, true);
         nvgFontFace(vg, font::kUi);
         nvgFontSize(vg, size);
         nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
         nvgFillColor(vg, rgb(tip.title.empty() ? t.text : t.textMuted));
-        nvgTextBox(vg, box.x + pad, box.y + pad + titleHeight, wrap, tip.text.c_str(), nullptr);
+        for (int i = 0; i < shown; ++i)
+            nvgText(vg, box.x + pad, box.y + pad + titleHeight + lineHeight * static_cast<float>(i),
+                    lines[static_cast<size_t>(i)].c_str(), nullptr);
         nvgRestore(vg);
     }
 }
@@ -946,10 +1039,8 @@ void button(NVGcontext* vg, const Theme& t, const Control& c, const ControlState
     nvgStrokeColor(vg, hot ? rgb(t.lineLit) : rgb(t.line));
     nvgStrokeWidth(vg, 1.0f);
     nvgStroke(vg);
-    const char* text = s.label(c);
-    const float size = fitSize(vg, text, 11.5f, 9.0f, b.w - 14.0f, font::kUiBold);
-    label(vg, b.cx(), b.cy() + 0.5f, text, size, hot ? rgb(t.text) : lerp(rgb(t.textMuted), rgb(t.text), 0.4f),
-          Align::Center, true);
+    fittedLabel(vg, b.cx(), b.cy() + 0.5f, s.label(c), 11.5f, 9.0f, b.w - 14.0f,
+                hot ? rgb(t.text) : lerp(rgb(t.textMuted), rgb(t.text), 0.4f), Align::Center, true);
     if (s.focused) focusOutline(vg, t, b, radius);
     nvgRestore(vg);
 }
@@ -999,16 +1090,18 @@ void xyPad(NVGcontext* vg, const Theme& t, const Control& c, const ControlState&
     if (sx.def) {
         ControlState one = s;
         joined(valueText(one), text, sizeof(text));
-        label(vg, area.right(), area.bottom() - 7.0f, sx.def->displayLabel(), 10.0f, rgb(t.textMuted), Align::Right, true);
-        number(vg, area.right(), area.bottom() - 20.0f, text, 10.0f, rgb(t.text), Align::Right);
+        fittedLabel(vg, area.right(), area.bottom() - 7.0f, sx.def->displayLabel(), 10.0f, 8.5f, area.w, rgb(t.textMuted),
+                    Align::Right, true);
+        fittedNumber(vg, area.right(), area.bottom() - 20.0f, text, 10.0f, 8.5f, area.w, rgb(t.text), Align::Right);
     }
     if (sy.def) {
         ControlState other;
         other.def = sy.def;
         other.value = sy.value;
         joined(valueText(other), text, sizeof(text));
-        label(vg, area.x, area.y + 6.0f, sy.def->displayLabel(), 10.0f, rgb(t.textMuted), Align::Left, true);
-        number(vg, area.x, area.y + 19.0f, text, 10.0f, rgb(t.text), Align::Left);
+        fittedLabel(vg, area.x, area.y + 6.0f, sy.def->displayLabel(), 10.0f, 8.5f, area.w, rgb(t.textMuted), Align::Left,
+                    true);
+        fittedNumber(vg, area.x, area.y + 19.0f, text, 10.0f, 8.5f, area.w, rgb(t.text), Align::Left);
     }
     if (s.focused) focusOutline(vg, t, b, 5.0f);
     nvgRestore(vg);
@@ -1028,10 +1121,9 @@ void tabs(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& 
             nvgFillColor(vg, rgba(t.text, 0.05f));
             nvgFill(vg);
         }
-        const char* text = c.pages[static_cast<size_t>(k)].c_str();
-        const float size = fitSize(vg, text, 11.5f, 9.0f, r.w - 12.0f, font::kUiBold);
-        label(vg, r.cx(), r.cy(), text, size, on ? rgb(t.text) : hot ? lerp(rgb(t.textMuted), rgb(t.text), 0.5f) : rgb(t.textMuted),
-              Align::Center, true);
+        fittedLabel(vg, r.cx(), r.cy(), c.pages[static_cast<size_t>(k)].c_str(), 11.5f, 9.0f, r.w - 12.0f,
+                    on ? rgb(t.text) : hot ? lerp(rgb(t.textMuted), rgb(t.text), 0.5f) : rgb(t.textMuted), Align::Center,
+                    true);
         if (on) {
             nvgBeginPath(vg);
             nvgRoundedRect(vg, r.x + 10.0f, b.bottom() - 2.5f, r.w - 20.0f, 2.5f, 1.25f);
@@ -1069,8 +1161,8 @@ void list(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& 
             nvgFillColor(vg, on ? rgba(t.accent, 0.22f) : rgba(t.text, 0.05f));
             nvgFill(vg);
         }
-        const float size = fitSize(vg, text.c_str(), 11.5f, 9.0f, row.w - 16.0f, font::kUi);
-        label(vg, row.x + 8.0f, row.cy() + 0.5f, text.c_str(), size, on ? rgb(t.text) : rgb(t.textMuted), Align::Left, on);
+        fittedLabel(vg, row.x + 8.0f, row.cy() + 0.5f, text.c_str(), 11.5f, 9.0f, row.w - 16.0f,
+                    on ? rgb(t.text) : rgb(t.textMuted), Align::Left, on);
     }
     nvgResetScissor(vg);
     if (scrolls) {
@@ -1167,7 +1259,8 @@ void envelope(NVGcontext* vg, const Theme& t, const Control& c, const ControlSta
             if (!text.empty()) text += "   ";
             text += std::string(one.def->displayLabel()) + " " + value;
         }
-        label(vg, b.right() - 10.0f, b.y + 12.0f, text.c_str(), 10.5f, rgb(t.text), Align::Right, true);
+        fittedLabel(vg, b.right() - 10.0f, b.y + 12.0f, text.c_str(), 10.5f, 9.0f, b.w - 20.0f, rgb(t.text), Align::Right,
+                    true);
     }
     if (s.focused) focusOutline(vg, t, b, 5.0f);
     nvgRestore(vg);

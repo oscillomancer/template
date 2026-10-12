@@ -5,11 +5,11 @@
 //
 // An SVG is parsed once (nanosvg) and drawn as NanoVG paths: crisp at any
 // scale, and optionally in one colour, so an icon follows the theme.
-// Shapes, strokes and opacity are drawn as written. The evenodd fill rule
-// is not honoured: contours with positive signed control-polygon area are
-// solid, and the others are holes. Gradients use their first and last stops;
-// text, images, masks, filters and dashes are not drawn. Convert text to paths
-// before export.
+// Shapes, strokes and opacity are drawn as written, under either fill rule
+// (evenodd exactly where contours nest without crossing one another, as an
+// icon's holes do). Gradients use their first and last stops; text, images,
+// masks, filters and dashes are not drawn. Convert text to paths before
+// export.
 //
 // A PNG or JPEG becomes a NanoVG image (NanoVG's own stb_image), one per
 // drawing context, made when first drawn and freed when the view goes.
@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <nanovg.h>
 
@@ -45,6 +46,7 @@ class Svg {
 
   private:
     NSVGimage* image_ = nullptr;
+    std::vector<unsigned char> solid_;  // each path's winding, shape by shape: 1 solid, 0 a hole
 };
 
 // What one editor has loaded: SVGs parsed (shared by every context), and

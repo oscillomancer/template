@@ -307,7 +307,8 @@ contract is at the top of `core/ProcessorBase.h`. In short:
   `transport->beats` while playing, so it lands on the same beat wherever
   playback starts. `block.tempo()` is the host's tempo, or 120 when it
   sent none; `beatsToSeconds(beats, bpm)` converts. The pulse example does
-  all of this.
+  all of this. Tempo is constant across a host block: a ramp or a jump
+  within one is seen from the next.
 - Rendering offline: a processor with a costlier, better algorithm for
   bounces declares `static constexpr bool kOfflineMode = true;` and reads
   `block.offline` (and `setup.offline` in `prepare()`). Hosts say so through
@@ -342,7 +343,9 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 - Files (`.file()` properties): the processor's `loadFile(request, error)`
   runs on the framework's loading thread whenever the path changes, and
   again when the sample rate, block size or width does; the default
-  decodes audio and resamples it to the session's rate (`dsp::AudioData`).
+  decodes audio and resamples it to the session's rate (`dsp::AudioData`),
+  and `ProcessorBase::loadFile(request, error, maxSeconds)` decodes only a
+  long file's start (the room example's ten seconds).
   Declare `using FileContents = T;` and a static `loadFile` returning
   `std::unique_ptr<T>` to make anything else there -- a whole convolution,
   partitions and FFTs, so the audio thread only swaps it in -- and
@@ -435,7 +438,8 @@ drive example). Write your own once the product is past its sketch.
 - A menu or a text field of the product's own: `ui().popup(anchor, items,
   chosen)` (`MenuItem::item`, `header`, `separator`; long menus scroll) and
   `ui().prompt(box, text, limit, commit)`, where `commit` returning false
-  keeps the field open and marked.
+  keeps the field open and marked. Every text field selects by click, drag,
+  double-click (a word) and Shift, and takes Ctrl/Cmd-A, -C, -X and -V.
 - A control bound to an output parameter only displays it. An output
   repaints the editor only while a visible control shows it; drawing of the
   product's own that reads one calls `watch(id)` in the constructor.
@@ -483,8 +487,10 @@ drive example). Write your own once the product is past its sketch.
   `onPointerDown/Move/Up` and edit through `ui().dragEdit(control, value)`
   (or `dragEdit(controlX, x, controlY, y)` for two at once) and
   `ui().endDragEdit()`, never `host().beginEdit` directly. `Ui` owns the
-  one-gesture-at-a-time rule. Override `onCancel()` to drop the drag: focus
-  loss and teardown call it, and the release may never arrive.
+  one-gesture-at-a-time rule. A press `onPointerDown` takes holds the
+  pointer until its release: the moves and the release come to the hooks,
+  and the wheel and keys wait. Override `onCancel()` to drop the drag:
+  focus loss and teardown call it, and the release may never arrive.
 - Draw what is heard from `effective(id)` (the value plus host
   modulation); `plain(id)` is the control's own position.
 - Restyle a control by overriding `drawControl` for its `variant`.

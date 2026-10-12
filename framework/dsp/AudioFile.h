@@ -41,9 +41,10 @@ struct AudioData {
 // The extensions the decoder reads, for a file dialog or a drop.
 inline constexpr const char* kAudioFileExtensions[] = {"wav", "wave", "aif", "aiff", "aifc", "flac", "rf64", "w64"};
 
-// Decodes a whole file. False, with a reason in `error`, when it cannot:
-// missing, unreadable, or a format it does not know.
-bool loadAudioFile(const std::string& path, AudioData& out, std::string* error = nullptr);
+// Decodes a whole file, or its first `maxSeconds` when that is above zero:
+// the rest of a longer one is never read. False, with a reason in `error`,
+// when it cannot: missing, unreadable, or a format it does not know.
+bool loadAudioFile(const std::string& path, AudioData& out, std::string* error = nullptr, double maxSeconds = 0.0);
 
 // 32-bit float WAV, for tests and exports.
 bool saveWavFile(const std::string& path, const AudioData& audio, std::string* error = nullptr);

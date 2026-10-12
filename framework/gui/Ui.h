@@ -33,6 +33,9 @@
 //     out. Space is deliberately unbound: it belongs to the host's transport.
 //   - A note the keyboard starts always ends: on release, on sliding to
 //     another key, and on losing focus.
+//   - A text field selects what a click-drag, Shift-click or Shift-arrow
+//     covers, a word on double-click; Ctrl- or Cmd-A selects all, and
+//     -C, -X and -V copy, cut and paste.
 //   - Losing focus ends every gesture and closes every overlay.
 //   - Hovering still over a control for a moment shows its tooltip: the
 //     parameter's help() text, or the control's own.
@@ -47,6 +50,7 @@
 // Coordinates are design units throughout; Window converts.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -331,13 +335,18 @@ class Ui {
         char buffer[kCapacity] = {};
         int length = 0;
         int caret = 0;
+        int anchor = 0;             // the selection's other end; the caret's own place when none
         int limit = kCapacity - 1;  // bytes
         bool ascii = true;          // a value for a parser; otherwise UTF-8 text
-        bool selectAll = true;      // typing replaces the whole field
+        float scroll = 0.0f;        // text slides left this far to keep the caret in view
+        bool selecting = false;     // a press in it is dragging out a selection
         bool caretOn = true;
         double blink = 0.0;
         bool rejected = false;  // the last commit was refused
         std::function<bool(std::string_view)> commit;  // a prompt's; a value's goes to its parameter
+        bool selected() const { return anchor != caret; }
+        int from() const { return std::min(anchor, caret); }
+        int to() const { return std::max(anchor, caret); }
     };
     struct Tooltip {
         bool open = false;
@@ -376,6 +385,15 @@ class Ui {
     // marked rejected. Escape, or a click outside, abandons it.
     void prompt(Rect box, std::string_view initial, int limit, std::function<bool(std::string_view)> commit,
                 int control = -1);
+
+    // How wide the text field draws its text, in design units: where a
+    // click puts the caret depends on it. EditorBase measures with its
+    // fonts; without it, each character counts as 7 units.
+    using TextWidth = std::function<float(std::string_view text, bool ascii)>;
+    void setTextWidth(TextWidth width) { textWidth_ = std::move(width); }
+    // Where the open text field's text starts, `width` wide: a value
+    // centred, text from the left, slid along by its scroll.
+    static float textStart(const TextEdit& e, float width);
 
     void setClipboard(Clipboard* clipboard) { clipboard_ = clipboard; }
     Clipboard* clipboard() const { return clipboard_; }
@@ -457,6 +475,13 @@ class Ui {
     void cancelText();
     void cancelInactiveOverlays();
     bool textKey(uint32_t code, uint32_t mods);
+    void insertText(std::string_view bytes);
+    void eraseSelection();
+    void pasteText(std::string_view text);
+    float measureText(int bytes) const;
+    int caretAt(float x) const;
+    void revealCaret();
+    void textChanged();
     bool menuKey(uint32_t code);
     void moveFocus(int direction);
     void hideTooltip();
@@ -496,6 +521,8 @@ class Ui {
     std::vector<uint8_t> fileStates_;  // each control's last FileStatus::State, to repaint when one moves
     Clipboard* clipboard_ = nullptr;
     FileDialogs* files_ = nullptr;
+    TextWidth textWidth_;
+    unsigned textSerial_ = 0;  // which text field a paste is for
     // What the preset bars show, polled from the library.
     std::string presetName_;
     bool presetModified_ = false;

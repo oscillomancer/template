@@ -10,6 +10,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 
 #include <nanovg.h>
 
@@ -36,6 +37,13 @@ void number(NVGcontext* vg, float x, float y, const char* text, float size, NVGc
 void caption(NVGcontext* vg, float x, float y, const char* text, NVGcolor colour,
              Align align = Align::Left, float size = 10.0f);
 float textWidth(NVGcontext* vg, const char* text, float size, const char* face);
+// The rule every control's text follows in its space: it shrinks from
+// `size` toward `minSize`, and what still does not fit is cut at a
+// character and ends in an ellipsis ("Low Cut Freq…"). Returns the size
+// to draw at; `text` is cut to match. Draw the product's own text to it.
+float fitText(NVGcontext* vg, std::string& text, float size, float minSize, float width, const char* face);
+// How wide Ui's text field draws `text`: what it places the caret by.
+float textEntryWidth(NVGcontext* vg, std::string_view text, bool ascii);
 
 // --- furniture -------------------------------------------------------------------
 

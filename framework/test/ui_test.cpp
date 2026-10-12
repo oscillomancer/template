@@ -26,6 +26,7 @@
 #include "core/PresetLibrary.h"
 #include "core/PropertyTable.h"
 #include "gui/EditorBase.h"
+#include "gui/Fonts.h"
 #include "gui/Images.h"
 #include "gui/Layout.h"
 #include "gui/NativeFiles.h"
@@ -490,7 +491,8 @@ TEST(a_text_field_edits_its_property_as_utf8) {
     const Control& field = ui.textField(d.id, {20, 20, 300, 26});
     CHECK(ui.interactive(0) && ui.state(0).text == d.def);
     ui.pointerDown(field.bounds.cx(), field.bounds.cy(), 0, 0, false);
-    CHECK(ui.textEdit().open && ui.textEdit().selectAll && !ui.textEdit().ascii);
+    CHECK(ui.textEdit().open && ui.textEdit().from() == 0 && ui.textEdit().to() == ui.textEdit().length &&
+          !ui.textEdit().ascii);
     ui.text('a');
     ui.text(0xE9);     // é: two bytes
     ui.text(0x1F600);  // four
@@ -861,6 +863,146 @@ struct FakeClipboard : Clipboard {
     }
 };
 }  // namespace
+
+TEST(text_fields_select_copy_cut_paste_and_place_the_caret_where_clicked) {
+    MockHost host;
+    Ui ui{host, 800.0f, 600.0f};
+    FakeClipboard clipboard;
+    ui.setClipboard(&clipboard);
+    std::string committed;
+    const Rect box{20, 20, 200, 26};
+    ui.prompt(box, "one two", 64, [&](std::string_view t) { committed = t; return true; });
+    const Ui::TextEdit& e = ui.textEdit();
+    CHECK(e.open && e.from() == 0 && e.to() == 7);  // all of it, to be typed over
+
+    // Without fonts each character is 7 units: a click between "one" and
+    // " two" puts the caret there; Shift-arrows select from it.
+    const float start = Ui::textStart(e, 0.0f);
+    ui.pointerDown(start + 3 * 7.0f + 2.0f, box.cy(), 0, 0, false);
+    ui.pointerUp(start + 3 * 7.0f + 2.0f, box.cy(), 0, 0);
+    CHECK(e.caret == 3 && !e.selected());
+    ui.key(key::kRight, mod::kShift);
+    ui.key(key::kRight, mod::kShift);
+    CHECK(e.from() == 3 && e.to() == 5);
+    ui.key(key::kLeft, 0);  // collapses to the selection's start
+    CHECK(e.caret == 3 && !e.selected());
+
+    // Dragging selects; Ctrl-C copies the selection, Ctrl-X cuts it.
+    ui.pointerDown(start + 1.0f, box.cy(), 0, 0, false);
+    ui.pointerMove(start + 3 * 7.0f, box.cy(), 0);
+    ui.pointerUp(start + 3 * 7.0f, box.cy(), 0, 0);
+    CHECK(e.from() == 0 && e.to() == 3);
+    ui.key('c', mod::kCtrl);
+    CHECK(clipboard.text == "one" && std::string(e.buffer) == "one two");
+    ui.key('x', mod::kSuper);
+    CHECK(clipboard.text == "one" && std::string(e.buffer) == " two" && e.caret == 0);
+
+    // Pasting goes in at the caret, without its line breaks.
+    clipboard.text = "th\nree";
+    ui.key('v', mod::kCtrl);
+    CHECK(std::string(e.buffer) == "three two" && e.caret == 5);
+    // A double-click selects the word; Ctrl-A all of it; typing replaces it.
+    ui.pointerDown(start + 7 * 7.0f, box.cy(), 0, 0, true);
+    ui.pointerUp(start + 7 * 7.0f, box.cy(), 0, 0);
+    CHECK(e.from() == 6 && e.to() == 9);
+    ui.key('a', mod::kCtrl);
+    CHECK(e.from() == 0 && e.to() == 9);
+    ui.text('x');
+    ui.key(key::kEnter, 0);
+    CHECK(!e.open && committed == "x");
+
+    // A value takes only what it would from the keyboard; a paste that
+    // arrives after its field closed goes nowhere.
+    Bench b;
+    if (b.knob >= 0) {
+        b.ui.setClipboard(&clipboard);
+        b.ui.openTextEdit(b.knob);
+        clipboard.text = "\xE2\x88\x92" "3\xC3\xA9";  // a typographic minus, 3, é
+        b.ui.key('v', mod::kCtrl);
+        CHECK(std::string(b.ui.textEdit().buffer) == "-3");
+    }
+    struct LateClipboard : Clipboard {
+        std::function<void(std::string_view)> pending;
+        bool copy(std::string_view) override { return true; }
+        bool paste(std::function<void(std::string_view)> done) override {
+            pending = std::move(done);
+            return true;
+        }
+    } late;
+    ui.setClipboard(&late);
+    ui.prompt(box, "kept", 64, [](std::string_view) { return true; });
+    ui.key('v', mod::kCtrl);
+    ui.key(key::kEscape, 0);
+    ui.prompt(box, "new", 64, [](std::string_view) { return true; });
+    late.pending("stale");
+    CHECK(std::string(e.buffer) == "new");
+}
+
+TEST(a_click_in_a_scrolled_text_field_lands_on_the_character_under_it) {
+    struct PlainEditor : EditorBase {
+        using EditorBase::ui;
+        explicit PlainEditor(EditorHost& host) : EditorBase(host, Theme{}, 400, 300) {}
+        void paint(NVGcontext*) override {}
+    };
+    MockHost host;
+    PlainEditor editor(host);
+    NVGcontext* vg = test::createHeadlessCanvas();
+    CHECK(editor.attach(vg));
+    const Rect box{20, 20, 120, 26};
+    std::string text;
+    for (int k = 0; k < 40; ++k) text += static_cast<char>('a' + k % 26);
+    editor.ui().prompt(box, text, 64, [](std::string_view) { return true; });
+    const Ui::TextEdit& e = editor.ui().textEdit();
+    editor.key(key::kEnd, 0);
+    CHECK(e.scroll > 0.0f);  // the end is in view, the start slid off
+    // Where each character boundary is drawn, by the fonts' own measure.
+    const float start = Ui::textStart(e, widgets::textEntryWidth(vg, text, false));
+    const float atA = start + widgets::textEntryWidth(vg, std::string_view(text).substr(0, 35), false);
+    const float atB = start + widgets::textEntryWidth(vg, std::string_view(text).substr(0, 36), false);
+    CHECK(atA > box.x && atB < box.right());
+    const float scroll = e.scroll;
+    editor.pointerDown(atA + 0.3f * (atB - atA), box.cy(), 0, 0, false);
+    editor.pointerUp(atA, box.cy(), 0, 0);
+    CHECK_MSG(e.caret == 35, "caret %d", e.caret);
+    CHECK(e.scroll == scroll);  // nothing slid under the pointer
+    editor.detach();
+    nvgDeleteInternal(vg);
+}
+
+TEST(text_too_long_for_its_space_shrinks_then_ends_in_an_ellipsis) {
+    NVGcontext* vg = test::createHeadlessCanvas();
+    CHECK(loadFonts(vg));
+    const char* face = font::kUiBold;
+    std::string text = "Gain";
+    CHECK(widgets::fitText(vg, text, 11.0f, 9.0f, 200.0f, face) == 11.0f && text == "Gain");
+    // A little too wide: smaller, but whole.
+    const float full = widgets::textWidth(vg, "Low Cut Frequency", 11.0f, face);
+    text = "Low Cut Frequency";
+    const float size = widgets::fitText(vg, text, 11.0f, 9.0f, full * 0.9f, face);
+    CHECK(size < 11.0f && size >= 9.0f && text == "Low Cut Frequency");
+    // Far too wide: the smallest size, cut at a character, and an ellipsis.
+    text = "Low Cut Frequency";
+    CHECK(widgets::fitText(vg, text, 11.0f, 9.0f, full * 0.5f, face) == 9.0f);
+    CHECK(text.size() > 3 && text.compare(text.size() - 3, 3, "\xE2\x80\xA6") == 0);
+    CHECK(std::string("Low Cut Frequency").find(text.substr(0, text.size() - 3)) == 0);
+    CHECK(widgets::textWidth(vg, text.c_str(), 9.0f, face) <= full * 0.5f + 0.5f);
+    // No space even for the ellipsis: nothing.
+    text = "Low Cut Frequency";
+    widgets::fitText(vg, text, 11.0f, 9.0f, 2.0f, face);
+    CHECK(text.empty());
+    // A cut never splits a character, nor leaves a space before the ellipsis.
+    const std::string accented = "\xC3\xA9t\xC3\xA9 \xC3\xA9t\xC3\xA9 \xC3\xA9t\xC3\xA9";
+    for (float width = 10.0f; width < 80.0f; width += 1.0f) {
+        text = accented;
+        widgets::fitText(vg, text, 11.0f, 11.0f, width, face);
+        if (text.size() < 3 || text == accented) continue;  // nothing, or all of it
+        const std::string kept = text.substr(0, text.size() - 3);
+        CHECK(text.compare(kept.size(), 3, "\xE2\x80\xA6") == 0 && accented.compare(0, kept.size(), kept) == 0);
+        CHECK((static_cast<unsigned char>(accented[kept.size()]) & 0xC0) != 0x80);
+        CHECK(kept.empty() || kept.back() != ' ');
+    }
+    nvgDeleteInternal(vg);
+}
 
 TEST(settings_copy_and_paste_through_the_clipboard) {
     MockHost host;
@@ -1341,6 +1483,29 @@ TEST(svgs_parse_and_draw_and_every_asset_is_found) {
     svg.draw(vg, {0, 0, 48, 48}, &tint);
     nvgEndFrame(vg);
     nvgDeleteInternal(vg);
+
+    // A hole drawn the same way round as its outline: the evenodd rule
+    // cuts it, the nonzero rule fills it, and an island inside the hole is
+    // solid again.
+    for (const char* rule : {"evenodd", "nonzero"}) {
+        const std::string nested = std::string("<svg xmlns='http://www.w3.org/2000/svg' width='30' height='30'>"
+                                               "<path d='M0 0 H30 V30 H0 Z M5 5 H25 V25 H5 Z M10 10 H20 V20 H10 Z' "
+                                               "fill-rule='") + rule + "'/></svg>";
+        std::vector<std::vector<int>> fills;
+        NVGcontext* recorder = test::createFillRecorder(&fills);
+        nvgBeginFrame(recorder, 100, 100, 1.0f);
+        nvgBeginPath(recorder);
+        nvgRect(recorder, 0, 0, 10, 10);  // solid, NanoVG's default
+        nvgFill(recorder);
+        Svg(nested).draw(recorder, {0, 0, 30, 30});
+        nvgEndFrame(recorder);
+        nvgDeleteInternal(recorder);
+        CHECK(fills.size() == 2 && fills[0] == std::vector<int>{1});
+        if (fills.size() != 2 || fills[1].size() != 3) continue;
+        fills.erase(fills.begin());
+        if (std::string(rule) == "evenodd") CHECK(fills[0][0] == 1 && fills[0][1] == -1 && fills[0][2] == 1);
+        else CHECK(fills[0][0] == fills[0][1] && fills[0][1] == fills[0][2]);
+    }
     CHECK(!assets::find("no-such-asset.png"));
     for (size_t i = 0; i < assets::count(); ++i) {
         const assets::Asset a = assets::at(i);
@@ -1487,6 +1652,63 @@ TEST(custom_pointer_hooks_preserve_gestures_and_respect_overlays) {
     editor.key(key::kEscape, 0);
     editor.pointerMove(400, 300, 0);
     CHECK(editor.moves == 1 && host.clean());
+}
+
+TEST(a_press_a_pointer_hook_takes_holds_the_pointer_until_its_release) {
+    const auto ids = continuousParams(2);
+    if (ids.size() < 2) return;
+    struct DragEditor : EditorBase {
+        using EditorBase::ui;
+        bool held = false;
+        int moves = 0, ups = 0;
+        DragEditor(EditorHost& host, uint32_t a, uint32_t b) : EditorBase(host, Theme{}, 800, 600) {
+            ui().knob(a, {20, 20, 100, 120});
+            ui().knob(b, {200, 20, 100, 120});
+        }
+        void paint(NVGcontext*) override {}
+        bool onPointerDown(float x, float, int, uint32_t, bool) override {
+            if (x < 400.0f) return false;  // the knobs are Ui's
+            held = true;
+            ui().dragEdit(0, 0.25);
+            return true;
+        }
+        bool onPointerMove(float x, float, uint32_t) override {
+            ++moves;
+            if (held) ui().dragEdit(0, x / 800.0);
+            return held;
+        }
+        bool onPointerUp(float, float, int, uint32_t) override {
+            ++ups;
+            if (held) ui().endDragEdit();
+            held = false;
+            return true;
+        }
+    };
+    MockHost host;
+    host.values[MockHost::slot(ids[0])] = 0.75;
+    const ParamDef& second = *params::find(ids[1]);
+    host.values[MockHost::slot(ids[1])] = 0.5 * (second.hostMin() + second.hostMax());  // room to move either way
+    DragEditor editor(host, ids[0], ids[1]);
+    editor.ui().setFocus(1);
+    editor.pointerDown(500, 300, 0, 0, false);
+    CHECK(host.openCount == 1);
+    // Neither the wheel over the other knob nor a key for the focused one
+    // can end the drag's gesture.
+    const double other = host.value(ids[1]);
+    CHECK(editor.wheel(250, 80, 0, 1, 0));
+    CHECK(editor.key(key::kUp, 0));
+    CHECK(host.value(ids[1]) == other && host.openCount == 1 && host.ends == 0);
+    // Moves over Ui's controls, and the release, still come to the hooks.
+    editor.pointerMove(260, 80, 0);
+    CHECK(editor.moves == 1 && host.openCount == 1);
+    editor.pointerUp(260, 80, 0, 0);
+    CHECK(editor.ups == 1 && host.openCount == 0 && host.clean());
+    // Released, the wheel is Ui's again; a release the hooks never took a
+    // press for does not reach them.
+    CHECK(editor.wheel(250, 80, 0, 1, 0) && host.value(ids[1]) != other);
+    editor.pointerDown(250, 80, 0, 0, false);
+    editor.pointerUp(250, 80, 0, 0);
+    CHECK(editor.ups == 1);
 }
 
 namespace {

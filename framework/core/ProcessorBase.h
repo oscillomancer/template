@@ -80,7 +80,10 @@ struct ProcessSetup {
 
 // Host transport at the start of the current Block, when the host sent one.
 // The framework advances `beats` to each split's first sample while playing
-// with a tempo; `barStart` and the rest are as the host block began.
+// with a tempo; `barStart` and the rest are as the host block began. The
+// tempo holds for the whole host block: a ramp within it (CLAP's tempo_inc)
+// and a transport event in mid-block (a jump, a stop) are seen from the
+// next block, at most one block late.
 struct Transport {
     bool playing = false;
     bool hasTempo = false;
@@ -314,10 +317,14 @@ class ProcessorBase {
     //   static std::unique_ptr<Impulse> loadFile(const supple::FileRequest& r, std::string& error);
     //
     // returning null, with a reason in `error`, for a file it cannot use.
+    // Its own can start from this one, with `maxSeconds` (above zero) to
+    // decode only the start of a long file: an impulse response's ten
+    // seconds, not an hour's recording.
     using FileContents = dsp::AudioData;
-    static std::unique_ptr<dsp::AudioData> loadFile(const FileRequest& request, std::string& error) {
+    static std::unique_ptr<dsp::AudioData> loadFile(const FileRequest& request, std::string& error,
+                                                    double maxSeconds = 0.0) {
         auto audio = std::make_unique<dsp::AudioData>();
-        if (!dsp::loadAudioFile(request.path, *audio, &error)) return nullptr;
+        if (!dsp::loadAudioFile(request.path, *audio, &error, maxSeconds)) return nullptr;
         if (audio->sampleRate != request.sampleRate) *audio = dsp::resample(*audio, request.sampleRate);
         return audio;
     }

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <vector>
 
 #include <nanosvg.h>
 
@@ -71,27 +72,63 @@ bool paintOf(NVGcontext* vg, const NSVGpaint& paint, float opacity, const NVGcol
     }
 }
 
-// Each path keeps the direction it was drawn in. NanoVG fills by the
-// nonzero rule over those directions -- SVG's default -- so a counter drawn
-// the other way (the inside of an "o") stays a hole. NanoVG would otherwise
-// turn every path solid.
-void tracePaths(NVGcontext* vg, const NSVGshape& shape) {
+// Twice the control polygon's signed area, as NanoVG measures it.
+float signedArea(const NSVGpath& path) {
+    float area = 0.0f;
+    for (int i = 2; i < path.npts; ++i) {
+        const float* a = &path.pts[0];
+        const float* b = &path.pts[(i - 1) * 2];
+        const float* c = &path.pts[i * 2];
+        area += (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+    }
+    return area;
+}
+
+// A contour as straight lines, each curve in eight.
+std::vector<float> outline(const NSVGpath& path) {
+    std::vector<float> xy{path.pts[0], path.pts[1]};
+    for (int i = 0; i < path.npts - 1; i += 3) {
+        const float* p = &path.pts[i * 2];
+        for (int k = 1; k <= 8; ++k) {
+            const float t = static_cast<float>(k) / 8.0f, u = 1.0f - t;
+            const float a = u * u * u, b = 3.0f * u * u * t, c = 3.0f * u * t * t, d = t * t * t;
+            xy.push_back(a * p[0] + b * p[2] + c * p[4] + d * p[6]);
+            xy.push_back(a * p[1] + b * p[3] + c * p[5] + d * p[7]);
+        }
+    }
+    return xy;
+}
+
+// Whether (x, y) is inside an outline, closed or not: an odd number of
+// its edges cross the ray to the right.
+bool encloses(const std::vector<float>& xy, float x, float y) {
+    bool in = false;
+    const size_t n = xy.size() / 2;
+    for (size_t i = 0, j = n - 1; i < n; j = i++) {
+        const float xi = xy[2 * i], yi = xy[2 * i + 1], xj = xy[2 * j], yj = xy[2 * j + 1];
+        if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) in = !in;
+    }
+    return in;
+}
+
+int pathCount(const NSVGshape& shape) {
+    int n = 0;
+    for (const NSVGpath* path = shape.paths; path; path = path->next) ++n;
+    return n;
+}
+
+// Each path is given its winding: NanoVG fills by the nonzero rule over
+// those, and would otherwise turn every path solid.
+void tracePaths(NVGcontext* vg, const NSVGshape& shape, const unsigned char* solid) {
     nvgBeginPath(vg);
-    for (const NSVGpath* path = shape.paths; path; path = path->next) {
+    for (const NSVGpath* path = shape.paths; path; path = path->next, ++solid) {
         nvgMoveTo(vg, path->pts[0], path->pts[1]);
-        float area = 0.0f;  // twice the control polygon's, as NanoVG measures
         for (int i = 0; i < path->npts - 1; i += 3) {
             const float* p = &path->pts[i * 2];
             nvgBezierTo(vg, p[2], p[3], p[4], p[5], p[6], p[7]);
         }
-        for (int i = 2; i < path->npts; ++i) {
-            const float* a = &path->pts[0];
-            const float* b = &path->pts[(i - 1) * 2];
-            const float* c = &path->pts[i * 2];
-            area += (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-        }
         if (path->closed) nvgClosePath(vg);
-        nvgPathWinding(vg, area > 0.0f ? NVG_SOLID : NVG_HOLE);
+        nvgPathWinding(vg, *solid ? NVG_SOLID : NVG_HOLE);
     }
 }
 
@@ -103,6 +140,28 @@ Svg::Svg(std::string_view text) {
     if (image_ && (image_->width <= 0.0f || image_->height <= 0.0f)) {
         nsvgDelete(image_);
         image_ = nullptr;
+    }
+    if (!image_) return;
+    // Each contour's winding, once. Nonzero: the direction it was drawn in,
+    // so a counter drawn the other way (the inside of an "o") is a hole.
+    // Evenodd: solid when an even number of the shape's other contours
+    // enclose it, a hole when odd -- the same picture wherever contours
+    // nest without crossing, which is how icons cut their holes.
+    for (const NSVGshape* shape = image_->shapes; shape; shape = shape->next) {
+        std::vector<std::vector<float>> outlines;
+        if (shape->fillRule == NSVG_FILLRULE_EVENODD)
+            for (const NSVGpath* path = shape->paths; path; path = path->next) outlines.push_back(outline(*path));
+        size_t k = 0;
+        for (const NSVGpath* path = shape->paths; path; path = path->next, ++k) {
+            bool solid = signedArea(*path) > 0.0f;
+            if (!outlines.empty()) {
+                int depth = 0;
+                for (size_t j = 0; j < outlines.size(); ++j)
+                    if (j != k && encloses(outlines[j], path->pts[0], path->pts[1])) ++depth;
+                solid = depth % 2 == 0;
+            }
+            solid_.push_back(solid ? 1 : 0);
+        }
     }
 }
 
@@ -119,7 +178,10 @@ void Svg::draw(NVGcontext* vg, Rect r, const NVGcolor* tint) const {
     nvgSave(vg);
     nvgTranslate(vg, r.cx() - image_->width * scale * 0.5f, r.cy() - image_->height * scale * 0.5f);
     nvgScale(vg, scale, scale);
+    size_t next = 0;
     for (const NSVGshape* shape = image_->shapes; shape; shape = shape->next) {
+        const unsigned char* windings = solid_.data() + next;
+        next += static_cast<size_t>(pathCount(*shape));
         if (!(shape->flags & NSVG_FLAGS_VISIBLE)) continue;
         NVGpaint paint{};
         NVGcolor colour{};
@@ -129,7 +191,7 @@ void Svg::draw(NVGcontext* vg, Rect r, const NVGcolor* tint) const {
             const bool stroke = (pass == 0) == strokeFirst;
             if (!stroke) {
                 if (!paintOf(vg, shape->fill, shape->opacity, tint, paint, colour, solid)) continue;
-                tracePaths(vg, *shape);
+                tracePaths(vg, *shape, windings);
                 if (solid) nvgFillColor(vg, colour);
                 else nvgFillPaint(vg, paint);
                 nvgFill(vg);
@@ -137,7 +199,7 @@ void Svg::draw(NVGcontext* vg, Rect r, const NVGcolor* tint) const {
                 if (shape->strokeWidth <= 0.0f ||
                     !paintOf(vg, shape->stroke, shape->opacity, tint, paint, colour, solid))
                     continue;
-                tracePaths(vg, *shape);
+                tracePaths(vg, *shape, windings);
                 nvgStrokeWidth(vg, shape->strokeWidth);
                 nvgLineJoin(vg, shape->strokeLineJoin == NSVG_JOIN_ROUND   ? NVG_ROUND
                                 : shape->strokeLineJoin == NSVG_JOIN_BEVEL ? NVG_BEVEL

@@ -7,10 +7,10 @@
 //   - Properties.h declares the impulse response as an audioFile() property:
 //     the framework relocates a moved file when a session loads, reports a
 //     missing one, and loads it on its own thread;
-//   - loadFile() runs there, never on the audio thread: it decodes the file
-//     (the framework's default, resampled to the session's rate), trims and
-//     scales it, and builds the whole convolution, partitions and FFTs, so
-//     the audio thread only swaps it in;
+//   - loadFile() runs there, never on the audio thread: it decodes the
+//     file's first kMaxSeconds (the framework's default, resampled to the
+//     session's rate), scales it, and builds the whole convolution,
+//     partitions and FFTs, so the audio thread only swaps it in;
 //   - file() swaps it in, at the start of a block; null (no file, a missing
 //     one, one that failed) means the built-in room, made in prepare();
 //   - the old room is cut off when the new one arrives, its last sample
@@ -57,7 +57,7 @@ class Processor : public supple::ProcessorBase<Processor> {
 
     using FileContents = Impulse;
     static std::unique_ptr<Impulse> loadFile(const supple::FileRequest& r, std::string& error) {
-        auto audio = ProcessorBase::loadFile(r, error);  // decoded, at the session's rate
+        auto audio = ProcessorBase::loadFile(r, error, kMaxSeconds);  // its start, at the session's rate
         if (!audio) return nullptr;
         return build(*audio, r.channels, error);
     }
