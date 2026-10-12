@@ -1061,6 +1061,30 @@ TEST(wav_aiff_and_flac_decode_and_wav_round_trips) {
     std::filesystem::remove_all(dir.parent_path());
 }
 
+TEST(wav_writer_rejects_invalid_audio_before_opening_the_file) {
+    const std::filesystem::path dir = scratchFolder("invalid-wav");
+    const std::string path = (dir / "keep.wav").string();
+    std::ofstream(path) << "keep";
+    AudioData a;
+    a.channel = {{0.25f, 0.5f}, {0.25f, 0.5f}};
+    std::string error;
+    for (double rate : {0.0, -1.0, 0.1, std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::quiet_NaN(), 4294967296.0}) {
+        a.sampleRate = rate;
+        CHECK(!saveWavFile(path, a, &error));
+        CHECK(!error.empty());
+    }
+    a.sampleRate = 48000.0;
+    a.channel[1].resize(1);
+    CHECK(!saveWavFile(path, a, &error));
+    a.channel[1].resize(3);
+    CHECK(!saveWavFile(path, a, &error));
+    std::string contents;
+    std::ifstream(path) >> contents;
+    CHECK(contents == "keep");
+    std::filesystem::remove_all(dir.parent_path());
+}
+
 TEST(resampling_keeps_the_band_and_drops_what_cannot_fit) {
     AudioData in;
     in.sampleRate = 44100.0;

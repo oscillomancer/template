@@ -130,15 +130,22 @@ bool loadAudioFile(const std::string& path, AudioData& out, std::string* error) 
 }
 
 bool saveWavFile(const std::string& path, const AudioData& audio, std::string* error) {
-    if (audio.channels() == 0 || audio.sampleRate <= 0.0) {
+    if (audio.channels() == 0 || !std::isfinite(audio.sampleRate) ||
+        std::round(audio.sampleRate) < 1.0 || std::round(audio.sampleRate) > 4294967295.0) {
         fail(error, "nothing to write");
         return false;
+    }
+    for (const auto& channel : audio.channel) {
+        if (channel.size() != audio.frames()) {
+            fail(error, "the channels have different lengths");
+            return false;
+        }
     }
     drwav_data_format format{};
     format.container = drwav_container_riff;
     format.format = DR_WAVE_FORMAT_IEEE_FLOAT;
     format.channels = static_cast<drwav_uint32>(audio.channels());
-    format.sampleRate = static_cast<drwav_uint32>(std::lround(audio.sampleRate));
+    format.sampleRate = static_cast<drwav_uint32>(std::round(audio.sampleRate));
     format.bitsPerSample = 32;
     drwav wav;
 #ifdef _WIN32
