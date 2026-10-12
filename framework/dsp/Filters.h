@@ -11,8 +11,9 @@
 // sample, prefer Svf or OnePole, whose structures stay well-behaved under
 // fast modulation where a direct-form biquad's need not.
 //
-// Every filter answers response(hz, sampleRate): the exact complex response
-// of the coefficients it holds, for drawing curves that match the audio.
+// Biquads and cascades answer response(hz, sampleRate); OnePole has a
+// response method per output, and Crossover exposes its low/high cascades.
+// These are the exact coefficient responses for drawing curves.
 //
 //   dsp::Biquad eq = dsp::Biquad::peak(1000.0, 0.7, 6.0, sampleRate);
 //   dsp::Biquad::State left, right;
@@ -198,9 +199,9 @@ struct Butterworth {
     }
 };
 
-// A Butterworth of half the order, twice: -6 dB at hz, and for orders 4, 8
-// and 16 the low and high halves sum to an all-pass, flat in level. Even
-// orders 2..16; order 2's halves sum flat only with the high one inverted.
+// A Butterworth of half the order, twice: -6 dB at hz. For orders 4, 8, 12
+// and 16 the low and high halves sum to an all-pass, flat in level.
+// Even orders 2..16; orders 2, 6, 10 and 14 need the high half inverted.
 struct LinkwitzRiley {
     static Cascade lowpass(int order, double hz, double sampleRate) { return squared(Butterworth::lowpass(half(order), hz, sampleRate)); }
     static Cascade highpass(int order, double hz, double sampleRate) { return squared(Butterworth::highpass(half(order), hz, sampleRate)); }

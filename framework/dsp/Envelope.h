@@ -5,8 +5,9 @@
 // line, exactly; towards 1, the attack bows up (fast, then easing in) and
 // the decay and release fall fast and tail off, as analog ones do. Each time
 // is for the whole range, 0 to 1, so it sets a rate: an attack takes its
-// time from silence, a decay to a sustain of 0.5 about half of its time, and
-// a release from 0.5 about half of its.
+// time from silence. For linear segments, a decay to sustain 0.5 or a
+// release from 0.5 takes half its time; curved segments take longer than
+// that fraction, since they spend more of their time near the end.
 //
 //   env.setTimes(5, 200, 0.6, 400, sampleRate);   // ms, ms, level, ms
 //   env.gate(true);  ...  env.gate(false);
