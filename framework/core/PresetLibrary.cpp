@@ -27,22 +27,8 @@ std::string lower(std::string_view s) {
     return out;
 }
 
-// Written beside the target and renamed over it, so a failure leaves the old
-// file whole.
 bool writeFile(const fs::path& file, const std::vector<uint8_t>& bytes) {
-    fs::path temp = file;
-    temp += ".tmp";
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        if (!out) return false;
-        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        if (!out) return false;
-    }
-    std::error_code ec;
-    fs::rename(temp, file, ec);
-    if (!ec) return true;
-    fs::remove(temp, ec);
-    return false;
+    return files::writeAtomic(file, bytes.data(), bytes.size());
 }
 
 bool ours(const fs::path& file) {

@@ -1637,6 +1637,24 @@ TEST(comparison_slots_follow_preset_identity_through_library_changes) {
     CHECK(lib.current() == -1);
 }
 
+TEST(preset_overwrite_preserves_other_writers_temporary_files) {
+    TempFolder folder;
+    MemoryState st;
+    PresetLibrary lib(st, folder.path);
+    CHECK(lib.save("Mine", false) == PresetLibrary::SaveResult::Ok);
+    const auto other = folder.path / "Mine.preset.tmp";
+    std::ofstream(other) << "other writer";
+    st.host[settable()] = otherValue(settable());
+    const auto wanted = st.saveState(state::Context::Preset);
+    CHECK(lib.save("Mine", true) == PresetLibrary::SaveResult::Ok);
+    CHECK(lib.loadDefaults());
+    CHECK(lib.loadFile(folder.path / "Mine.preset"));
+    CHECK(st.saveState(state::Context::Preset) == wanted);
+    std::string text;
+    std::getline(std::ifstream(other), text);
+    CHECK(text == "other writer");
+}
+
 TEST(a_failed_preset_rename_is_not_reported_as_a_success) {
     TempFolder folder;
     MemoryState st;
@@ -1984,6 +2002,24 @@ TEST(file_defaults_load_and_same_session_activation_waits) {
     CHECK(loaded);
 }
 
+TEST(concurrent_atomic_writes_leave_a_whole_file_and_no_temporary_files) {
+    FileScratch s;
+    const auto target = s.root / "state";
+    const std::vector<uint8_t> a(8192, 'a'), b(8192, 'b');
+    auto write = [&](const std::vector<uint8_t>& bytes) {
+        for (int i = 0; i < 30; ++i) CHECK(files::writeAtomic(target, bytes.data(), bytes.size()));
+    };
+    std::thread first([&] { write(a); }), second([&] { write(b); });
+    first.join();
+    second.join();
+    std::vector<uint8_t> found;
+    CHECK(files::readBounded(target, found, 8192) && (found == a || found == b));
+    CHECK(files::writeAtomic(target, a.data(), a.size()));
+    CHECK(files::readBounded(target, found, 8192) && found == a);
+    for (const auto& entry : std::filesystem::directory_iterator(s.root))
+        CHECK(entry.path() == target || entry.path() == s.root / "settings");
+}
+
 TEST(bounded_file_reads_reject_oversized_missing_and_nonregular_files) {
     FileScratch scratch;
     const auto path = files::fromUtf8(scratch.touch("data"));
@@ -2029,6 +2065,18 @@ TEST(a_moved_file_is_found_by_its_tail_under_remembered_folders) {
     // An existing path is itself; nothing found is "".
     CHECK(files::relocate(moved) == moved);
     CHECK(files::relocate("/nowhere/at/all.wav").empty());
+}
+
+TEST(remembered_folder_overwrite_preserves_other_writers_temporary_files) {
+    FileScratch s;
+    files::rememberFolder("/first");
+    const auto other = s.root / "settings/file-folders.txt.tmp";
+    std::ofstream(other) << "other writer";
+    files::rememberFolder("/second");
+    CHECK(files::searchFolders() == std::vector<std::string>({"/second", "/first"}));
+    std::string text;
+    std::getline(std::ifstream(other), text);
+    CHECK(text == "other writer");
 }
 
 TEST(remembered_folders_are_newest_first_and_bounded) {

@@ -61,6 +61,9 @@ std::filesystem::path fromUtf8(std::string_view text);
 std::string toUtf8(const std::filesystem::path& path);
 
 bool exists(std::string_view path);
+// An exclusive adjacent temporary file, closed before replacing the target.
+// Concurrent writers replace whole files; the last successful replacement wins.
+bool writeAtomic(const std::filesystem::path& path, const uint8_t* bytes, size_t size);
 // Reject special files and oversized input before opening or allocating.
 bool readBounded(const std::filesystem::path& path, std::vector<uint8_t>& bytes, size_t maxBytes);
 // The last component, whichever separator the path was saved with.
