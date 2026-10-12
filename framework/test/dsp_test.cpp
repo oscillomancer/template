@@ -1071,6 +1071,23 @@ const unsigned char kRampFlac[] = {
 };
 }  // namespace
 
+TEST(unknown_length_flac_loads_whole_but_is_refused_for_streaming) {
+    const auto path = scratchFolder("unknown-length") / "unknown.flac";
+    std::vector<unsigned char> bytes(std::begin(kRampFlac), std::end(kRampFlac));
+    bytes[21] &= 0xf0;
+    std::fill(bytes.begin() + 22, bytes.begin() + 26, 0);
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    AudioData audio;
+    std::string error;
+    CHECK(loadAudioFile(path.string(), audio, &error));
+    CHECK(audio.frames() == 100);
+    DiskStream stream;
+    CHECK(!stream.open(path.string(), 1.0, &error));
+    CHECK(!stream.isOpen());
+    CHECK(error.find("length") != std::string::npos);
+    CHECK(stream.frames() == 0 && stream.channels() == 0);
+}
+
 TEST(wav_aiff_and_flac_decode_and_wav_round_trips) {
     const std::filesystem::path dir = scratchFolder("files");
     AudioData a;

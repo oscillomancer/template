@@ -96,6 +96,7 @@ class DiskStream {
     DiskStream& operator=(const DiskStream&) = delete;
 
     // Main thread, while neither read() nor service() runs. Allocates.
+    // Refuses unknown/empty lengths; loadAudioFile can decode to EOF.
     bool open(const std::string& path, double headSeconds = 1.0, std::string* error = nullptr);
     void close();
     bool isOpen() const { return open_; }

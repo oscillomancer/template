@@ -222,6 +222,11 @@ bool DiskStream::open(const std::string& path, double headSeconds, std::string* 
     channels_ = reader_.channels();
     sampleRate_ = reader_.sampleRate();
     frames_ = reader_.frames();
+    if (frames_ == 0) {
+        close();
+        fail(error, "stream length is unknown or empty; use loadAudioFile instead");
+        return false;
+    }
     headFrames_ = std::min<uint64_t>(frames_, static_cast<uint64_t>(std::max(0.0, headSeconds) * sampleRate_));
     head_.assign(static_cast<size_t>(headFrames_) * static_cast<size_t>(channels_), 0.0f);
     headFrames_ = reader_.read(head_.data(), static_cast<size_t>(headFrames_));
