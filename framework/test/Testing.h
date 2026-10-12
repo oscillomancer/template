@@ -270,4 +270,109 @@ inline Signal render(const Signal& input, const RenderOptions& o, Engine* engine
     return out;
 }
 
+// --- measurements ---------------------------------------------------------------------
+//
+//   CHECK_NEAR(test::gainDb(o, 1000.0), -3.01, 0.05);       // a sine through the product
+//   CHECK(test::thd(out[0], 1000.0, 48000.0, 24000) < 1e-3); // harmonics 2-10 / fundamental
+//   CHECK(test::measureLatency(o) == engine.latency());
+
+// The amplitude of the component at `hz` in samples [from, end): a
+// Hann-windowed DFT evaluated at exactly that frequency, so a steady sine
+// reads its true amplitude whether or not it fits the window, and other
+// components (harmonics, noise, another tone) barely leak into it.
+inline double toneAmplitude(const std::vector<double>& x, double hz, double sampleRate, int from = 0) {
+    const size_t start = static_cast<size_t>(std::max(0, from));
+    if (start >= x.size()) return 0.0;
+    const size_t n = x.size() - start;
+    const double w = 2.0 * dsp::kPi * hz / sampleRate;
+    double re = 0.0, im = 0.0, sum = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const double hann = 0.5 - 0.5 * std::cos(2.0 * dsp::kPi * (static_cast<double>(i) + 0.5) / static_cast<double>(n));
+        const double phase = w * static_cast<double>(i);
+        re += hann * x[start + i] * std::cos(phase);
+        im -= hann * x[start + i] * std::sin(phase);
+        sum += hann;
+    }
+    return 2.0 * std::hypot(re, im) / sum;
+}
+
+// Total harmonic distortion of a tone at `hz`: the RMS sum of harmonics 2 to
+// `harmonics` (those below Nyquist) over the fundamental, as a ratio (1e-3
+// is 0.1%, -60 dB).
+inline double thd(const std::vector<double>& x, double hz, double sampleRate, int from = 0, int harmonics = 10) {
+    const double fundamental = toneAmplitude(x, hz, sampleRate, from);
+    double sum = 0.0;
+    for (int k = 2; k <= harmonics && k * hz < sampleRate * 0.5; ++k) {
+        const double a = toneAmplitude(x, k * hz, sampleRate, from);
+        sum += a * a;
+    }
+    return fundamental > 0.0 ? std::sqrt(sum) / fundamental : INFINITY;
+}
+
+// The delay of `out` against `in`, in samples: the lag in [0, maxLag] at
+// which they correlate most. `strength`, if given, receives that
+// correlation normalised to [0, 1]: near 1 for a delayed copy, low when the
+// output is no longer a version of the input.
+inline int delayBetween(const std::vector<double>& in, const std::vector<double>& out, int maxLag,
+                        double* strength = nullptr) {
+    const size_t n = std::min(in.size(), out.size());
+    int best = 0;
+    double bestCorr = 0.0, inEnergy = 0.0, outEnergy = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        inEnergy += in[i] * in[i];
+        outEnergy += out[i] * out[i];
+    }
+    for (int lag = 0; lag <= maxLag && static_cast<size_t>(lag) < n; ++lag) {
+        double c = 0.0;
+        for (size_t i = static_cast<size_t>(lag); i < n; ++i) c += in[i - static_cast<size_t>(lag)] * out[i];
+        if (std::fabs(c) > std::fabs(bestCorr)) {
+            bestCorr = c;
+            best = lag;
+        }
+    }
+    if (strength) *strength = inEnergy > 0.0 && outEnergy > 0.0 ? std::fabs(bestCorr) / std::sqrt(inEnergy * outEnergy) : 0.0;
+    return best;
+}
+
+// The gain at `hz` in dB, input channel to the same output channel: a sine
+// of `amplitude` rendered through the options, measured after `settle`
+// seconds (transients, smoothing, latency) for the `seconds` that follow.
+inline double gainDb(const RenderOptions& o, double hz, double amplitude = 0.25, int channel = 0,
+                     double settle = 0.25, double seconds = 0.5) {
+    const int from = static_cast<int>(settle * o.sampleRate);
+    const int frames = from + static_cast<int>(seconds * o.sampleRate);
+    const int channels = product::info::kChannelLayouts[0];
+    const Signal in = sine(channels, frames, hz, o.sampleRate, amplitude);
+    const Signal out = render(in, o);
+    const size_t c = static_cast<size_t>(channel);
+    return dsp::gainToDb(toneAmplitude(out[c], hz, o.sampleRate, from), -300.0) -
+           dsp::gainToDb(toneAmplitude(in[c], hz, o.sampleRate, from), -300.0);
+}
+
+// The THD of a sine of `amplitude` at `hz` rendered through the options.
+inline double thdOf(const RenderOptions& o, double hz, double amplitude = 0.25, int channel = 0,
+                    double settle = 0.25, double seconds = 0.5) {
+    const int from = static_cast<int>(settle * o.sampleRate);
+    const int frames = from + static_cast<int>(seconds * o.sampleRate);
+    const Signal out = render(sine(product::info::kChannelLayouts[0], frames, hz, o.sampleRate, amplitude), o);
+    return thd(out[static_cast<size_t>(channel)], hz, o.sampleRate, from);
+}
+
+// The latency an effect really has: noise rendered through the options, and
+// the delay at which channel 0 of the output follows channel 0 of the input
+// (see delayBetween; `strength` says how clearly).
+inline int measureLatency(const RenderOptions& o, int maxLag = 4096, double* strength = nullptr) {
+    const int frames = 2 * maxLag + 8192;
+    const Signal in = noise(product::info::kChannelLayouts[0], frames, 11);
+    const Signal out = render(in, o);
+    return delayBetween(in[0], out[0], maxLag, strength);
+}
+
+// The response to a unit impulse on every input channel, `frames` long.
+inline Signal impulseResponse(const RenderOptions& o, int frames) {
+    Signal in = silence(product::info::kChannelLayouts[0], frames);
+    for (auto& c : in) c[0] = 1.0;
+    return render(in, o);
+}
+
 }  // namespace supple::test

@@ -517,6 +517,46 @@ TEST(separate_and_in_place_buffers_agree) {
     CHECK(worst == 0.0);
 }
 
+TEST(the_measurement_helpers_read_known_signals_exactly) {
+    const double sr = 48000.0;
+    std::vector<double> x(24000);
+    for (size_t n = 0; n < x.size(); ++n) {
+        const double t = static_cast<double>(n) / sr;
+        x[n] = 0.3 * std::sin(2.0 * dsp::kPi * 997.0 * t + 0.4) + 0.006 * std::sin(2.0 * dsp::kPi * 1994.0 * t) +
+               0.003 * std::cos(2.0 * dsp::kPi * 2991.0 * t) + 0.1 * std::sin(2.0 * dsp::kPi * 6100.0 * t);
+    }
+    CHECK_NEAR(test::toneAmplitude(x, 997.0, sr), 0.3, 1e-6);
+    CHECK_NEAR(test::toneAmplitude(x, 6100.0, sr), 0.1, 1e-6);
+    CHECK_NEAR(test::toneAmplitude(x, 4000.0, sr), 0.0, 1e-6);
+    // 6100 Hz is not a harmonic of 997 Hz, so it is not distortion.
+    CHECK_NEAR(test::thd(x, 997.0, sr), std::hypot(0.006, 0.003) / 0.3, 1e-6);
+    const test::Signal noise = test::noise(1, 6000, 4);
+    std::vector<double> late(noise[0].size(), 0.0);
+    for (size_t n = 37; n < late.size(); ++n) late[n] = -0.5 * noise[0][n - 37];
+    double strength = 0.0;
+    CHECK(test::delayBetween(noise[0], late, 200, &strength) == 37);
+    CHECK(strength > 0.99);
+}
+
+TEST(the_latency_reported_is_the_latency_measured) {
+    if (!product::info::kAudioInput) {
+        std::printf("      (no audio input in this product)\n");
+        return;
+    }
+    auto engine = std::make_unique<Engine>();
+    const int channels = product::info::kChannelLayouts[0];
+    engine->activate(48000.0, 512, channels, channels);
+    const int reported = static_cast<int>(engine->latency());
+    test::RenderOptions o;
+    double strength = 0.0;
+    const int measured = test::measureLatency(o, std::max(2048, 2 * reported), &strength);
+    if (strength < 0.5) {
+        std::printf("      (the output at the defaults does not follow the input clearly: %.2f)\n", strength);
+        return;
+    }
+    CHECK_MSG(measured == reported, "reported %d, measured %d (correlation %.3f)", reported, measured, strength);
+}
+
 TEST(bypass_reaches_the_exact_input_and_back) {
     if (params::kBypassIndex < 0) return;
     const uint32_t bypass = params::at(static_cast<size_t>(params::kBypassIndex)).id;

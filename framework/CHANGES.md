@@ -4,6 +4,48 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.12.0
+
+Packaging and verification. Nothing for a product to do: the new tests run
+or skip by themselves. Worth doing once: write `product/previews.txt` with
+the editor states worth looking at, and run `benchmark --update` on your
+machine and commit `product/benchmark.txt`. A product that pointed
+`FETCHCONTENT_SOURCE_DIR_*` at its own checkouts now has them copied into
+the build before patching, rather than patched where they are.
+
+- **Release packages**: `product-package` writes an archive of every format
+  with the license, notices and install notes; on macOS a `.pkg` (a choice
+  per format, not relocatable, the binary's own architectures); on Windows
+  an Inno Setup installer when Inno Setup 6.3+ is installed. A `package`
+  test checks the archive.
+- **Signing hooks**, all opt-in, by configure option or environment:
+  `SUPPLE_SIGN_IDENTITY` (Developer ID, hardened runtime; otherwise ad hoc),
+  `SUPPLE_INSTALLER_IDENTITY`, `SUPPLE_NOTARY_PROFILE` (notarize and staple
+  the bundles and the `.pkg`), and on Windows `SUPPLE_SIGN_COMMAND`.
+- **Offline builds**: every pin now lives in `cmake/Pins.cmake` (clap-wrapper's
+  SDK pins repeated there, and checked against clap-wrapper's own);
+  `tools/vendor.cmake` copies every source into `vendor/`, which a configure
+  then builds from with no network. Patches go to a copy in the build.
+- **State fuzzing**: `state-fuzz` (every preset) loads thousands of damaged
+  states through CLAP from a fixed seed: a refused load changes nothing, an
+  accepted one round-trips byte for byte, and processes finitely. The `fuzz`
+  preset (clang) builds `state-fuzzer` for libFuzzer and runs it for a
+  minute.
+- **CPU benchmark**: `benchmark` measures three scenarios in units of a
+  reference workload, against a per-machine baseline in
+  `product/benchmark.txt` (a ctest in release; skipped where there is no
+  baseline). `new_product` leaves the source product's baseline behind.
+- **Test helpers** (`Testing.h`): `toneAmplitude`, `thd`, `delayBetween`,
+  `gainDb`, `thdOf`, `measureLatency`, `impulseResponse`. core-tests checks
+  them on known signals, and that an effect's reported latency is the
+  latency measured through it.
+- **Validators locally**: `tools/validate.cmake` builds a preset and runs
+  pluginval 1.0.4 (fetched, checksummed) on the VST3 and, on macOS, the AU
+  and `auval`, plus clap-validator.
+- **Named previews**: `product/previews.txt`; `gui-preview --scenario`,
+  `--all`, `--list`; a `previews` test renders every one; CI renders them
+  all.
+
 ## 1.11.0
 
 The DSP library, and files. Nothing for a product to do unless its editor

@@ -47,6 +47,19 @@
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++"
       }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "libFuzzer + AddressSanitizer (clang)",
+      "binaryDir": "${sourceDir}/build/fuzz",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SUPPLE_SANITIZE": "address",
+        "SUPPLE_FUZZ": "ON",
+        "SUPPLE_BUILD_GUI": "OFF",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
     }
   ],
   "buildPresets": [
@@ -69,6 +82,14 @@
     {
       "name": "rtsan",
       "configurePreset": "rtsan"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
+      "targets": [
+        "state-fuzz",
+        "state-fuzzer"
+      ]
     }
   ],
   "testPresets": [
@@ -115,6 +136,22 @@
       },
       "environment": {
         "RTSAN_OPTIONS": "halt_on_error=1"
+      }
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "name": "^state-"
+        }
+      },
+      "environment": {
+        "ASAN_OPTIONS": "abort_on_error=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1"
       }
     }
   ]

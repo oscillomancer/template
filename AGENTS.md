@@ -34,8 +34,10 @@ Supple Audio product, plus a starter product in `product/` that exercises it.
 `examples/<name>/` is a complete `product/` directory: what `new_product`
 copies for `-DEXAMPLE=<name>`, and what `test_examples.cmake` generates,
 builds and tests under any preset. Keep each small, measured
-(`test/processor_test.cpp`) and looked at (`gui-preview`), with its own
-name, ID and codes, which `new_product` then refuses to reuse.
+(`test/processor_test.cpp`), looked at (`gui-preview`; `previews.txt` names
+its states) and costed (`benchmark.txt`, which `new_product` leaves behind
+and `test_examples` puts back), with its own name, ID and codes, which
+`new_product` then refuses to reuse.
 
 - `instrument` (Tone): notes, voices, note ends, voice info, MIDI pitch
   bend and mod wheel, `PRODUCT_NOTE_EXPRESSIONS tuning volume`, a

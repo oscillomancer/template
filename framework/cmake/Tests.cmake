@@ -29,6 +29,18 @@ if (product_test_sources)
     supple_test(processor-tests SOURCES ${product_test_sources} LINK product-core)
 endif()
 
+# The product's cost against its stored baseline (tools/benchmark.cpp);
+# a timing means something only in an optimised build without sanitizers.
+add_executable(benchmark ${SUPPLE_FRAMEWORK}/tools/benchmark.cpp)
+target_link_libraries(benchmark PRIVATE product-core)
+target_include_directories(benchmark PRIVATE ${SUPPLE_FRAMEWORK}/test)
+target_compile_definitions(benchmark PRIVATE SUPPLE_BENCHMARK_FILE="${SUPPLE_PRODUCT}/benchmark.txt")
+supple_defaults(benchmark)
+if (CMAKE_BUILD_TYPE STREQUAL "Release" AND SUPPLE_SANITIZE STREQUAL "" AND NOT SUPPLE_FUZZ)
+    add_test(NAME benchmark COMMAND benchmark)
+    set_tests_properties(benchmark PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
 add_executable(render-cli ${SUPPLE_FRAMEWORK}/tools/render_cli.cpp)
 target_link_libraries(render-cli PRIVATE product-core)
 supple_defaults(render-cli)
@@ -40,15 +52,44 @@ if (SUPPLE_BUILD_GUI)
 
     add_executable(gui-preview ${SUPPLE_FRAMEWORK}/tools/gui_preview.cpp)
     target_link_libraries(gui-preview PRIVATE ${SUPPLE_GL_GUI})
+    target_compile_definitions(gui-preview PRIVATE SUPPLE_PREVIEWS_FILE="${SUPPLE_PRODUCT}/previews.txt")
     supple_defaults(gui-preview)
+    # Every named scenario (product/previews.txt) renders, into
+    # build/<preset>/previews. Skipped without a display.
+    add_test(NAME previews COMMAND gui-preview --all ${CMAKE_BINARY_DIR}/previews)
+    set_tests_properties(previews PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
 endif()
 
 # --- plugin -------------------------------------------------------------------------------
 
 if (SUPPLE_BUILD_PLUGIN)
+    # The release archive as product-package makes it -- every format, the
+    # license, notices and install notes, bundles signed ad hoc on macOS --
+    # with no installer, identity or notarization.
+    add_test(NAME package COMMAND ${SUPPLE_PACKAGE_COMMAND} -DOUT=${CMAKE_BINARY_DIR}/package-test -DTEST=ON
+        -P ${SUPPLE_FRAMEWORK}/cmake/Package.cmake)
+
     supple_test(probe-audio-tests SOURCES ${SUPPLE_FRAMEWORK}/test/probe_audio_test.cpp LINK product-core clap)
     # The CLAP surface, in process: a scripted host with real threads.
     supple_test(plugin-tests SOURCES ${SUPPLE_FRAMEWORK}/test/plugin_test.cpp LINK product-impl)
+
+    # Damaged state through CLAP's state calls (test/state_fuzz.cpp), from a
+    # fixed seed; with SUPPLE_FUZZ (the fuzz preset), libFuzzer's version too,
+    # run for a minute from the same states.
+    supple_test(state-fuzz SOURCES ${SUPPLE_FRAMEWORK}/test/state_fuzz.cpp LINK product-impl)
+    if (SUPPLE_FUZZ)
+        add_executable(state-fuzzer ${SUPPLE_FRAMEWORK}/test/state_fuzz.cpp)
+        target_link_libraries(state-fuzzer PRIVATE product-impl)
+        target_compile_definitions(state-fuzzer PRIVATE SUPPLE_LIBFUZZER=1)
+        supple_defaults(state-fuzzer)
+        target_link_options(state-fuzzer PRIVATE -fsanitize=fuzzer)
+        set(corpus ${CMAKE_BINARY_DIR}/state-corpus)
+        add_test(NAME state-corpus COMMAND state-fuzz --seeds ${corpus})
+        add_test(NAME state-fuzzer COMMAND state-fuzzer ${corpus} -max_total_time=60 -timeout=20 -rss_limit_mb=4096
+            -print_final_stats=1)
+        set_tests_properties(state-corpus PROPERTIES FIXTURES_SETUP state-corpus)
+        set_tests_properties(state-fuzzer PROPERTIES FIXTURES_REQUIRED state-corpus TIMEOUT 300)
+    endif()
 
     # A host that loads the built .clap from disk, once per bus layout.
     add_executable(host-smoke ${SUPPLE_FRAMEWORK}/test/host_smoke.cpp)
@@ -112,6 +153,9 @@ if (SUPPLE_BUILD_PLUGIN)
         # the same performance rendered through both. A host needs the SDK's
         # interface IDs and nothing else of it.
         set(vst3_sdk "${CPM_PACKAGE_vst3sdk_SOURCE_DIR}")
+        if (NOT vst3_sdk)
+            set(vst3_sdk "${VST3_SDK_ROOT}")  # vendored
+        endif()
         if (vst3_sdk AND EXISTS "${vst3_sdk}/pluginterfaces/base/funknown.cpp")
             add_library(supple-vst3-iids OBJECT ${vst3_sdk}/pluginterfaces/base/funknown.cpp
                 ${vst3_sdk}/pluginterfaces/base/coreiids.cpp ${vst3_sdk}/public.sdk/source/vst/vstinitiids.cpp)

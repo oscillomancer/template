@@ -29,6 +29,10 @@ option(SUPPLE_BUILD_PLUGIN "Build the CLAP, VST3 and AUv2 plugins" ON)
 option(SUPPLE_BUILD_GUI "Build the editor" ON)
 option(SUPPLE_BUILD_TESTS "Build the tests, tools and probes" ON)
 option(SUPPLE_WARNINGS_AS_ERRORS "Treat warnings in framework and product code as errors" OFF)
+option(SUPPLE_FUZZ "Build libFuzzer targets (clang; the fuzz preset)" OFF)
+if (SUPPLE_FUZZ AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "SUPPLE_FUZZ needs clang (libFuzzer)")
+endif()
 set(SUPPLE_SANITIZE "" CACHE STRING "Instrument our code: empty, address (with undefined), thread, or realtime")
 set_property(CACHE SUPPLE_SANITIZE PROPERTY STRINGS "" address thread realtime)
 if (SUPPLE_SANITIZE STREQUAL "realtime" AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -81,6 +85,14 @@ function(supple_sanitize target)
     target_link_options(${target} PRIVATE ${flags})
 endfunction()
 
+# The fuzz preset: our own code carries libFuzzer's coverage instrumentation,
+# so the fuzzer can see which branches of the state reader an input reached.
+function(supple_fuzz_coverage target)
+    if (SUPPLE_FUZZ)
+        target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link)
+    endif()
+endfunction()
+
 # Framework and product code: warnings on, symbols hidden. Hidden visibility
 # is what lets every product use the same C++ names: nothing but the entry
 # points leaves the binary, so two products in one host cannot bind to each
@@ -116,6 +128,7 @@ function(supple_defaults target)
         endif()
     endif()
     supple_sanitize(${target})
+    supple_fuzz_coverage(${target})
 endfunction()
 
 include(${SUPPLE_FRAMEWORK}/cmake/Dependencies.cmake)
@@ -460,6 +473,82 @@ if (SUPPLE_BUILD_PLUGIN)
         add_custom_command(TARGET product-install POST_BUILD
             COMMAND /bin/sh -c "killall -9 AudioComponentRegistrar >/dev/null 2>&1 || true" VERBATIM)
     endif()
+
+    # Release packages (cmake/Package.cmake): an archive of every format with
+    # the license, notices and install notes, and the platform's installer,
+    # in build/<preset>/package. Signing is opt-in, by these or the same
+    # names in the environment.
+    set(SUPPLE_SIGN_IDENTITY "" CACHE STRING "macOS: Developer ID Application identity for the packaged bundles")
+    set(SUPPLE_INSTALLER_IDENTITY "" CACHE STRING "macOS: Developer ID Installer identity for the .pkg")
+    set(SUPPLE_NOTARY_PROFILE "" CACHE STRING "macOS: notarytool keychain profile; notarizes and staples")
+    set(SUPPLE_SIGN_COMMAND "" CACHE STRING "Windows: a command that signs the file named after it (signtool ...)")
+    if (WIN32)
+        find_program(SUPPLE_ISCC NAMES iscc ISCC PATHS "$ENV{ProgramFiles\(x86\)}/Inno Setup 6" "$ENV{ProgramFiles}/Inno Setup 6")
+    endif()
+    string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" arch)
+    if (APPLE AND CMAKE_OSX_ARCHITECTURES)
+        list(LENGTH CMAKE_OSX_ARCHITECTURES n)
+        if (n GREATER 1)
+            set(arch universal)
+        else()
+            set(arch "${CMAKE_OSX_ARCHITECTURES}")
+        endif()
+    endif()
+    if (arch MATCHES "^(amd64|x86_64|x64)$")
+        set(arch x86_64)
+    elseif (arch MATCHES "^(arm64|aarch64)$")
+        set(arch arm64)
+    endif()
+    if (APPLE)
+        set(SUPPLE_PLATFORM macos-${arch})
+        set(package_formats -DCLAP=${SUPPLE_ASSETS}/${PRODUCT_NAME}.clap -DVST3=${SUPPLE_ASSETS}/${PRODUCT_NAME}.vst3)
+        if (TARGET product-plugin_auv2)
+            list(APPEND package_formats -DAU=${SUPPLE_ASSETS}/${PRODUCT_NAME}.component)
+        endif()
+    elseif (WIN32)
+        set(SUPPLE_PLATFORM windows-${arch})
+        set(package_formats -DCLAP=$<TARGET_FILE:product-plugin_clap> -DVST3=$<TARGET_FILE:product-plugin_vst3>)
+    else()
+        set(SUPPLE_PLATFORM linux-${arch})
+        set(package_formats -DCLAP=$<TARGET_FILE:product-plugin_clap> -DVST3=${SUPPLE_ASSETS}/${PRODUCT_NAME}.vst3)
+    endif()
+    set(SUPPLE_PACKAGE_COMMAND ${CMAKE_COMMAND} "-DNAME=${PRODUCT_NAME}" "-DVERSION=${PRODUCT_VERSION}"
+        "-DVENDOR=${PRODUCT_VENDOR}" "-DID=${PRODUCT_ID}" "-DPLATFORM=${SUPPLE_PLATFORM}"
+        "-DLICENSE=${license}" "-DNOTICES=${notices}" ${package_formats}
+        "-DSUPPLE_SIGN_IDENTITY=${SUPPLE_SIGN_IDENTITY}" "-DSUPPLE_INSTALLER_IDENTITY=${SUPPLE_INSTALLER_IDENTITY}"
+        "-DSUPPLE_NOTARY_PROFILE=${SUPPLE_NOTARY_PROFILE}" "-DSUPPLE_SIGN_COMMAND=${SUPPLE_SIGN_COMMAND}")
+    add_custom_target(product-package
+        COMMAND ${SUPPLE_PACKAGE_COMMAND} "-DOUT=${CMAKE_BINARY_DIR}/package" -DINSTALLER=ON
+                "-DISCC=${SUPPLE_ISCC}" -P ${SUPPLE_FRAMEWORK}/cmake/Package.cmake
+        COMMENT "Packaging ${PRODUCT_NAME} ${PRODUCT_VERSION} for ${SUPPLE_PLATFORM}"
+        VERBATIM USES_TERMINAL)
+    add_dependencies(product-package product-notices)
+    if (TARGET product-prepare-auv2)
+        add_dependencies(product-package product-prepare-auv2)
+    endif()
+
+    # What tools/validate.cmake needs to know about this build.
+    if (APPLE)
+        set(validated_clap "${SUPPLE_ASSETS}/${PRODUCT_NAME}.clap")
+    else()
+        set(validated_clap "$<TARGET_FILE:product-plugin_clap>")
+    endif()
+    if (WIN32)
+        set(validated_vst3 "$<TARGET_FILE:product-plugin_vst3>")
+    else()
+        set(validated_vst3 "${SUPPLE_ASSETS}/${PRODUCT_NAME}.vst3")
+    endif()
+    file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/supple-build.cmake CONTENT
+"# Generated by framework/cmake/Framework.cmake for tools/validate.cmake.
+set(BUILD_NAME \"${PRODUCT_NAME}\")
+set(BUILD_CLAP \"${validated_clap}\")
+set(BUILD_VST3 \"${validated_vst3}\")
+set(BUILD_AU_TYPE \"${au_type}\")
+set(BUILD_AU_SUBTYPE \"${PRODUCT_AU_SUBTYPE}\")
+set(BUILD_AU_MANUFACTURER \"${PRODUCT_AU_MANUFACTURER}\")
+set(BUILD_PRESETS \"${PRODUCT_PRESETS}\")
+set(BUILD_SANITIZE \"${SUPPLE_SANITIZE}\")
+")
 endif()
 
 if (SUPPLE_BUILD_TESTS)

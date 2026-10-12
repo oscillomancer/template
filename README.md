@@ -79,11 +79,13 @@ build a check of every CLAP call's thread.
 ## Status
 
 Built and tested on Linux (X11/OpenGL): every test in the release, debug,
-AddressSanitizer, ThreadSanitizer and RealtimeSanitizer presets, clap-validator, X11 embedding,
-and REAPER loading the CLAP. macOS (Metal, AUv2) is built and tested by CI
+AddressSanitizer, ThreadSanitizer and RealtimeSanitizer presets, clap-validator, pluginval,
+X11 embedding, libFuzzer on saved state, a build from vendored sources with
+no network, the release archive, and REAPER loading the CLAP. macOS (Metal, AUv2) is built and tested by CI
 (see [BUILDING.md](framework/docs/BUILDING.md#continuous-integration)):
 every test, `auval`, pluginval, clap-validator, and the editor opening in a
-Cocoa window, on a 1x virtual machine; open it in real hosts on real
+Cocoa window, on a 1x virtual machine (the `.pkg` and Windows installer are
+made there too, and have not yet been run by CI); open it in real hosts on real
 hardware before shipping. Windows (MSVC, OpenGL) is built and tested by CI
 the same way, editor embedding included, on a runner without a GPU; open it
 in real hosts on a real Windows machine before shipping.

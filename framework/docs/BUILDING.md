@@ -1,9 +1,11 @@
 # Building, testing and validating
 
 Dependencies are fetched at configure time and pinned to exact commits in
-`framework/cmake/Dependencies.cmake`: CLAP SDK, clap-wrapper (with the VST3
-and AudioUnit SDKs it pins), pugl, NanoVG and, on macOS, nanovg_metal. Git and
-network access are needed for the first configure. There are no submodules.
+`framework/cmake/Pins.cmake`: CLAP SDK, clap-wrapper (with the VST3
+and AudioUnit SDKs it pins), dr_libs, pugl, NanoVG, nanosvg, MTS-ESP (with
+`PRODUCT_TUNING`) and, on macOS, nanovg_metal. Git and network access are
+needed for the first configure, unless the sources are vendored (below).
+There are no submodules.
 
 ## Presets
 
@@ -14,6 +16,7 @@ network access are needed for the first configure. There are no submodules.
 | `asan` | `build/asan` | AddressSanitizer + UBSan over our code (framework, product, tests, the built plugin's own objects); clap-wrapper and the SDKs are linked uninstrumented |
 | `tsan` | `build/tsan` | ThreadSanitizer over our code, without the GUI: the cross-thread tests are the point |
 | `rtsan` | `build/rtsan` | RealtimeSanitizer (LLVM clang 20 or later): every audio-thread entry point is a real-time context, and an allocation, lock, blocking call or file access anywhere beneath it -- the product's processor included -- aborts the test with a stack trace |
+| `fuzz` | `build/fuzz` | libFuzzer with AddressSanitizer and UBSan (clang), no GUI: builds the state fuzzers only, and its tests run `state-fuzzer` for a minute |
 
 The presets are defined in `framework/cmake/presets.json`, which the root
 `CMakePresets.json` includes, so a framework update brings new ones. A
@@ -27,9 +30,34 @@ ctest --preset release
 
 Options, for a hand-made build directory: `SUPPLE_BUILD_PLUGIN`,
 `SUPPLE_BUILD_GUI`, `SUPPLE_BUILD_TESTS` (all on), `SUPPLE_WARNINGS_AS_ERRORS`,
-`SUPPLE_SANITIZE` (`address`, `thread` or `realtime`), `SUPPLE_METAL` (macOS, on),
-`SUPPLE_CLAP_VALIDATOR` (path to clap-validator). A configure without a build
-type defaults to Release.
+`SUPPLE_SANITIZE` (`address`, `thread` or `realtime`), `SUPPLE_FUZZ` (clang),
+`SUPPLE_METAL` (macOS, on), `SUPPLE_CLAP_VALIDATOR` (path to clap-validator),
+`SUPPLE_VENDOR_DIR` (below), and the signing options under Packaging. A
+configure without a build type defaults to Release.
+
+## Offline builds
+
+```sh
+cmake -P framework/tools/vendor.cmake                    # into vendor/ at the root
+cmake -DDIR=/somewhere/else -P framework/tools/vendor.cmake
+```
+
+copies every pinned source -- clap-wrapper's own SDKs included, for every
+platform and option -- into one folder, with no Git history (about 40 MB).
+A configure that finds `vendor/` at the root uses it by itself; any other
+folder is given with `-DSUPPLE_VENDOR_DIR=<folder>`. Nothing is downloaded
+then: FetchContent is disconnected and clap-wrapper is handed its SDKs.
+Each vendored folder records its pin, and one that no longer matches
+`Pins.cmake` (after a framework update) stops the configure until
+`vendor.cmake` has run again; it fetches only what changed. Commit
+`vendor/` to the product's repository for a self-contained source tree, or
+keep it outside for a CI cache or an air-gapped machine.
+
+Patches are never applied to a vendored folder, nor to any source given with
+`FETCHCONTENT_SOURCE_DIR_<NAME>`: the build copies that dependency to
+`build/<preset>/_deps/<name>-patched` and patches the copy. Built and tested
+here with the network removed (`unshare -rn`): configure, build and every
+test.
 
 Wrapper and AU metadata are generated at configure time. After changing
 `product/product.cmake`, configure again; after changing identity, configure
@@ -80,6 +108,42 @@ bundle (or beside the bare `.clap` on Linux and Windows). On Windows,
 clap-wrapper puts them one level down, in `plugins/CLAP/Name.clap` and
 `plugins/VST3/Name.vst3`, both single files.
 
+## Packaging and signing
+
+`cmake --build build/release --target product-package` writes, to
+`build/release/package/`:
+
+- `<Name>-<version>-<platform>.zip` (`.tar.gz` on Linux): `CLAP/`, `VST3/`
+  and on macOS `Components/`, with `LICENSE.txt`, `NOTICES.txt` and
+  `INSTALL.txt` (where each format goes). The platform is `macos-arm64`,
+  `windows-x86_64`, `linux-x86_64` and so on (`macos-universal` when
+  `CMAKE_OSX_ARCHITECTURES` names two).
+- macOS: `<Name>-<version>-<platform>.pkg`, one choice per format, all
+  installed to `/Library/Audio/Plug-Ins/...`, never relocated to wherever
+  another copy of the bundle is, and offered only on the architectures the
+  binary has (an Apple silicon Mac is not asked for Rosetta).
+- Windows: `<Name>-<version>-<platform>-setup.exe`, by Inno Setup 6.3 or
+  later when it is installed (found in Program Files, or given as
+  `-DSUPPLE_ISCC=...`): the formats as components, into
+  `C:\Program Files\Common Files\CLAP` and `VST3`, with an uninstaller.
+
+The `package` test makes the archive alone, to check what goes in it.
+Signing is opt-in, by configure options or the same names in the
+environment (for CI secrets):
+
+| Option | Effect |
+| --- | --- |
+| `SUPPLE_SIGN_IDENTITY` | macOS: the bundles are signed with this Developer ID Application identity, hardened runtime and timestamp. Without it they are signed ad hoc, which seals the license and notices added to them |
+| `SUPPLE_INSTALLER_IDENTITY` | macOS: the `.pkg` is signed with this Developer ID Installer identity |
+| `SUPPLE_NOTARY_PROFILE` | macOS: a `notarytool` keychain profile (`xcrun notarytool store-credentials`). The bundles and then the `.pkg` are notarized and stapled; needs both identities |
+| `SUPPLE_SIGN_COMMAND` | Windows: a command that signs the file named after it, run on each plugin and the installer, e.g. `signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /a` |
+
+Linux archives are not signed. Built and checked here on Linux only; the
+`.pkg` and the installer are made by CI's macOS and Windows jobs, and none
+of the signing paths has been run without a certificate to run them with.
+
+## Installing
+
 `cmake --build build/release --target product-install` copies every format to
 the user's plugin folders together (`~/.clap` and `~/.vst3` on Linux,
 `~/Library/Audio/Plug-Ins/*` on macOS, `%LOCALAPPDATA%\Programs\Common\*` on
@@ -96,9 +160,14 @@ last when it exists.
 
 | Test | Proves |
 | --- | --- |
-| `core-tests` | Parameter text and tapers for every product parameter and for every unit, off-at-minimum and custom format; DSP blocks; the Engine's contracts (bit-identical output under random automation at any block sizes -- aux outputs and every note and MIDI message sent included, with the sidechain and notes, MIDI, expressions and per-note modulation fed when the product takes them -- float = double, in place = separate buffers, bypass exact after its fade, telemetry rate independent of event density, NaN never reaching the host from the processor, through bypass or by float overflow, the transport each split sees, reset preserving values, and a state loaded before reset rendering exactly what a fresh instance renders); smoothed parameters gliding from each change's exact frame, identically at any block sizes, settling exactly and snapping on reset; outputs reaching the store at 30 Hz and ignored when a host sets them; levels exact at 0 dB and silent when off; state format, outputs excluded, properties and the preset's name kept and a preset leaving the session out; properties delivered to the processor after prepare and before the next block, the last of several changes only; offline rendering reaching `prepare()` and the next block; a tuning read at the frame asked, chosen at its event's frame, and unmapped keys retired unheard; note names announced when the processor says; the editor's audio feed carrying input and output only while it is open, and only for a processor that asked; the editor's notes played at the next block and the keys held reaching telemetry; user presets saved, listed, loaded, renamed and deleted, files not ours ignored, factory presets setting what they name, A/B, settings as text, the session remembering the preset, preset names valid as files everywhere; file references found by their tail under remembered folders and under this user's home, remembered folders bounded and newest first, and (for a product with a file property) files loading at activation, missing ones reported and kept, moved ones relocated, a failed one explained, a new sample rate reloading, and loads racing a running audio thread arriving whole; the edit bridge, single- and multi-threaded and against a host that takes one event at a time |
+| `core-tests` | Parameter text and tapers for every product parameter and for every unit, off-at-minimum and custom format; DSP blocks; the Engine's contracts (bit-identical output under random automation at any block sizes -- aux outputs and every note and MIDI message sent included, with the sidechain and notes, MIDI, expressions and per-note modulation fed when the product takes them -- float = double, in place = separate buffers, bypass exact after its fade, telemetry rate independent of event density, NaN never reaching the host from the processor, through bypass or by float overflow, the transport each split sees, reset preserving values, and a state loaded before reset rendering exactly what a fresh instance renders); smoothed parameters gliding from each change's exact frame, identically at any block sizes, settling exactly and snapping on reset; outputs reaching the store at 30 Hz and ignored when a host sets them; levels exact at 0 dB and silent when off; state format, outputs excluded, properties and the preset's name kept and a preset leaving the session out; properties delivered to the processor after prepare and before the next block, the last of several changes only; offline rendering reaching `prepare()` and the next block; a tuning read at the frame asked, chosen at its event's frame, and unmapped keys retired unheard; note names announced when the processor says; the editor's audio feed carrying input and output only while it is open, and only for a processor that asked; the editor's notes played at the next block and the keys held reaching telemetry; the measurement helpers (`Testing.h`: tone amplitude, THD, delay) exact on known signals, and the latency an effect reports equal to the delay measured through it at its defaults; user presets saved, listed, loaded, renamed and deleted, files not ours ignored, factory presets setting what they name, A/B, settings as text, the session remembering the preset, preset names valid as files everywhere; file references found by their tail under remembered folders and under this user's home, remembered folders bounded and newest first, and (for a product with a file property) files loading at activation, missing ones reported and kept, moved ones relocated, a failed one explained, a new sample rate reloading, and loads racing a running audio thread arriving whole; the edit bridge, single- and multi-threaded and against a host that takes one event at a time |
 | `dsp-tests` | The DSP library (`framework/dsp`), measured: every cookbook biquad against its response, Butterworth to order 16 as the bilinear transform of its prototype, Linkwitz-Riley halves summing to an all-pass, one-pole and DC blocker; the gain computer's knee and slope, followers' time constants, the sliding maximum against brute force, lookahead never late, true peak between samples; linear-phase oversampling a pure delay at 2x to 16x, images and aliases 95 dB down in both phases; the STFT an exact delay, its bins filtering; PCG32 repeatable, polyBLEP shapes aliasing less than naive ones, wavetables alias-free at any pitch, LFO shapes and sync, noise slopes; ADSR segment times and curves; the voice manager stealing, holding with the pedal, mono and legato, glide, bend and MPE, and ending every note exactly once through 4000 random events; fractional and all-pass delays; ADAA antiderivatives and their aliasing; K-weighting to BS.1770's table and EBU 3341 loudness readings with gating; convolution equal to the direct sum in any blocks; the worker and hand-off (nothing freed on the audio thread); WAV, AIFF and FLAC decoding, resampling, and a disk stream read exactly, restarted, on a real thread |
 | `processor-tests` | The product's own claims (`product/test/`) |
+| `state-fuzz` | Saved state is untrusted input: every kind of state the product makes (defaults, random settings, session and preset contexts, pasted text), each damaged 300 ways from a fixed seed, loaded through CLAP into a fresh plugin. A refused load changes nothing; an accepted one saves, loads into another instance and saves again byte for byte; some also process, finitely |
+| `state-fuzzer` (`fuzz` preset) | The same check under libFuzzer, coverage-guided, for a minute from those states (`state-corpus` writes them); `build/fuzz/state-fuzzer build/fuzz/state-corpus -max_total_time=3600` runs it longer |
+| `benchmark` (release) | The product's CPU cost in three scenarios (steady, 32-frame blocks, every parameter automated), in units of a reference workload timed alongside, against `product/benchmark.txt` for this machine; more than 1.5 times (and 0.05 reference units) over it fails. Skipped on a machine with no baseline (`benchmark --update` records one) |
+| `previews` | Every scenario in `product/previews.txt` renders, into `build/<preset>/previews`. Skipped without a display |
+| `package` | The release archive holds every format, the license, notices and install notes (macOS: bundles signed ad hoc and verified) |
 | `ui-tests` | Interaction rules (drag, Shift, wheel, keys, text entry, menus, focus loss); a property's text field editing UTF-8 within its limit; popup menus skipping headers and scrolling; prompts refusing or handing over to a confirmation; the right-click context menu (reset, enter value, the host's items flattened and performed, the host's own popup preferred); the preset bar stepping, comparing, saving, replacing, renaming, deleting and copying settings through the clipboard; controls on an output display only; layout helpers; tooltips; `enabledWhen`; buttons and momentary controls; tab pages; an XY pad's two-parameter gesture; an envelope's handles; lists by pointer, wheel and keys; the keyboard's notes always ending; the FFT and spectrum calibration and RMS; SVG parsing and every product asset; dropped URI lists and the Linux dialog commands; a preset file dropped on the editor; a file slot choosing through the dialog, taking a drop of what it accepts, clearing from a key and its menu, and showing what became of its file; repaint on host-side changes, and on an output only where it is shown; layout lint (pages may share space); a 20 000-event fuzz of the real editor that fails on any nested or unbalanced gesture, more than two parameters in one, or a note left sounding |
 | `plugin-tests` | The CLAP surface in process: descriptor, parameter list, state into a fresh instance, every layout on every port with the sidechain and aux outputs connected or not, layouts negotiated port by port (`configurable-audio-ports`), bypass (aux outputs silent), editor edits reaching a stopped host, edits and preset recalls during playback on real threads, telemetry gating, the restart protocol, the output constant hint cleared on every output, tail changes announced, output events in time order, a product with note input ending every note it was given and taking notes, MIDI, expressions and per-note modulation in any mix, note ports and voice info as declared, output parameters read-only, sent to the host at most 30 times a second with `get_value` agreeing, and absent from state; properties set by the editor saved and restored, the state-context extension leaving the session out of presets, presets loaded by location (factory by name, user by file) with errors reported, the editor's loads reported to the host, and preset discovery listing the factory presets and the user's files; in a debug build, every call on a thread CLAP does not allow logged once, and none in a session that keeps the rules; trouble on the audio thread (a narrow bus) and damaged state logged from the main thread; render mode offered only to a processor with an offline mode; "Reset to Default" in a host's context menu as one whole edit; the host's context menu flattened for the editor; the track's name and colour, and their changes; note names as the processor gives them, the host told after every parameter change that renames a key; the host's CLAP tuning retuning notes and retiring unmapped keys at their frame; the editor's keyboard playing through the plugin, lighting its key and ending its note; a session finding the file it names after its folder moves, and keeping (and saving) the reference when it is gone |
 | `host-smoke-<layout>` | The built `.clap` loaded from disk, once per declared layout (`-2ch`, `-1ch`, `-5.1`, `-ambi1`, `-notes` for a note effect): every port's width, type and flags, the surround channel map or ambisonic config, text round trips and rejection, float/double and in-place renders with the sidechain fed, no restart storms, the latency protocol when `PRODUCT_SMOKE_LATENCY_PARAM` is set, state into a fresh instance and byte-identical resave, CLAP's reset contract: a state loaded into a used instance and reset (and restarted, if it asked to be: a restart parameter moved) renders bit-identically to a fresh instance with that state, every factory preset found through preset discovery and loaded mid-stream, render mode, context menu and note names where offered, and nothing logged as misbehaviour by a debug build checking every call's thread |
@@ -122,8 +191,13 @@ other tests: its own denormal generation runs in the timed region without
 flush-to-zero. Run alone it reports 1.3-1.9x for this framework (the engine
 measures 1.0x), against 2-3x for a plugin without FTZ.
 
-Before a release, also: `auval -v aufx <subtype> Supl` on macOS; the VST3
-SDK's validator or pluginval; every format opened in real hosts on every
+Before a release, also: `cmake -DPRESET=release -P framework/tools/validate.cmake`,
+which builds, then runs pluginval 1.0.4 (fetched and checksummed into
+`build/tools`, or `-DPLUGINVAL=...`) at strictness 8 on the VST3 -- and on
+macOS installs the formats and runs it on the AU, then `auval -strict` with
+the product's own codes -- and clap-validator when it is found. Run here on
+Linux: pluginval passes on the VST3, editor tests included. Then every
+format opened in real hosts on every
 platform you ship (REAPER, Bitwig, Ableton Live, Logic for AU), with
 automation recorded and played back, state saved and reloaded, the editor
 resized, closed and reopened; sample rates 44.1 to 192 kHz; mono and stereo.
@@ -205,18 +279,20 @@ release build then goes through what a host would do with it:
   editor does not open, resize or reopen, or the audio goes silent; both
   CLAP-reported and native Cocoa dimensions are checked after parenting
   and resizing), and
-  `gui-preview` at 1x and 2x.
+  `gui-preview` (every named scenario, and 2x), and `product-package`
+  (unsigned: bundles ad hoc, the `.pkg` unsigned).
 - **Linux**: `ctest` under Xvfb (so `x11-embedding` runs), clap-validator,
-  pluginval on the VST3, `gui-preview`.
+  pluginval on the VST3, `gui-preview`, `product-package`.
 - **Windows**: MSVC with Ninja, `ctest` (so `win32-embedding` runs), the
   install target, clap-validator, pluginval on the VST3 (editor included),
-  `gui-preview`. The runner has no GPU, so CI places Mesa's llvmpipe
+  `gui-preview`, and `product-package` with Inno Setup (installed from
+  Chocolatey if the runner lacks it). The runner has no GPU, so CI places Mesa's llvmpipe
   `opengl32.dll` beside the test executables and pluginval
   (`.github/scripts/get-mesa-windows.sh`); a DLL beside the executable is
   loaded before System32's.
 
-Each job uploads the plugins, the probe's window captures and the previews
-as an artifact. A failing step repeats its compiler diagnostics and log tail
+Each job uploads the plugins, the release packages, the probe's window
+captures and the previews as an artifact. A failing step repeats its compiler diagnostics and log tail
 as error annotations. GitHub's macOS runners are 1x virtual machines with a
 paravirtualised GPU, and the Windows runners draw with a software
 renderer: a pass there is evidence about the platform code, not a

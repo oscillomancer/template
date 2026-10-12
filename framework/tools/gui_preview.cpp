@@ -16,6 +16,16 @@
 //   gui-preview tip.png --tooltip "Low Cut"
 //   gui-preview page.png --page 1 --play 60 --drop
 //
+// Named scenarios: product/previews.txt names the states worth looking at,
+// one per line -- a name, then the options above -- so anyone (and CI) can
+// render the same ones:
+//
+//   gui-preview menu.png --scenario shape-menu
+//   gui-preview --all previews/ [--scale 2]    every scenario, as previews/<name>.png
+//   gui-preview --list
+//
+// "default", the editor as it opens, is always among them.
+//
 // This proves drawing only. It cannot validate embedding, host timers,
 // resizing in a host or teardown; clap-probe and x11-probe do that.
 #include <algorithm>
@@ -24,6 +34,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -310,14 +322,71 @@ void usage() {
         "gui-preview <out.png> [--scale N] [--set \"Name=value\"]... [--property \"Name=text\"]...\n"
         "            [--preset NAME] [--hover NAME] [--focus NAME] [--menu NAME|Presets] [--text NAME]\n"
         "            [--context NAME] [--track NAME] [--track-colour RRGGBB] [--tooltip NAME]\n"
-        "            [--page N] [--play KEY] [--drop] [--seconds S]\n");
+        "            [--page N] [--play KEY] [--drop] [--seconds S] [--scenario NAME]\n"
+        "gui-preview --all <folder> [options]    every scenario in product/previews.txt\n"
+        "gui-preview --list\n");
 }
 
-}  // namespace
+// product/previews.txt: "name option option ...", options split as a shell
+// would at spaces, with double quotes around one that has spaces in it.
+struct Scenario {
+    std::string name;
+    std::vector<std::string> args;
+};
 
-int main(int argc, char** argv) {
-    if (argc < 2 || argv[1][0] == '-') return usage(), 2;
-    const char* output = argv[1];
+std::vector<Scenario> scenarios() {
+    std::vector<Scenario> out{{"default", {}}};
+    std::ifstream f(SUPPLE_PREVIEWS_FILE);
+    for (std::string line; std::getline(f, line);) {
+        std::vector<std::string> words;
+        std::string word;
+        bool quoted = false, any = false;
+        for (char c : line) {
+            if (c == '"') {
+                quoted = !quoted;
+                any = true;
+            } else if (!quoted && (c == ' ' || c == '\t' || c == '\r')) {
+                if (any) words.push_back(word);
+                word.clear();
+                any = false;
+            } else {
+                word += c;
+                any = true;
+            }
+        }
+        if (any) words.push_back(word);
+        if (words.empty() || words[0].empty() || words[0][0] == '#') continue;
+        Scenario s{words[0], {words.begin() + 1, words.end()}};
+        if (s.name == "default") out[0] = s;
+        else out.push_back(s);
+    }
+    return out;
+}
+
+const Scenario* findScenario(const std::vector<Scenario>& all, const std::string& name) {
+    for (const Scenario& s : all)
+        if (s.name == name) return &s;
+    return nullptr;
+}
+
+// One preview: the editor in the state the options stage, written as a PNG.
+int preview(const char* output, std::vector<std::string> args) {
+    // A scenario's options, in place of its name.
+    for (size_t i = 0; i + 1 < args.size(); ++i) {
+        if (args[i] != "--scenario") continue;
+        const std::vector<Scenario> all = scenarios();
+        const Scenario* s = findScenario(all, args[i + 1]);
+        if (!s) {
+            std::fprintf(stderr, "no scenario \"%s\" in %s\n", args[i + 1].c_str(), SUPPLE_PREVIEWS_FILE);
+            return 2;
+        }
+        args.erase(args.begin() + static_cast<std::ptrdiff_t>(i), args.begin() + static_cast<std::ptrdiff_t>(i + 2));
+        args.insert(args.begin() + static_cast<std::ptrdiff_t>(i), s->args.begin(), s->args.end());
+        i = static_cast<size_t>(-1);
+    }
+    const int argc = static_cast<int>(args.size()) + 2;
+    std::vector<const char*> argv{"gui-preview", output};
+    for (const std::string& a : args) argv.push_back(a.c_str());
     double scale = 1.0, seconds = 3.0;
     const char *hover = nullptr, *focus = nullptr, *menu = nullptr, *text = nullptr, *context = nullptr,
                *tooltip = nullptr;
@@ -325,12 +394,12 @@ int main(int argc, char** argv) {
     bool drop = false;
     PreviewHost host;
     for (int i = 2; i < argc; ++i) {
-        const std::string arg = argv[i];
+        const std::string arg = argv[static_cast<size_t>(i)];
         if (arg == "--drop") {  // the one option without a value
             drop = true;
             continue;
         }
-        const char* next = i + 1 < argc ? argv[i + 1] : nullptr;
+        const char* next = i + 1 < argc ? argv[static_cast<size_t>(i) + 1] : nullptr;
         if (!next) return usage(), 2;
         ++i;
         if (arg == "--scale") scale = std::atof(next);
@@ -514,4 +583,39 @@ int main(int argc, char** argv) {
     if (!writePng(output, w, h, panel)) return 4;
     std::printf("wrote %s (%dx%d)\n", output, w, h);
     return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc < 2) return usage(), 2;
+    const std::vector<std::string> rest(argv + std::min(argc, 3), argv + argc);
+    if (!std::strcmp(argv[1], "--list")) {
+        for (const Scenario& s : scenarios()) std::printf("%s\n", s.name.c_str());
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "--all")) {
+        if (argc < 3) return usage(), 2;
+#if !defined(_WIN32) && !defined(__APPLE__)
+        if (!std::getenv("DISPLAY") || !*std::getenv("DISPLAY")) {
+            std::printf("no display; nothing rendered\n");
+            return 77;
+        }
+#endif
+        std::filesystem::create_directories(argv[2]);
+        int result = 0;
+        for (const Scenario& s : scenarios()) {
+            std::vector<std::string> args = s.args;
+            args.insert(args.end(), rest.begin(), rest.end());
+            const std::string out = (std::filesystem::path(argv[2]) / (s.name + ".png")).string();
+            const int r = preview(out.c_str(), args);
+            if (r != 0) {
+                std::fprintf(stderr, "scenario %s failed (%d)\n", s.name.c_str(), r);
+                result = r;
+            }
+        }
+        return result;
+    }
+    if (argv[1][0] == '-') return usage(), 2;
+    return preview(argv[1], std::vector<std::string>(argv + 2, argv + argc));
 }

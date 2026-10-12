@@ -21,7 +21,9 @@ Read this file, then `docs/CONVENTIONS.md` for the reasons behind the rules.
 | Layout, the product's own drawing, its custom interaction (optional: without them, the automatic editor) | `product/Editor.h`, `product/Editor.cpp` |
 | Colours | `product/Theme.h` |
 | Pictures, icons, fonts the editor draws (optional) | `product/assets/`, listed in `PRODUCT_ASSETS` |
-| Claims about the DSP, measured | `product/test/` |
+| Claims about the DSP, measured | `product/test/` (`test::gainDb`, `thd`, `measureLatency` and the rest in `framework/test/Testing.h`) |
+| Editor states worth looking at, by name | `product/previews.txt` |
+| What the product costs on your machine (written by `benchmark --update`) | `product/benchmark.txt` |
 | Notices for a dependency the product adds | `product/NOTICES.txt` |
 | The product's own tools and measurement programs (optional) | `product/targets.cmake` |
 | Anything in `framework/` | **the template**, never a product (see the end of this file) |
@@ -42,20 +44,30 @@ cmake --preset tsan   && cmake --build --preset tsan   && ctest --preset tsan   
 cmake --preset rtsan  && cmake --build --preset rtsan  && ctest --preset rtsan   # RealtimeSanitizer (clang 20+)
 ./build/release/gui-preview panel.png [--scale 2] [--set "Name=value"] [--hover NAME] [--menu NAME] [--text NAME]
                                      [--tooltip NAME] [--page N] [--play KEY] [--drop]
+./build/release/gui-preview --all previews/     # every scenario in product/previews.txt
 ./build/release/render-cli --list
 ./build/release/render-cli in.wav out.wav --set "Name=value" --at 48000 "Name=value" --block 257 [--sidechain key.wav]
+./build/release/benchmark [--update]                    # CPU cost against product/benchmark.txt
 cmake --build build/release --target product-install    # every format into the user's plugin folders
+cmake --build build/release --target product-package    # the release archive and installer, in build/release/package
+cmake -DPRESET=release -P framework/tools/validate.cmake  # pluginval (and auval on macOS), clap-validator
+cmake --preset fuzz   && cmake --build --preset fuzz   && ctest --preset fuzz    # libFuzzer on saved state (clang)
+cmake -P framework/tools/vendor.cmake                   # every dependency into vendor/, for offline builds
 ```
 
 `gui-preview` writes a PNG of the real editor, with programme running through
 the real DSP so the product's own telemetry shows. Look at it after every
-editor change. It proves drawing only, not embedding in a host.
+editor change. It proves drawing only, not embedding in a host. Name the
+states worth looking at again in `product/previews.txt` (a name, then the
+options): `--scenario NAME` renders one, `--all` every one, and ctest's
+`previews` test renders them all, so a renamed control breaks a test rather
+than a review.
 
 ## Starting a product
 
 ```sh
 cmake -DNAME="Name" -DID=com.suppleaudio.name -DCODE=NmXx -DDEST=../name \
-      [-DEXAMPLE=instrument|pulse|duck|chord|drive] [-DDESCRIPTION="..."] -P framework/tools/new_product.cmake
+      [-DEXAMPLE=instrument|pulse|duck|chord|drive|room] [-DDESCRIPTION="..."] -P framework/tools/new_product.cmake
 ```
 
 Run it in the template. `ID` and `CODE` (the AU subtype, also the state tag)
@@ -478,6 +490,22 @@ or unclosed gesture, more than two parameters in one, or a note left
 sounding, and lints the layout: controls must stay inside the panel and
 must not overlap, except on different pages of one tab bar.
 
+## Releasing
+
+- `product-package` makes `<Name>-<version>-<platform>.zip` (`.tar.gz` on
+  Linux): every format, `LICENSE.txt`, `NOTICES.txt` and `INSTALL.txt`. On
+  macOS also a `.pkg` with a choice per format; on Windows an Inno Setup
+  installer when Inno Setup 6.3+ is installed. Bundles are signed ad hoc on
+  macOS unless an identity is given; signing and notarization are opt-in
+  (`SUPPLE_SIGN_IDENTITY`, `SUPPLE_INSTALLER_IDENTITY`,
+  `SUPPLE_NOTARY_PROFILE`, Windows `SUPPLE_SIGN_COMMAND`; docs/BUILDING.md).
+- `validate.cmake` runs the validators CI runs, on this machine.
+- `benchmark` compares the product's cost with `product/benchmark.txt` for
+  this machine and fails at 1.5 times it. After a change that costs more on
+  purpose, `benchmark --update` and commit the file.
+- Saved state is untrusted input. `state-fuzz` runs in every preset; run the
+  `fuzz` preset (clang) after touching state, properties or `property()`.
+
 ## Rules that are not negotiable
 
 - The audio thread does not allocate, lock, log, wait, do I/O or call the GUI.
@@ -504,10 +532,12 @@ must not overlap, except on different pages of one tab bar.
 ## Done means
 
 - `ctest` passes in release, debug, asan, tsan and rtsan, plus `clap-validator`
-  (register it with `-DSUPPLE_CLAP_VALIDATOR=...`).
+  (register it with `-DSUPPLE_CLAP_VALIDATOR=...`); `validate.cmake` passes;
+  `benchmark` is within its baseline, or the baseline was updated on purpose.
 - `product/test` measures every claim the product makes.
 - The editor has been looked at with `gui-preview` at 1x and 2x, with menus
-  and text fields open, and opened in a real host. It resizes, reopens and
+  and text fields open (the scenarios in `product/previews.txt`), and opened
+  in a real host. It resizes, reopens and
   survives teardown (`x11-probe` on Linux, `clap-probe` on macOS,
   `win32-probe` on Windows).
 - Every format was built from the same commit; `auval` passes on macOS.

@@ -104,7 +104,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .deps
-          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('framework/cmake/Dependencies.cmake', 'framework/cmake/patches/*') }}
+          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('framework/cmake/Dependencies.cmake', 'framework/cmake/Pins.cmake', 'framework/cmake/patches/*') }}
 
       - name: clap-validator
         if: matrix.preset == 'release'
@@ -177,21 +177,24 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: .github/scripts/clap-probe-mac.sh '${{ steps.product.outputs.name }}'
 
-      - name: gui-preview (OpenGL, 1x and 2x)
+      - name: gui-preview (OpenGL, every named scenario, and 2x)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
           mkdir -p preview
-          .github/scripts/step.sh preview-1x ./build/release/gui-preview preview/editor-1x.png --scale 1
-          .github/scripts/step.sh preview-2x ./build/release/gui-preview preview/editor-2x.png --scale 2
+          .github/scripts/step.sh previews ./build/release/gui-preview --all preview
+          .github/scripts/step.sh preview-2x ./build/release/gui-preview preview/default-2x.png --scale 2
+
+      # The release archive and installer (unsigned here: bundles ad hoc,
+      # the .pkg unsigned). See BUILDING.md for signing.
+      - name: Release package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
+        run: .github/scripts/step.sh package cmake --build build/release --target product-package
 
       - name: Package
         if: always() && matrix.preset == 'release'
         run: |
           mkdir -p dist
-          name='${{ steps.product.outputs.name }}'
-          for b in "$name.clap" "$name.vst3" "$name.component"; do
-            [ -d "build/release/plugins/$b" ] && ditto -c -k --keepParent "build/release/plugins/$b" "dist/$b.zip"
-          done
+          cp build/release/package/*.* dist/ 2>/dev/null || true
           cp preview/*.png probe/*.png probe/*.txt dist/ 2>/dev/null || true
           cp -r logs dist/ 2>/dev/null || true
           ls -la dist
@@ -242,7 +245,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .deps
-          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('framework/cmake/Dependencies.cmake', 'framework/cmake/patches/*') }}
+          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('framework/cmake/Dependencies.cmake', 'framework/cmake/Pins.cmake', 'framework/cmake/patches/*') }}
 
       - name: clap-validator
         if: matrix.preset == 'release'
@@ -273,18 +276,23 @@ jobs:
             --validate-in-process --timeout-ms 300000 \
             --validate "build/release/plugins/${{ steps.product.outputs.name }}.vst3"
 
-      - name: gui-preview (1x and 2x)
+      - name: gui-preview (every named scenario, and 2x)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
           mkdir -p preview
-          .github/scripts/step.sh preview-1x xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview preview/editor-1x.png --scale 1
-          .github/scripts/step.sh preview-2x xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview preview/editor-2x.png --scale 2
+          .github/scripts/step.sh previews xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview --all preview
+          .github/scripts/step.sh preview-2x xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview preview/default-2x.png --scale 2
+
+      - name: Release package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
+        run: .github/scripts/step.sh package cmake --build build/release --target product-package
 
       - name: Package
         if: always() && matrix.preset == 'release'
         run: |
           mkdir -p dist
           cp -r build/release/plugins/. dist/ 2>/dev/null || true
+          cp build/release/package/*.* dist/ 2>/dev/null || true
           cp preview/*.png dist/ 2>/dev/null || true
           cp -r logs dist/ 2>/dev/null || true
 
@@ -334,7 +342,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .deps
-          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('framework/cmake/Dependencies.cmake', 'framework/cmake/patches/*') }}
+          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('framework/cmake/Dependencies.cmake', 'framework/cmake/Pins.cmake', 'framework/cmake/patches/*') }}
 
       - name: clap-validator
         if: matrix.preset == 'release'
@@ -389,18 +397,28 @@ jobs:
           .github/scripts/step.sh pluginval "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
             --validate "build/release/plugins/VST3/${{ steps.product.outputs.name }}.vst3"
 
-      - name: gui-preview (1x and 2x)
+      - name: gui-preview (every named scenario, and 2x)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
           mkdir -p preview
-          .github/scripts/step.sh preview-1x ./build/release/gui-preview preview/editor-1x.png --scale 1
-          .github/scripts/step.sh preview-2x ./build/release/gui-preview preview/editor-2x.png --scale 2
+          .github/scripts/step.sh previews ./build/release/gui-preview --all preview
+          .github/scripts/step.sh preview-2x ./build/release/gui-preview preview/default-2x.png --scale 2
+
+      # The release archive and the Inno Setup installer (unsigned here).
+      - name: Release package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
+        run: |
+          ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          if [ ! -f "$ISCC" ]; then choco install innosetup --no-progress -y > /dev/null; fi
+          cmake -DSUPPLE_ISCC="$(cygpath -m "$ISCC")" build/release > /dev/null
+          .github/scripts/step.sh package cmake --build build/release --target product-package
 
       - name: Package
         if: always() && matrix.preset == 'release'
         run: |
           mkdir -p dist/probe
           cp -r build/release/plugins/. dist/ 2>/dev/null || true
+          cp build/release/package/*.* dist/ 2>/dev/null || true
           cp preview/*.png dist/ 2>/dev/null || true
           cp build/release/win32-probe*.ppm dist/probe/ 2>/dev/null || true
           cp -r logs dist/ 2>/dev/null || true

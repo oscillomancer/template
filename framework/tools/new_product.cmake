@@ -104,6 +104,9 @@ if (EXAMPLE)
 else()
     file(COPY "${template}/product/" DESTINATION "${dest}/product")
 endif()
+# What the source product cost on its author's machines is no baseline for a
+# new one; it records its own (tools/benchmark.cpp).
+file(REMOVE "${dest}/product/benchmark.txt")
 
 # --- identity ----------------------------------------------------------------------------
 

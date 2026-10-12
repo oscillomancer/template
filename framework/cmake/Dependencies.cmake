@@ -1,13 +1,34 @@
-# Third-party sources, fetched at configure time and pinned to exact commits:
-# a branch name would let two checkouts of the same source build different
-# plugins. Revalidate every format before moving any of these, and regenerate
-# NOTICES.txt when one moves.
+# Third-party sources, fetched at configure time and pinned to exact commits
+# (cmake/Pins.cmake): a branch name would let two checkouts of the same
+# source build different plugins.
+#
+# Offline: tools/vendor.cmake copies every pinned source into a folder
+# (vendor/ at the root by default), and a configure that finds one there --
+# or is given -DSUPPLE_VENDOR_DIR=<folder> -- builds from it with no network
+# at all. Each vendored checkout records its pin, and one that no longer
+# matches stops the configure rather than building something else.
 #
 # Vendored code builds with warnings off and hidden visibility. It is not
 # ours to keep clean, and burying our own warnings under it is how ours get
 # ignored.
 
 include(FetchContent)
+include(${CMAKE_CURRENT_LIST_DIR}/Pins.cmake)
+
+set(SUPPLE_VENDOR_DIR "" CACHE PATH "Build from vendored sources here (tools/vendor.cmake) instead of downloading")
+set(supple_vendor "${SUPPLE_VENDOR_DIR}")
+if (supple_vendor STREQUAL "" AND EXISTS "${SUPPLE_ROOT}/vendor/.supple-vendor")
+    set(supple_vendor "${SUPPLE_ROOT}/vendor")
+endif()
+if (supple_vendor)
+    get_filename_component(supple_vendor "${supple_vendor}" ABSOLUTE BASE_DIR "${SUPPLE_ROOT}")
+    if (NOT EXISTS "${supple_vendor}/.supple-vendor")
+        message(FATAL_ERROR "${supple_vendor} is not a vendor folder; make one with "
+                            "cmake -DDIR=${supple_vendor} -P framework/tools/vendor.cmake")
+    endif()
+    message(STATUS "Building from the vendored sources in ${supple_vendor}")
+    set(FETCHCONTENT_FULLY_DISCONNECTED ON)
+endif()
 
 function(supple_vendored target)
     set_target_properties(${target} PROPERTIES
@@ -21,6 +42,75 @@ function(supple_vendored target)
         target_compile_options(${target} PRIVATE -w)
     endif()
     supple_sanitize(${target})
+endfunction()
+
+# Where a vendored source is, checked against its pin; "" when not vendoring.
+function(supple_vendored_source name out)
+    set(${out} "" PARENT_SCOPE)
+    if (NOT supple_vendor)
+        return()
+    endif()
+    set(dir "${supple_vendor}/${name}")
+    supple_pin_stamp(${name} want)
+    set(have "")
+    if (EXISTS "${dir}/.supple-pin")
+        file(READ "${dir}/.supple-pin" have)
+        string(STRIP "${have}" have)
+    endif()
+    if (NOT have STREQUAL want)
+        message(FATAL_ERROR "The vendored ${name} in ${supple_vendor} is not the pinned one (${want}); "
+                            "run cmake -DDIR=${supple_vendor} -P framework/tools/vendor.cmake again")
+    endif()
+    set(${out} "${dir}" PARENT_SCOPE)
+endfunction()
+
+# Declares a pinned dependency, from its vendored copy when there is one. A
+# dependency with patches (Pins.cmake) never has them applied to a source
+# outside the build directory -- a vendored copy, or one given with
+# FETCHCONTENT_SOURCE_DIR_<NAME> -- but to a copy of it in the build.
+function(supple_declare name)
+    cmake_parse_arguments(D "HEADER_ONLY" "" "" ${ARGN})
+    list(GET SUPPLE_PIN_${name} 0 url)
+    list(GET SUPPLE_PIN_${name} 1 ref)
+    string(TOUPPER "${name}" upper)
+    set(args GIT_REPOSITORY ${url} GIT_TAG ${ref} GIT_SHALLOW OFF)
+    if (D_HEADER_ONLY)
+        list(APPEND args SOURCE_SUBDIR none)  # nothing of its own CMake is used
+    endif()
+    FetchContent_Declare(${name} ${args})
+
+    supple_vendored_source(${name} source)
+    if (NOT source AND DEFINED FETCHCONTENT_SOURCE_DIR_${upper})
+        set(source "${FETCHCONTENT_SOURCE_DIR_${upper}}")
+    endif()
+    if (source AND SUPPLE_PATCHES_${name})
+        set(copy "${CMAKE_BINARY_DIR}/_deps/${name}-patched")
+        set(stamp "${source}")
+        if (EXISTS "${source}/.supple-pin")
+            file(READ "${source}/.supple-pin" stamp)
+        endif()
+        foreach(patch ${SUPPLE_PATCHES_${name}})
+            file(MD5 "${SUPPLE_FRAMEWORK}/cmake/patches/${patch}" hash)
+            string(APPEND stamp " ${patch}:${hash}")
+        endforeach()
+        set(had "")
+        if (EXISTS "${copy}/.supple-copy")
+            file(READ "${copy}/.supple-copy" had)
+        endif()
+        if (NOT had STREQUAL stamp)
+            message(STATUS "Copying ${name} to patch it")
+            file(REMOVE_RECURSE "${copy}")
+            file(COPY "${source}/" DESTINATION "${copy}" PATTERN ".git" EXCLUDE)
+            # Its own repository, so git apply reads the patch's paths from
+            # here and not from whatever repository the build lives in.
+            execute_process(COMMAND ${GIT_EXECUTABLE} init -q WORKING_DIRECTORY "${copy}" COMMAND_ERROR_IS_FATAL ANY)
+            file(WRITE "${copy}/.supple-copy" "${stamp}")
+        endif()
+        set(source "${copy}")
+    endif()
+    if (source)
+        set(FETCHCONTENT_SOURCE_DIR_${upper} "${source}" PARENT_SCOPE)
+    endif()
 endfunction()
 
 # Applies a patch to a fetched checkout, idempotently: a reconfigure finds it
@@ -45,15 +135,20 @@ function(supple_apply_patch source_dir patch)
     set_property(GLOBAL APPEND PROPERTY SUPPLE_PATCHES "${name}|${source_dir}|${patch}")
 endfunction()
 
+function(supple_apply_patches name)
+    foreach(patch ${SUPPLE_PATCHES_${name}})
+        supple_apply_patch(${${name}_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/${patch})
+    endforeach()
+endfunction()
+
+# Patches need Git even when every source is vendored.
+find_package(Git REQUIRED)
+
 # --- dr_libs: WAV, AIFF and FLAC decoding (dsp/AudioFile.h) ---------------------------
 
 # David Reid's single-file decoders, MIT-0. Every product builds them; one
 # that never loads a file links none of it.
-FetchContent_Declare(dr_libs
-    GIT_REPOSITORY https://github.com/mackron/dr_libs.git
-    GIT_TAG dfe8377631000664666519fdb83da193fd8037f4  # dr_wav 0.14.6, dr_flac 0.13.4
-    GIT_SHALLOW OFF
-    SOURCE_SUBDIR none)  # header-only here
+supple_declare(dr_libs HEADER_ONLY)
 FetchContent_MakeAvailable(dr_libs)
 add_library(supple-drlibs STATIC ${SUPPLE_FRAMEWORK}/dsp/DrLibs.c)
 target_include_directories(supple-drlibs SYSTEM PUBLIC ${dr_libs_SOURCE_DIR})
@@ -63,35 +158,51 @@ supple_vendored(supple-drlibs)
 # --- clap-wrapper: CLAP SDK, VST3 and AUv2 --------------------------------------------
 
 if (SUPPLE_BUILD_PLUGIN)
-    # Patch validation needs Git even when dependency sources are overridden.
-    find_package(Git REQUIRED)
-    set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES ON CACHE BOOL "" FORCE)
     set(CLAP_WRAPPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(clap-wrapper
-        GIT_REPOSITORY https://github.com/free-audio/clap-wrapper.git
-        GIT_TAG 1cca996e96f29ab2be7ae9f8cfe532bbc92e1dd6  # v0.16.0
-        GIT_SHALLOW OFF)
+    # clap-wrapper fetches the CLAP, VST3 and AU SDKs itself, at the pins it
+    # names, unless it is handed them.
+    supple_vendored_source(clap clap_sdk)
+    if (clap_sdk)
+        set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES OFF CACHE BOOL "" FORCE)
+        set(CLAP_SDK_ROOT "${clap_sdk}")
+        supple_vendored_source(vst3sdk VST3_SDK_ROOT)
+        if (APPLE)
+            supple_vendored_source(AudioUnitSDK AUDIOUNIT_SDK_ROOT)
+        endif()
+    else()
+        set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES ON CACHE BOOL "" FORCE)
+    endif()
+    supple_declare(clap-wrapper)
     FetchContent_MakeAvailable(clap-wrapper)
+    # The SDK pins in Pins.cmake are the ones this clap-wrapper fetches, or a
+    # vendored build would be made of different SDKs from a downloaded one.
+    file(READ "${clap-wrapper_SOURCE_DIR}/cmake/base_sdks.cmake" base_sdks)
+    foreach(sdk clap vst3sdk AudioUnitSDK)
+        list(GET SUPPLE_PIN_${sdk} 1 ref)
+        string(FIND "${base_sdks}" "GIT_TAG \"${ref}\"" at)
+        if (at EQUAL -1)
+            message(FATAL_ERROR "clap-wrapper no longer pins ${sdk} at ${ref}; update framework/cmake/Pins.cmake")
+        endif()
+    endforeach()
 
-    # clap-wrapper 0.16.0 keeps only the last VST3 automation point in each
-    # parameter queue, so a host's sample-accurate automation arrives once
-    # per block.
-    supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-all-points.patch)
-    # register_timer() clamps every request to 30 ms, capping a VST3 editor
-    # at 33 fps however fast it asked to run.
-    supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-timer-floor.patch)
-    # On Linux the wrapper reopened its own module and kept the handle,
-    # pinning it against the host's dlclose and then unmapping it from inside
-    # its own static destructors at exit; and it looked up clap_entry with a
-    # null handle, which searches the whole process and can find another
-    # plugin's.
-    supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-self-handle.patch)
-    # A CLAP surround or ambisonic port became an empty VST3 speaker
-    # arrangement; it is now 5.1, 7.1, 7.1.4 or first- to third-order ACN.
-    supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-surround.patch)
-    # MIDI the plugin sent (controllers, pitch bend, pressure, program
-    # changes) was dropped; it now leaves as VST3 MIDI CC output events.
-    supple_apply_patch(${clap-wrapper_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/clap-wrapper-vst3-midi-out.patch)
+    # The patches (Pins.cmake lists them):
+    # - vst3-all-points: clap-wrapper 0.16.0 keeps only the last VST3
+    #   automation point in each parameter queue, so a host's sample-accurate
+    #   automation arrives once per block.
+    # - vst3-timer-floor: register_timer() clamps every request to 30 ms,
+    #   capping a VST3 editor at 33 fps however fast it asked to run.
+    # - vst3-self-handle: on Linux the wrapper reopened its own module and
+    #   kept the handle, pinning it against the host's dlclose and then
+    #   unmapping it from inside its own static destructors at exit; and it
+    #   looked up clap_entry with a null handle, which searches the whole
+    #   process and can find another plugin's.
+    # - vst3-surround: a CLAP surround or ambisonic port became an empty VST3
+    #   speaker arrangement; it is now 5.1, 7.1, 7.1.4 or first- to
+    #   third-order ACN.
+    # - vst3-midi-out: MIDI the plugin sent (controllers, pitch bend,
+    #   pressure, program changes) was dropped; it now leaves as VST3 MIDI CC
+    #   output events.
+    supple_apply_patches(clap-wrapper)
 endif()
 
 # --- MTS-ESP: the microtuning client, for PRODUCT_TUNING -----------------------------------
@@ -100,10 +211,7 @@ endif()
 # installs -- if there is one -- when the plugin loads, and reads the master's
 # tuning tables from it; without one it answers equal temperament.
 if (SUPPLE_BUILD_PLUGIN AND PRODUCT_TUNING)
-    FetchContent_Declare(mts-esp
-        GIT_REPOSITORY https://github.com/ODDSound/MTS-ESP.git
-        GIT_TAG f214739b8832e7f297cb9970d0c0efbf783f1462
-        GIT_SHALLOW OFF)
+    supple_declare(mts-esp)
     FetchContent_MakeAvailable(mts-esp)
     add_library(supple-mts STATIC ${mts-esp_SOURCE_DIR}/Client/libMTSClient.cpp)
     target_include_directories(supple-mts SYSTEM PUBLIC ${mts-esp_SOURCE_DIR}/Client)
@@ -114,36 +222,18 @@ endif()
 # --- pugl, NanoVG, nanovg_metal ------------------------------------------------------------
 
 if (SUPPLE_BUILD_GUI)
-    FetchContent_Declare(pugl
-        GIT_REPOSITORY https://github.com/lv2/pugl.git
-        GIT_TAG b7637149ebe53124e5be90559e02a0185bbcbd73
-        GIT_SHALLOW OFF)
-    FetchContent_Declare(nanovg
-        GIT_REPOSITORY https://github.com/memononen/nanovg.git
-        GIT_TAG ce3bf745eb2d2dbc14a50bf2446783f691ac4353
-        GIT_SHALLOW OFF)
+    supple_declare(pugl)
+    supple_declare(nanovg)
     # SVG for the editor's pictures (gui/Images.h): parsed, never rasterized.
-    FetchContent_Declare(nanosvg
-        GIT_REPOSITORY https://github.com/memononen/nanosvg.git
-        GIT_TAG 239e102ec2c691f2902e20ace2ed36ee4a35cfe6
-        GIT_SHALLOW OFF
-        SOURCE_SUBDIR none)  # header-only here; its own CMake builds nothing we use
+    supple_declare(nanosvg HEADER_ONLY)
     FetchContent_MakeAvailable(pugl nanovg nanosvg)
     # Classes with the same product name may live in both CLAP and VST3
     # modules. NULL selects another module's class; keep creation and cleanup
     # tied to the DLL that registered it, so unloading one cannot strand a
     # window procedure in the other.
-    find_package(Git REQUIRED)
-    supple_apply_patch(${pugl_SOURCE_DIR} ${SUPPLE_FRAMEWORK}/cmake/patches/pugl-win-module-class.patch)
+    supple_apply_patches(pugl)
     if (SUPPLE_METAL)
-        # wjakob's fork rather than ollix/MetalNanoVG (untouched since 2022):
-        # it adds an explicit command queue and target texture, and sizes the
-        # stencil buffer from the render target, which NVG_STENCIL_STROKES
-        # needs. Shaders ship precompiled, so there is no .metal step to own.
-        FetchContent_Declare(nanovg_metal
-            GIT_REPOSITORY https://github.com/wjakob/nanovg_metal.git
-            GIT_TAG 1e4243990741f5b0da73bc0f25c85ae0e31b8766
-            GIT_SHALLOW OFF)
+        supple_declare(nanovg_metal)
         FetchContent_MakeAvailable(nanovg_metal)
     endif()
 

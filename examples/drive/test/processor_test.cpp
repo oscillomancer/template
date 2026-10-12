@@ -18,18 +18,6 @@ namespace {
 
 constexpr double kRate = 48000.0;
 
-// The level of one frequency in a signal, by correlation over whole cycles.
-double levelAt(const test::Signal& s, double hz, int from) {
-    double re = 0.0, im = 0.0;
-    const int n = static_cast<int>(s[0].size()) - from;
-    for (int i = 0; i < n; ++i) {
-        const double phase = 2.0 * dsp::kPi * hz * i / kRate;
-        re += s[0][static_cast<size_t>(from + i)] * std::cos(phase);
-        im += s[0][static_cast<size_t>(from + i)] * std::sin(phase);
-    }
-    return 2.0 * std::hypot(re, im) / n;
-}
-
 }  // namespace
 
 TEST(every_shape_stays_inside_full_scale_and_the_fold_is_the_input_inside_it) {
@@ -73,8 +61,8 @@ TEST(oversampling_keeps_what_the_shaper_adds_from_folding_back) {
         test::RenderOptions o;
         o.initial = {{kShape, 1}, {kDrive, 12.0}, {kQuality, quality}, {kTone, 20000.0}, {kOutput, 0.0}};
         const test::Signal out = test::render(test::sine(2, 48000, 5000.0, kRate, 0.5), o);
-        const double fundamental = levelAt(out, 5000.0, 24000);
-        return std::max(levelAt(out, 3000.0, 24000), levelAt(out, 13000.0, 24000)) / fundamental;
+        const double fundamental = test::toneAmplitude(out[0], 5000.0, kRate, 24000);
+        return std::max(test::toneAmplitude(out[0], 3000.0, kRate, 24000), test::toneAmplitude(out[0], 13000.0, kRate, 24000)) / fundamental;
     };
     const double plain = aliasing(0), eightTimes = aliasing(3);
     std::printf("      worst alias: %.1f dB without oversampling, %.1f dB at 8x\n", 20.0 * std::log10(plain),
@@ -97,7 +85,7 @@ TEST(more_drive_is_more_third_harmonic) {
         test::RenderOptions o;
         o.initial = {{kDrive, drive}};
         const test::Signal out = test::render(test::sine(2, 48000, 1000.0, kRate, 0.25), o);
-        return levelAt(out, 3000.0, 24000) / levelAt(out, 1000.0, 24000);
+        return test::toneAmplitude(out[0], 3000.0, kRate, 24000) / test::toneAmplitude(out[0], 1000.0, kRate, 24000);
     };
     const double low = thirdOverFirst(0.0), high = thirdOverFirst(24.0);
     std::printf("      third harmonic: %.1f dB at no drive, %.1f dB at 24 dB\n", 20.0 * std::log10(low),
