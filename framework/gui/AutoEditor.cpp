@@ -160,7 +160,7 @@ Plan plan() {
 
     // Panels across the editor, wrapping; a row's panels share its height.
     // The meters, if any, stand at the right, as tall as everything else.
-    Group* meters = out.groups.back().meters ? &out.groups.back() : nullptr;
+    Group* meters = !out.groups.empty() && out.groups.back().meters ? &out.groups.back() : nullptr;
     const size_t panels = out.groups.size() - (meters ? 1 : 0);
     const float limit = kMaxWidth - kMargin - (meters ? meters->panel.w + kGap : 0.0f);
     float x = kMargin, y = kHeader + kGap, rowHeight = 0.0f, widest = kMargin;
