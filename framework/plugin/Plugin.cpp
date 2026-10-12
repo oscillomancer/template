@@ -902,6 +902,7 @@ struct Plugin : StateAccess
 
     void playNote(int key, double velocity, bool on) override {
         engine.playNote(key, velocity, on);  // played at the start of the next block
+        if (info::kNoteInput && host && host->request_process) host->request_process(host);
     }
     size_t readAudio(FeedFrame* out, size_t max) override {
         AudioFeed* feed = engine.feed();

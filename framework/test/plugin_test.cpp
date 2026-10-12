@@ -57,7 +57,7 @@ constexpr uint16_t kTuningSpace = 0x2345;  // where this host puts tuning events
 
 struct Host {
     clap_host_t clap{};
-    std::atomic<int> callbacks{0}, restarts{0}, flushRequests{0}, latencyChanges{0}, rescans{0}, tailChanges{0};
+    std::atomic<int> processRequests{0}, callbacks{0}, restarts{0}, flushRequests{0}, latencyChanges{0}, rescans{0}, tailChanges{0};
     std::atomic<int> dirty{0}, presetErrors{0};
     // The last preset the plugin said it loaded (preset-load.loaded).
     uint32_t loadedKind = 99;
@@ -92,7 +92,7 @@ struct Host {
         clap.version = "1";
         clap.get_extension = extension;
         clap.request_restart = [](const clap_host_t* h) { self(h).restarts++; };
-        clap.request_process = [](const clap_host_t*) {};
+        clap.request_process = [](const clap_host_t* h) { self(h).processRequests++; };
         clap.request_callback = [](const clap_host_t* h) {
             self(h).callbacks++;
             self(h).callbackPending = true;
@@ -1219,6 +1219,14 @@ TEST(refused_note_ends_are_retried_at_the_next_blocks_start) {
     if (!out.noteEnds.empty()) CHECK(out.noteEnds[0].header.time == 0 && out.noteEnds[0].note_id == 77);
     a.run(i.plugin, noEvents(), &out);
     CHECK(out.noteEnds.size() == 1);
+}
+
+TEST(the_editors_keyboard_wakes_a_sleeping_host) {
+    Instance i;
+    auto* editor = supple_test_editor_host(i.plugin);
+    if (!editor || !product::info::kNoteInput) return;
+    editor->playNote(60, 0.5, true);
+    CHECK(i.host.processRequests > 0);
 }
 
 TEST(the_editors_keyboard_plays_through_the_plugin_and_ends_its_notes) {

@@ -1470,6 +1470,39 @@ TEST(the_audio_feed_silences_a_disconnected_input_channel) {
     for (const auto& f : frames) CHECK(f.in[0] == 0.0f && f.in[1] == 0.0f);
 }
 
+TEST(editor_note_off_survives_a_full_queue_and_reset_clears_keys) {
+    if (!product::info::kNoteInput) return;
+    class KeyboardProbe : public ProcessorBase<KeyboardProbe> {
+      public:
+        void prepare(const ProcessSetup&, const ParamValues&) {}
+        void update(const ParamValues&) {}
+        void process(Block&) {}
+        void note(const NoteEvent& n) { held = n.type == NoteEvent::Type::On; }
+        bool held = false;
+    };
+    auto e = std::make_unique<BasicEngine<KeyboardProbe>>();
+    e->activate(48000, 512, 2, 2);
+    e->setMetering(true);
+    double l[512]{}, r[512]{};
+    double* io[] = {l, r};
+    for (int i = 0; i < 100; ++i) e->playNote(60, 0.5, true);
+    e->playNote(60, 0, false);
+    e->process<double>(io, io, 512);
+    CHECK(!e->processor().held);
+    e->playNote(64, 0.5, true);
+    e->process<double>(io, io, 512);
+    e->reset();
+    TelemetryFrame frame{};
+    while (e->telemetry().pop(frame)) {}
+    for (int i = 0; i < 8; ++i) e->process<double>(io, io, 512);
+    bool seen = false;
+    while (e->telemetry().pop(frame)) {
+        CHECK(frame.keys[0] == 0 && frame.keys[1] == 0);
+        seen = true;
+    }
+    CHECK(seen);
+}
+
 TEST(the_editors_notes_play_at_the_next_block_and_held_keys_reach_telemetry) {
     auto e = std::make_unique<BasicEngine<SessionProbe>>();
     e->activate(48000.0, 512, 2, 2);

@@ -247,6 +247,7 @@ class BasicEngine {
             glidePointers_[k] = glideBuffer_.data() + k * static_cast<size_t>(maxBlock_);
         }
         editorNotes_.clear();
+        for (auto& off : editorOff_) off.store(0, std::memory_order_relaxed);
         for (auto& k : held_) k = 0;
         if constexpr (P::kAudioFeed) {
             if (!feed_) feed_ = std::make_unique<AudioFeed>();
@@ -321,11 +322,14 @@ class BasicEngine {
     AudioFeed* feed() { return feed_.get(); }
     // Main thread (the editor's keyboard): a note for the processor, played
     // at the start of the next block on port 0, channel 0, with no note ID.
-    // Ignored without note input, and dropped when 64 are already waiting.
+    // A full queue drops new note-ons; refused note-offs have a per-key mailbox.
     void playNote(int key, double velocity, bool on) {
         if constexpr (product::info::kNoteInput) {
             if (key < 0 || key > 127) return;
-            editorNotes_.push({static_cast<int16_t>(key), on, static_cast<float>(std::clamp(velocity, 0.0, 1.0))});
+            const uint64_t bit = uint64_t{1} << (key & 63);
+            if (on && (editorOff_[key >> 6].load(std::memory_order_acquire) & bit)) return;
+            if (!editorNotes_.push({static_cast<int16_t>(key), on, static_cast<float>(std::clamp(velocity, 0.0, 1.0))}) && !on)
+                editorOff_[key >> 6].fetch_or(bit, std::memory_order_release);
         } else {
             (void)key, (void)velocity, (void)on;
         }
@@ -456,6 +460,18 @@ class BasicEngine {
                 note.note.velocity = n.velocity;
                 noteOutput_.setOffset(0);
                 apply(note);
+            }
+            for (int word = 0; word < 2; ++word) {
+                const uint64_t off = editorOff_[word].exchange(0, std::memory_order_acq_rel);
+                for (int key = 0; key < 64; ++key) {
+                    if (!(off & (uint64_t{1} << key))) continue;
+                    EngineEvent note;
+                    note.type = EngineEvent::Type::Note;
+                    note.note.type = NoteEvent::Type::Off;
+                    note.note.key = static_cast<int16_t>(word * 64 + key);
+                    note.note.velocity = 0;
+                    apply(note);
+                }
             }
         }
 
@@ -968,6 +984,7 @@ class BasicEngine {
         float velocity = 1.0f;
     };
     Ring<EditorNote, 6> editorNotes_;
+    std::atomic<uint64_t> editorOff_[2]{};
     uint8_t held_[128]{};
     std::unique_ptr<AudioFeed> feed_;
     std::vector<std::vector<float>> feedIn_;  // [channel][frame]: this split's input
