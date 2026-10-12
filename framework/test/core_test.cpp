@@ -1911,6 +1911,31 @@ TEST(edit_bridge_is_safe_across_threads) {
     consumer.join();
 }
 
+namespace {
+struct ManyProperties {
+    static constexpr size_t kCount = 130, kSlots = kCount;
+    static constexpr PropertyDef at(size_t i) { return property(static_cast<uint32_t>(i), "Text"); }
+};
+}
+
+TEST(activation_drains_more_properties_than_the_retirement_queue_holds) {
+    BasicPropertyStore<ManyProperties> store;
+    for (size_t i = 0; i < ManyProperties::kCount; ++i) CHECK(store.set(i, "new"));
+    size_t seen = 0;
+    store.deliverAll([&](size_t, std::string_view value) {
+        CHECK(value == "new");
+        ++seen;
+    });
+    CHECK(seen == ManyProperties::kCount);
+    for (size_t i = 0; i < ManyProperties::kCount; ++i) CHECK(store.set(i, "next"));
+    seen = 0;
+    store.deliver([&](size_t, std::string_view value) { CHECK(value == "next"); ++seen; });
+    CHECK(seen == 64 && store.needsCollection());
+    store.collect();
+    CHECK(!store.needsCollection());
+    store.deliverAll([&](size_t, std::string_view value) { CHECK(value == "next"); });
+}
+
 // --- file references --------------------------------------------------------------
 
 namespace {

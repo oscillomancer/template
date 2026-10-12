@@ -641,6 +641,7 @@ struct Plugin : StateAccess
     // After the engine ran (audio thread, or main thread while inactive).
     // `frames` is the block length, 0 for a flush.
     void afterAudioWork(const clap_output_events_t* out, uint32_t frames) {
+        if (engine.properties().needsCollection()) requestCallback();
         if (engine.takeRestartRequest()) {
             restartWanted.store(true, std::memory_order_release);
             requestCallback();

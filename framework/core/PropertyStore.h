@@ -24,24 +24,25 @@
 
 namespace supple {
 
-class PropertyStore {
+template <class Table = PropertyTable>
+class BasicPropertyStore {
   public:
-    PropertyStore() {
-        for (size_t i = 0; i < properties::kCount; ++i) {
-            main_[i] = properties::at(i).def;
+    BasicPropertyStore() {
+        for (size_t i = 0; i < Table::kCount; ++i) {
+            main_[i] = Table::at(i).def;
             current_[i] = new std::string(main_[i]);
             pending_[i].store(nullptr, std::memory_order_relaxed);
         }
     }
-    ~PropertyStore() {
+    ~BasicPropertyStore() {
         collect();
-        for (size_t i = 0; i < properties::kCount; ++i) {
+        for (size_t i = 0; i < Table::kCount; ++i) {
             delete current_[i];
             delete pending_[i].exchange(nullptr, std::memory_order_acq_rel);
         }
     }
-    PropertyStore(const PropertyStore&) = delete;
-    PropertyStore& operator=(const PropertyStore&) = delete;
+    BasicPropertyStore(const BasicPropertyStore&) = delete;
+    BasicPropertyStore& operator=(const BasicPropertyStore&) = delete;
 
     // --- main thread -------------------------------------------------------------
 
@@ -50,7 +51,7 @@ class PropertyStore {
     // False, and nothing changes, when the value is longer than the
     // property's limit. Setting the value it already has does nothing.
     bool set(size_t index, std::string_view value) {
-        if (index >= properties::kCount || !properties::accepts(index, value)) return false;
+        if (index >= Table::kCount || value.size() > Table::at(index).limit) return false;
         collect();
         if (main_[index] == value) return true;
         main_[index].assign(value.data(), value.size());
@@ -60,7 +61,7 @@ class PropertyStore {
     }
 
     void resetToDefaults() {
-        for (size_t i = 0; i < properties::kCount; ++i) set(i, properties::at(i).def);
+        for (size_t i = 0; i < Table::kCount; ++i) set(i, Table::at(i).def);
     }
 
     // Changes with every value set, for an editor deciding whether to repaint.
@@ -78,7 +79,7 @@ class PropertyStore {
     // fn(index, value) for each.
     template <class Fn>
     void deliver(Fn&& fn) {
-        for (size_t i = 0; i < properties::kCount; ++i) {
+        for (size_t i = 0; i < Table::kCount; ++i) {
             if (!pending_[i].load(std::memory_order_relaxed) || !retired_.writable()) continue;
             std::string* fresh = pending_[i].exchange(nullptr, std::memory_order_acq_rel);
             if (!fresh) continue;
@@ -88,19 +89,31 @@ class PropertyStore {
         }
     }
 
-    // Every value, whether or not it changed: after prepare().
+    // Audio-thread producer: a callback must let the main thread collect.
+    bool needsCollection() const { return !retired_.writable(); }
+
+    // Every value after prepare(), with the audio thread stopped. Drain all
+    // mailboxes directly: a bounded retirement queue must not delay activation.
     template <class Fn>
     void deliverAll(Fn&& fn) {
-        deliver([](size_t, std::string_view) {});
-        for (size_t i = 0; i < properties::kCount; ++i) fn(i, std::string_view(*current_[i]));
+        collect();
+        for (size_t i = 0; i < Table::kCount; ++i) {
+            if (auto* fresh = pending_[i].exchange(nullptr, std::memory_order_acq_rel)) {
+                delete current_[i];
+                current_[i] = fresh;
+            }
+            fn(i, std::string_view(*current_[i]));
+        }
     }
 
   private:
-    std::string main_[properties::kSlots];
-    std::string* current_[properties::kSlots] = {};
-    std::atomic<std::string*> pending_[properties::kSlots];
+    std::string main_[Table::kSlots];
+    std::string* current_[Table::kSlots] = {};
+    std::atomic<std::string*> pending_[Table::kSlots];
     Ring<std::string*, 6> retired_;
     std::atomic<uint64_t> version_{0};
 };
+
+using PropertyStore = BasicPropertyStore<>;
 
 }  // namespace supple
