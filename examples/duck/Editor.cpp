@@ -40,7 +40,7 @@ Editor::Editor(EditorHost& host) : EditorBase(host, kTheme, kEditorWidth, kEdito
 std::unique_ptr<EditorBase> createEditor(EditorHost& host) { return std::make_unique<Editor>(host); }
 
 void Editor::onTelemetry(const supple::TelemetryFrame& frame) {
-    reduction_.push(static_cast<float>(plain(kReduction)));
+    reduction_.push(static_cast<float>(supple::dsp::gainToDb(frame.product.gain, -60.0)));
     const float db = static_cast<float>(supple::dsp::gainToDb(frame.product.key, -120.0));
     if (std::fabs(db - keyDb_) > 0.25f && (db > kFloorDb || keyDb_ > kFloorDb)) {
         keyDb_ = db;
@@ -121,14 +121,33 @@ void Editor::paint(NVGcontext* vg) {
     w::reductionMeter(vg, t, {kOutputPanel.x + 62, kOutputPanel.y + 57, 10, 151}, static_cast<float>(plain(kReduction)));
 
     // The last seconds: what came in (faint), what went out, and the
-    // reduction between them, from the audio feed and the output parameter.
+    // reduction between them, from the audio feed and each telemetry frame.
     w::panel(vg, t, kHistoryPanel, "History");
     const Rect graph = panelBody(kHistoryPanel, true, 16.0f);
     w::well(vg, t, graph.inset(-2.0f), 4.0f);
     const double rate = host().sampleRate() > 0.0 ? host().sampleRate() : 48000.0;
-    w::waveform(vg, graph, audio(), Signal::input(), kHistorySeconds, rate, rgba(t.textMuted, 0.35f));
-    w::waveform(vg, graph, audio(), Signal::output(), kHistorySeconds, rate, rgba(t.accent2, 0.8f));
-    w::trace(vg, graph, reduction_, Axis::linear(-24.0, 0.0, graph.bottom(), graph.y), rgb(t.accent), 1.5f);
+    const double span = std::min(kHistorySeconds, static_cast<double>(AudioHistory::kFrames - 1) / rate);
+    w::waveform(vg, graph, audio(), Signal::input(), span, rate, rgba(t.textMuted, 0.35f));
+    w::waveform(vg, graph, audio(), Signal::output(), span, rate, rgba(t.accent2, 0.8f));
+    const Axis reductionDb = Axis::linear(-24.0, 0.0, graph.bottom(), graph.y);
+    const double oldest = std::min(span * Processor::kTelemetryHz, static_cast<double>(reduction_.size() - 1));
+    nvgSave(vg);
+    nvgScissor(vg, graph.x, graph.y, graph.w, graph.h);
+    nvgBeginPath(vg);
+    for (size_t k = 0; k <= static_cast<size_t>(std::ceil(oldest)); ++k) {
+        const double age = std::max(0.0, oldest - static_cast<double>(k));
+        const size_t frame = static_cast<size_t>(age);
+        const float value = reduction_.at(frame) + (reduction_.at(frame + 1) - reduction_.at(frame)) *
+            static_cast<float>(age - static_cast<double>(frame));
+        const float x = graph.right() - graph.w * static_cast<float>(age / oldest);
+        if (k == 0) nvgMoveTo(vg, x, reductionDb.clamped(value));
+        else nvgLineTo(vg, x, reductionDb.clamped(value));
+    }
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStrokeColor(vg, rgb(t.accent));
+    nvgStrokeWidth(vg, 1.5f);
+    nvgStroke(vg);
+    nvgRestore(vg);
     w::caption(vg, graph.right(), kHistoryPanel.y + 18, "IN   OUT   REDUCTION", rgb(t.textFaint), w::Align::Right, 8.5f);
     w::caption(vg, kOutputPanel.x + 124, kOutputPanel.y + 64, "MAIN + DUCKED", rgb(t.textFaint), w::Align::Center, 8.5f);
     w::caption(vg, kOutputPanel.x + 124, kOutputPanel.y + 80, "= INPUT", rgb(t.textFaint), w::Align::Center, 8.5f);

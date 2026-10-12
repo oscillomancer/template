@@ -156,7 +156,8 @@ struct MockHost : EditorHost, StateAccess {
 
     bool popTelemetry(TelemetryFrame& f) override { return ring.pop(f); }
     int latencySamples() const override { return 0; }
-    double sampleRate() const override { return 48000.0; }
+    double rate = 48000.0;
+    double sampleRate() const override { return rate; }
 
     // One gesture at a time; two parameters in it at most (an XY pad).
     bool clean() const { return !nested && !strayEnd && !valueOutsideGesture && maxOpen <= 2 && !strayNoteOff; }
@@ -1486,6 +1487,49 @@ TEST(custom_pointer_hooks_preserve_gestures_and_respect_overlays) {
     editor.key(key::kEscape, 0);
     editor.pointerMove(400, 300, 0);
     CHECK(editor.moves == 1 && host.clean());
+}
+
+namespace {
+template<class ProductTelemetry>
+void checkGainHistory() {
+    if constexpr (requires(ProductTelemetry t) { t.key; t.gain; }) {
+        MockHost host;
+        host.rate = 192000.0;
+        auto editor = product::createEditor(host);
+        uint64_t hash = 0;
+        NVGcontext* vg = test::createHeadlessCanvas(&hash);
+        CHECK(editor->attach(vg));
+        auto draw = [&] {
+            hash = 0;
+            nvgBeginFrame(vg, editor->width(), editor->height(), 1);
+            editor->render(vg);
+            nvgEndFrame(vg);
+            return hash;
+        };
+        TelemetryFrame frame{};
+        ProductTelemetry first{};
+        first.gain = 1.0f;
+        frame.product = first;
+        editor->onTelemetry(frame);
+        const uint64_t before = draw();
+        first.gain = 0.25f;
+        frame.product = first;
+        editor->onTelemetry(frame);
+        CHECK(draw() != before);  // host output values are unchanged
+        first.gain = 1.0f;
+        frame.product = first;
+        for (int i = 0; i < 60; ++i) editor->onTelemetry(frame);
+        // At 192 kHz the audio history holds less than a second: reduction
+        // from a second ago must have scrolled off the same graph.
+        CHECK(draw() == before);
+        editor->detach();
+        nvgDeleteInternal(vg);
+    }
+}
+}  // namespace
+
+TEST(gain_history_uses_each_telemetry_frame) {
+    checkGainHistory<decltype(TelemetryFrame{}.product)>();
 }
 
 TEST(the_last_meter_frame_repaints_before_the_editor_idles) {
