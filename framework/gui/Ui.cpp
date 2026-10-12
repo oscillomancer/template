@@ -908,7 +908,7 @@ bool Ui::pointerMove(float x, float y, uint32_t mods) {
         hideTooltip();
         const Control* c = h >= 0 ? &controls_[static_cast<size_t>(h)] : nullptr;
         const ParamDef* p = h >= 0 ? def(h) : nullptr;
-        tooltipArmed_ = c && (c->tooltip || (p && p->description));
+        tooltipArmed_ = c && (c->tooltip || c->widget == Widget::File || (p && p->description));
         tooltipWait_ = 0.0;
     }
     if (h != hover_ || part != hoverPart_) {
@@ -1043,7 +1043,7 @@ bool Ui::key(uint32_t code, uint32_t mods) {
             if (enter) openTextEdit(i);
             return enter;
         case Widget::File:
-            if (enter || code == key::kSpace) chooseFile(i);
+            if (enter) chooseFile(i);
             else if (code == key::kDelete || code == key::kBackspace) host_.setProperty(c.param, "");
             else return false;
             return true;

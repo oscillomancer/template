@@ -690,6 +690,8 @@ TEST(a_file_slot_chooses_takes_drops_clears_and_shows_its_state) {
     CHECK(ui.pointerDown(100, 35, 0, 0, false));
     ui.pointerUp(100, 35, 0, 0);
     CHECK(dialogs.opened == 1);
+    CHECK(!ui.key(key::kSpace, 0));
+    CHECK(dialogs.opened == 1);  // Space belongs to the host transport
     CHECK(dialogs.last.title.find(p.name) != std::string::npos);
     std::string offered;
     for (const std::string& e : dialogs.last.extensions) offered += (offered.empty() ? "" : " ") + e.substr(1);
@@ -698,6 +700,11 @@ TEST(a_file_slot_chooses_takes_drops_clears_and_shows_its_state) {
     CHECK(host.property(p.id) == "/some/where/ir.wav");
     dialogs.done({});  // cancelled: nothing changes
     CHECK(host.property(p.id) == "/some/where/ir.wav");
+    ui.pointerMove(100, 35, 0);
+    ui.idle(Ui::kTooltipSeconds + 0.01);
+    CHECK(ui.tooltip().open && ui.tooltip().text == "/some/where/ir.wav");
+    ui.pointerLeave();
+    CHECK(!ui.tooltip().open);
     // A drop takes the first file it accepts, over the slot only.
     const bool picky = *p.extensions != 0;
     if (picky) CHECK(ui.fileSlotAt(100, 35, {"/x/notes.txt.unknown"}) < 0);
