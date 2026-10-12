@@ -26,6 +26,10 @@
 #include "plugin/EditBridge.h"
 #include "ProductInfo.h"
 
+#define main renderCliMain
+#include "../tools/render_cli.cpp"
+#undef main
+
 using namespace supple;
 
 namespace {
@@ -45,7 +49,21 @@ double parsed(const ParamDef& p, const char* s, bool* ok = nullptr) {
 
 }  // namespace
 
+TEST(the_renderer_rejects_restart_parameter_automation) {
+    if (!product::info::kAudioOutput) return;
+    for (size_t i = 0; i < params::kCount; ++i) {
+        const auto& p = params::at(i);
+        if (!p.is(pflag::kRestart)) continue;
+        std::string assignment = std::string(p.name) + "=" + text(p, hostDefault(p));
+        char program[] = "render-cli", input[] = "nonexistent-input.wav", output[] = "unused.wav";
+        char at[] = "--at", zero[] = "0";
+        char* argv[] = {program, input, output, at, zero, assignment.data()};
+        CHECK(renderCliMain(6, argv) == 2);
+    }
+}
+
 // --- parameter text -------------------------------------------------------------
+
 
 TEST(frequency_text_switches_units_where_the_rounded_value_does) {
     const ParamDef f = frequency(0, "F", 20.0, 20000.0, 1000.0);
@@ -918,6 +936,7 @@ void glide(BasicEngine<GlideProbe>& e, std::vector<int> blocks, int frames, int 
 }
 
 }  // namespace
+
 
 TEST(smoothed_parameters_glide_sample_accurately_and_settle_exactly) {
     if (params::kSmoothedCount == 0) {
