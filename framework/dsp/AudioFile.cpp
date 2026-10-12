@@ -94,8 +94,11 @@ uint64_t AudioReader::frames() const {
 }
 size_t AudioReader::read(float* interleaved, size_t frames) {
     if (!decoder_) return 0;
-    return static_cast<size_t>(decoder_->isWav ? drwav_read_pcm_frames_f32(&decoder_->wav, frames, interleaved)
-                                               : drflac_read_pcm_frames_f32(decoder_->flac, frames, interleaved));
+    const size_t read = static_cast<size_t>(decoder_->isWav ? drwav_read_pcm_frames_f32(&decoder_->wav, frames, interleaved)
+                                                          : drflac_read_pcm_frames_f32(decoder_->flac, frames, interleaved));
+    for (size_t n = 0; n < read * static_cast<size_t>(channels()); ++n)
+        if (!std::isfinite(interleaved[n])) interleaved[n] = 0.0f;
+    return read;
 }
 bool AudioReader::seek(uint64_t frame) {
     if (!decoder_) return false;

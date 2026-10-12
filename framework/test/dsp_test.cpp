@@ -1095,6 +1095,24 @@ const unsigned char kRampFlac[] = {
 };
 }  // namespace
 
+TEST(float_file_non_finite_samples_become_zero_in_loads_and_streams) {
+    const auto path = scratchFolder("nonfinite-file") / "float.wav";
+    AudioData input;
+    input.sampleRate = kRate;
+    input.channel = {{0.25f, std::numeric_limits<float>::infinity(),
+                      -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN(), -0.5f}};
+    CHECK(saveWavFile(path.string(), input));
+    AudioData output;
+    CHECK(loadAudioFile(path.string(), output));
+    CHECK(output.channel[0] == std::vector<float>({0.25f, 0.0f, 0.0f, 0.0f, -0.5f}));
+    DiskStream stream;
+    CHECK(stream.open(path.string()));
+    double samples[5] = {};
+    double* channels[] = {samples};
+    CHECK(stream.read(channels, 1, 5) == 5);
+    for (size_t n = 0; n < 5; ++n) CHECK(samples[n] == output.channel[0][n]);
+}
+
 TEST(unknown_length_flac_loads_whole_but_is_refused_for_streaming) {
     const auto path = scratchFolder("unknown-length") / "unknown.flac";
     std::vector<unsigned char> bytes(std::begin(kRampFlac), std::end(kRampFlac));
