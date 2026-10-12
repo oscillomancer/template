@@ -482,6 +482,17 @@ double difference(const Rendered& x, const Rendered& y) {
     return d;
 }
 
+// A reused instance also retires notes from before reset. They precede the
+// fresh render's events at frame zero; all subsequent output must match.
+double differenceAfterReset(Rendered reused, const Rendered& fresh) {
+    if (reused.sent.size() < fresh.sent.size()) return INFINITY;
+    const size_t retired = reused.sent.size() - fresh.sent.size();
+    for (size_t i = 0; i < retired; ++i)
+        if (reused.sent[i].frame != 0 || reused.sent[i].kind != NoteOutput::Kind::End) return INFINITY;
+    reused.sent.erase(reused.sent.begin(), reused.sent.begin() + static_cast<std::ptrdiff_t>(retired));
+    return difference(reused, fresh);
+}
+
 }  // namespace
 
 TEST(output_is_independent_of_host_block_size_under_automation) {
@@ -811,7 +822,7 @@ TEST(reset_preserves_parameters_and_clears_history) {
     test::RenderOptions carryOn = after;
     carryOn.activate = false;
     const Rendered a = renderAll(probe, carryOn, used.get()), b = renderAll(probe, after);
-    CHECK_NEAR(difference(a, b), 0.0, 1e-12);
+    CHECK_NEAR(differenceAfterReset(a, b), 0.0, 1e-12);
 }
 
 TEST(after_reset_output_depends_only_on_the_state) {
@@ -853,7 +864,7 @@ TEST(after_reset_output_depends_only_on_the_state) {
         auto fresh = std::make_unique<Engine>();
         for (size_t i = 0; i < params::kCount; ++i) fresh->store().set(i, second[i]);
         const Rendered y = renderAll(probe, next, fresh.get());
-        CHECK_MSG(difference(x, y) == 0.0, "trial %d differs by %g", trial, difference(x, y));
+        CHECK_MSG(differenceAfterReset(x, y) == 0.0, "trial %d differs by %g", trial, differenceAfterReset(x, y));
     }
 }
 
