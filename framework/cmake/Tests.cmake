@@ -14,6 +14,10 @@ endfunction()
 
 # --- SDK-free -----------------------------------------------------------------------------
 
+add_test(NAME sanitizer-config
+    COMMAND ${CMAKE_COMMAND} -DFRAMEWORK=${SUPPLE_FRAMEWORK}
+        -P ${SUPPLE_FRAMEWORK}/cmake/test/Sanitizer.cmake)
+
 add_test(NAME new-product
     COMMAND ${CMAKE_COMMAND} -DFRAMEWORK=${SUPPLE_FRAMEWORK}
         -DWORK=${CMAKE_BINARY_DIR}/new-product-test
