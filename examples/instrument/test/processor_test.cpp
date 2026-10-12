@@ -333,6 +333,25 @@ TEST(the_offline_triangle_keeps_its_level_at_sub_hertz_pitches) {
     CHECK_NEAR(out[0][0] * 96.0, -1.0, 1e-5);
 }
 
+TEST(mode_changes_retire_stacked_keys_at_the_automation_frame) {
+    test::RenderOptions o;
+    o.initial = {{kMode, 1.0}, {kRelease, 5.0}};
+    o.blocks = {64};
+    o.events = {test::noteOn(0, 60, 1.0, 1), test::noteOn(1, 64, 1.0, 2)};
+    o.automation = {{100, kMode, 0.0}};
+    std::vector<test::Sent> sent;
+    o.sent = &sent;
+    test::render(test::silence(2, 1024), o);
+    int ended = 0;
+    for (const auto& event : sent) {
+        if (event.kind != NoteOutput::Kind::End) continue;
+        ++ended;
+        if (event.note.noteId == 1) CHECK(event.frame == 100);
+        else CHECK(event.frame >= 100 && event.frame <= 340);
+    }
+    CHECK(ended == 2);
+}
+
 TEST(extreme_negative_tuning_finishes_offline_with_finite_audio) {
     test::RenderOptions o;
     o.offline = true;

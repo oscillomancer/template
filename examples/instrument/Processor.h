@@ -78,6 +78,7 @@ class Processor : public supple::ProcessorBase<Processor> {
     }
 
     void update(const supple::ParamValues& v) {
+        frame_ = 0;  // mode changes retire stacked notes at this update
         level_.set(supple::dsp::dbToGain(v[kLevel]), v.initial());
         levelDb_ = v[kLevel];
         waveform_ = v.choice(kWaveform);
