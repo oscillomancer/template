@@ -50,8 +50,9 @@ bool writeFile(const fs::path& file, const std::vector<uint8_t>& bytes) {
     }
     std::error_code ec;
     fs::rename(temp, file, ec);
-    if (ec) fs::remove(temp, ec);
-    return !ec;
+    if (!ec) return true;
+    fs::remove(temp, ec);
+    return false;
 }
 
 bool ours(const fs::path& file) {

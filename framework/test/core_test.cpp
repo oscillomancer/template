@@ -1545,6 +1545,21 @@ TEST(user_presets_save_load_rename_and_delete) {
     if (presets::kFactoryCount > 0) CHECK(!lib.rename(0, "Mine") && !lib.remove(0));
 }
 
+TEST(a_failed_preset_rename_is_not_reported_as_a_success) {
+    TempFolder folder;
+    MemoryState st;
+    PresetLibrary lib(st, folder.path);
+    const auto target = folder.path / "Blocked.preset";
+    std::filesystem::create_directories(target);
+    std::ofstream(target / "keep") << "keep";
+    st.host[settable()] = otherValue(settable());
+    CHECK(!lib.exportFile(target));
+    CHECK(lib.save("Blocked", true) == PresetLibrary::SaveResult::Failed);
+    CHECK(lib.currentName() == "Default" && lib.modified());
+    CHECK(std::filesystem::exists(target / "keep"));
+    CHECK(!std::filesystem::exists(folder.path / "Blocked.preset.tmp"));
+}
+
 TEST(a_file_that_is_not_ours_is_not_listed_or_loaded) {
     TempFolder folder;
     std::filesystem::create_directories(folder.path);
