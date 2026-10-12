@@ -285,6 +285,14 @@ if (SUPPLE_BUILD_PLUGIN)
         add_test(NAME auv2-bundle
             COMMAND ${CMAKE_COMMAND} -DBUNDLE=${SUPPLE_ASSETS}/${PRODUCT_NAME}.component
                     -P ${SUPPLE_FRAMEWORK}/cmake/CheckAuBundle.cmake)
+        # Automation on one thread while state loads rescan the parameters on
+        # another; the tsan preset is what makes it a race check.
+        add_executable(au-parameter-race ${SUPPLE_FRAMEWORK}/test/au_parameter_race.cpp)
+        target_link_libraries(au-parameter-race PRIVATE "-framework AudioToolbox" "-framework CoreFoundation")
+        supple_defaults(au-parameter-race)
+        add_dependencies(au-parameter-race product-plugin_auv2)
+        add_test(NAME auv2-parameter-race
+            COMMAND au-parameter-race ${SUPPLE_ASSETS}/${PRODUCT_NAME}.component)
     endif()
 
     # free-audio/clap-validator, when installed (cargo install --git
