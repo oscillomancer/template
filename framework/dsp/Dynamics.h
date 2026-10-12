@@ -186,7 +186,7 @@ class Lookahead {
 // sample rate.
 class TruePeak {
   public:
-    static constexpr int kFactor = 4, kTaps = 16;  // per phase
+    static constexpr int kFactor = 4, kTaps = 40;  // per phase
     struct State {
         double history[kTaps] = {};
         int write = 0;
@@ -194,17 +194,19 @@ class TruePeak {
 
     // Designs the interpolator once, allocating at construction, off the audio thread.
     TruePeak() {
-        const std::vector<double> h = lowpassKernel(kFactor * kTaps, 0.5 / kFactor * 0.92, 70.0);
+        const std::vector<double> h = lowpassKernel(kFactor * kTaps, 0.5 / kFactor, 70.0);
         for (int p = 0; p < kFactor; ++p)
             for (int k = 0; k < kTaps; ++k) phase_[p][k] = kFactor * h[static_cast<size_t>(k * kFactor + p)];
     }
 
     // The largest magnitude among the four interpolated points this sample
-    // adds.
+    // adds, or the current sample peak, whichever is larger. The interpolator
+    // has 19.875 input samples of delay (160 taps at 4x); the sample floor
+    // is immediate. There is no delay imposed on the audio signal.
     double tick(State& s, double x) const {
         s.history[s.write] = x;
         s.write = (s.write + 1) % kTaps;
-        double peak = 0.0;
+        double peak = std::fabs(x);
         for (int p = 0; p < kFactor; ++p) {
             double y = 0.0;
             for (int k = 0; k < kTaps; ++k) y += phase_[p][k] * s.history[(s.write + kTaps - 1 - k) % kTaps];

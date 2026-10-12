@@ -277,6 +277,27 @@ TEST(true_peak_finds_the_peak_between_samples) {
     CHECK_NEAR(db(p), db(0.5), 0.1);
 }
 
+TEST(true_peak_keeps_sample_peaks_and_measures_the_high_band_at_every_phase) {
+    TruePeak meter;
+    double worst = 0.0;
+    for (int f = 1; f <= 91; ++f) {
+        const double frequency = 0.005 * f;
+        for (int phase = 0; phase < 32; ++phase) {
+            TruePeak::State state;
+            double peak = 0.0;
+            for (int n = 0; n < 1080; ++n) {
+                const double x = std::sin(2.0 * kPi * (frequency * n + phase / 32.0));
+                const double p = meter.tick(state, x);
+                CHECK(p >= std::fabs(x));
+                if (n >= 80) peak = std::max(peak, p);
+            }
+            worst = std::min(worst, db(peak));
+            CHECK_MSG(db(peak) >= -0.5, "f/fs %.3f phase %d: %.3f dB", frequency, phase, db(peak));
+        }
+    }
+    std::printf("      worst true peak under-read %.3f dB through 0.455 fs\n", worst);
+}
+
 // --- oversampling ---------------------------------------------------------------------
 
 TEST(linear_phase_oversampling_is_a_pure_delay_in_the_passband) {
