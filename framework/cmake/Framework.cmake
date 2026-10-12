@@ -217,10 +217,18 @@ list(APPEND asset_sources ${asset_out}/supple_assets.c)
 add_library(product-assets STATIC ${asset_sources})
 supple_vendored(product-assets)
 
-# Everything SDK-free: parameters, the engine, the product's DSP.
+# Everything SDK-free: parameters, the engine, the product's DSP. A product
+# with tables makes its Definition from them (core/ProductDefinition.cpp); a
+# run-time product makes its own, through its catalog (core/Catalog.h).
+set(product_definition_sources ${SUPPLE_FRAMEWORK}/core/ProductDefinition.cpp)
+if (PRODUCT_RUNTIME)
+    set(product_definition_sources)
+endif()
 add_library(product-core STATIC ${SUPPLE_FRAMEWORK}/core/Param.cpp ${SUPPLE_FRAMEWORK}/core/PresetLibrary.cpp
+    ${SUPPLE_FRAMEWORK}/core/Definition.cpp ${SUPPLE_FRAMEWORK}/core/Catalog.cpp ${product_definition_sources}
     ${SUPPLE_FRAMEWORK}/core/Files.cpp ${SUPPLE_FRAMEWORK}/dsp/AudioFile.cpp ${product_dsp_sources})
 target_include_directories(product-core PUBLIC ${SUPPLE_FRAMEWORK} ${SUPPLE_PRODUCT} ${SUPPLE_GENERATED})
+target_compile_definitions(product-core PUBLIC SUPPLE_PRODUCT_RUNTIME=$<BOOL:${PRODUCT_RUNTIME}>)
 find_package(Threads REQUIRED)
 target_link_libraries(product-core PUBLIC product-assets supple-drlibs Threads::Threads)
 supple_defaults(product-core)

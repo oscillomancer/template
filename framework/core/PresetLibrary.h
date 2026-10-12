@@ -53,9 +53,14 @@ class PresetLibrary {
     };
 
     // An empty folder means no user presets (the platform folder could not
-    // be found).
-    PresetLibrary(StateAccess& state, std::filesystem::path userFolder);
+    // be found). The factory presets, the state tag and the names are the
+    // definition's.
+    PresetLibrary(StateAccess& state, std::filesystem::path userFolder,
+                  DefinitionPtr definition = productDefinition());
 
+    // The platform's folder for this plugin's presets.
+    static std::filesystem::path defaultUserFolder(const PluginInfo& info);
+    // A product with tables: its own.
     static std::filesystem::path defaultUserFolder();
     static std::filesystem::path fromUtf8(std::string_view text);
     static std::string toUtf8(const std::filesystem::path& path);
@@ -132,10 +137,12 @@ class PresetLibrary {
     int findEntry(std::string_view name, bool user) const;
     Slot capture();
     std::filesystem::path fileFor(std::string_view name) const;
-    static std::vector<uint8_t> factoryBlob(size_t index);
-    static std::vector<uint8_t> defaultsBlob();
+    std::vector<uint8_t> factoryBlob(size_t index) const;
+    std::vector<uint8_t> defaultsBlob() const;
 
     StateAccess& state_;
+    DefinitionPtr definition_;
+    uint32_t magic_;
     std::filesystem::path folder_;
     std::vector<Entry> entries_;
     uint64_t revision_ = 0;
