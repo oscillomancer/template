@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Supple Audio
 //
-// The AU as a host runs it, in this process: automation on one thread
-// (AudioUnitSetParameter) while state loads on another (ClassInfo), and every
-// state load makes the plugin rescan its parameters' values. A host may do
-// both at once. Under the tsan preset, ThreadSanitizer reports any access the
-// two make to the same memory without ordering, whether or not they collide
-// in this run.
+// The AU as a host runs it, in this process: rendering on one thread,
+// automation (AudioUnitSetParameter) on two more, and state loads
+// (ClassInfo) on the main thread, each of which makes the plugin rescan its
+// parameters' values. A host may do all of it at once. Under the tsan
+// preset, ThreadSanitizer reports any access two of them make to the same
+// memory without ordering, whether or not they collide in this run.
 //
 //   au-parameter-race <Product.component>
 //
@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -25,6 +26,14 @@
 namespace {
 
 int failures = 0;
+
+OSStatus silence(void*, AudioUnitRenderActionFlags* flags, const AudioTimeStamp*, UInt32, UInt32,
+                 AudioBufferList* io) {
+    for (UInt32 b = 0; b < io->mNumberBuffers; ++b)
+        if (io->mBuffers[b].mData) std::memset(io->mBuffers[b].mData, 0, io->mBuffers[b].mDataByteSize);
+    *flags |= kAudioUnitRenderAction_OutputIsSilence;
+    return noErr;
+}
 
 void check(bool ok, const char* what) {
     std::printf("  %-56s %s\n", what, ok ? "ok" : "FAIL");
@@ -81,20 +90,39 @@ int main(int argc, char** argv) {
     AudioComponentInstance unit = nullptr;
     check(component && AudioComponentInstanceNew(component, &unit) == noErr && unit, "an instance is made");
     if (!unit) return 1;
+    // Its inputs, a sidechain too, are silence. A note effect has no audio.
+    UInt32 inputs = 0, outputs = 0;
+    UInt32 size = sizeof(inputs);
+    AudioUnitGetProperty(unit, kAudioUnitProperty_ElementCount, kAudioUnitScope_Input, 0, &inputs, &size);
+    size = sizeof(outputs);
+    AudioUnitGetProperty(unit, kAudioUnitProperty_ElementCount, kAudioUnitScope_Output, 0, &outputs, &size);
+    for (UInt32 bus = 0; bus < inputs; ++bus) {
+        AURenderCallbackStruct callback{silence, nullptr};
+        AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, bus, &callback,
+                             sizeof(callback));
+    }
     check(AudioUnitInitialize(unit) == noErr, "it initialises");
+    AudioStreamBasicDescription format{};
+    size = sizeof(format);
+    AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &format, &size);
+    const UInt32 channels = format.mChannelsPerFrame ? format.mChannelsPerFrame : 2;
 
-    // A parameter to automate, and its range.
-    UInt32 size = 0;
+    // Its parameters.
+    size = 0;
     AudioUnitGetPropertyInfo(unit, kAudioUnitProperty_ParameterList, kAudioUnitScope_Global, 0, &size, nullptr);
     std::vector<AudioUnitParameterID> ids(size / sizeof(AudioUnitParameterID));
     if (!ids.empty())
         AudioUnitGetProperty(unit, kAudioUnitProperty_ParameterList, kAudioUnitScope_Global, 0, ids.data(), &size);
     check(!ids.empty(), "it lists parameters");
     if (ids.empty()) return 1;
-    AudioUnitParameterInfo info{};
-    size = sizeof(info);
-    AudioUnitGetProperty(unit, kAudioUnitProperty_ParameterInfo, kAudioUnitScope_Global, ids[0], &info, &size);
-    if (info.cfNameString && (info.flags & kAudioUnitParameterFlag_CFNameRelease)) CFRelease(info.cfNameString);
+    // Each one's range, to automate it across.
+    std::vector<AudioUnitParameterInfo> infos(ids.size());
+    for (size_t i = 0; i < ids.size(); ++i) {
+        size = sizeof(infos[i]);
+        AudioUnitGetProperty(unit, kAudioUnitProperty_ParameterInfo, kAudioUnitScope_Global, ids[i], &infos[i], &size);
+        if (infos[i].cfNameString && (infos[i].flags & kAudioUnitParameterFlag_CFNameRelease))
+            CFRelease(infos[i].cfNameString);
+    }
 
     CFPropertyListRef state = nullptr;
     size = sizeof(state);
@@ -104,17 +132,38 @@ int main(int argc, char** argv) {
           "its state saves");
     if (!state) return 1;
 
-    // Automation, as fast as it goes, until the loads are done.
+    // Rendering and automation, as fast as they go, until the loads are done.
     std::atomic<bool> stop{false};
-    std::atomic<long> sets{0};
-    std::thread automation([&] {
-        for (long n = 0; !stop.load(std::memory_order_relaxed); ++n) {
-            AudioUnitSetParameter(unit, ids[0], kAudioUnitScope_Global, 0, (n & 1) ? info.maxValue : info.minValue, 0);
-            sets.fetch_add(1, std::memory_order_relaxed);
+    std::atomic<long> sets{0}, blocks{0};
+    std::atomic<bool> rendered{true};
+    std::thread render([&] {
+        constexpr UInt32 frames = 256;
+        std::vector<float> samples(frames * channels);
+        std::vector<uint8_t> listBytes(offsetof(AudioBufferList, mBuffers) + sizeof(AudioBuffer) * channels);
+        auto* list = reinterpret_cast<AudioBufferList*>(listBytes.data());
+        AudioTimeStamp time{};
+        time.mFlags = kAudioTimeStampSampleTimeValid;
+        while (outputs > 0 && !stop.load(std::memory_order_relaxed)) {
+            list->mNumberBuffers = channels;
+            for (UInt32 c = 0; c < channels; ++c)
+                list->mBuffers[c] = {1, static_cast<UInt32>(frames * sizeof(float)), samples.data() + c * frames};
+            AudioUnitRenderActionFlags flags = 0;
+            if (AudioUnitRender(unit, &flags, &time, 0, frames, list) != noErr) rendered = false;
+            time.mSampleTime += frames;
+            blocks.fetch_add(1, std::memory_order_relaxed);
         }
     });
-    // The first sets land before the first load, so the two overlap.
-    while (sets.load() < 100) std::this_thread::yield();
+    auto automate = [&](int phase) {
+        for (long n = phase; !stop.load(std::memory_order_relaxed); ++n) {
+            for (size_t i = 0; i < ids.size(); ++i)
+                AudioUnitSetParameter(unit, ids[i], kAudioUnitScope_Global, 0,
+                                      (n & 1) ? infos[i].maxValue : infos[i].minValue, 0);
+            sets.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    std::thread automation(automate, 0), more(automate, 1);
+    // Everything is under way before the first load, so all of it overlaps.
+    while (sets.load() < 100 || (outputs > 0 && blocks.load() < 10)) std::this_thread::yield();
 
     bool loaded = true;
     for (int i = 0; i < 200; ++i) {
@@ -124,9 +173,12 @@ int main(int argc, char** argv) {
     }
     stop = true;
     automation.join();
+    more.join();
+    render.join();
     check(loaded, "200 state loads, each a parameter rescan");
-    std::printf("     %ld parameter sets alongside them\n", sets.load());
+    std::printf("     %ld rounds of automation and %ld blocks alongside them\n", sets.load(), blocks.load());
     check(sets.load() > 100, "automation ran throughout");
+    if (outputs > 0) check(rendered.load() && blocks.load() > 10, "it rendered throughout");
 
     CFRelease(state);
     AudioUnitUninitialize(unit);
