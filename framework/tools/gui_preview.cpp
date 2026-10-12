@@ -474,9 +474,10 @@ int preview(const char* output, std::vector<std::string> args) {
     Capture capture;
     gui.window().onFrameDrawn = onFrame;
     gui.window().frameUser = &capture;
-    if (!gui.create()) return 1;
+    if (!gui.create()) return std::fprintf(stderr, "the editor could not be created\n"), 1;
     gui.setUserScale(scale);
-    if (!gui.setParent(0) || !gui.show()) return 1;
+    if (!gui.setParent(0)) return std::fprintf(stderr, "the window could not be created\n"), 1;
+    if (!gui.show()) return std::fprintf(stderr, "the window could not be shown\n"), 1;
 
     // X11 maps and exposes asynchronously: pace the wait rather than spin.
     auto pump = [&](int ticks) {
@@ -650,7 +651,13 @@ int main(int argc, char** argv) {
             std::vector<std::string> args = s.args;
             args.insert(args.end(), rest.begin(), rest.end());
             const std::string out = (std::filesystem::path(argv[2]) / (s.name + ".png")).string();
-            const int r = preview(out.c_str(), args);
+            int r = preview(out.c_str(), args);
+            // A virtual display can refuse one window now and then (seen
+            // once under Xvfb on a CI runner): try that scenario again.
+            if (r == 1) {
+                std::fprintf(stderr, "scenario %s: trying again\n", s.name.c_str());
+                r = preview(out.c_str(), args);
+            }
             if (r != 0) {
                 std::fprintf(stderr, "scenario %s failed (%d)\n", s.name.c_str(), r);
                 result = r;

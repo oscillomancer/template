@@ -229,6 +229,7 @@ if (SUPPLE_BUILD_GUI)
     # tied to the DLL that registered it, so unloading one cannot strand a
     # window procedure in the other. And on macOS, a drop lands where the
     # mouse would: pugl passed the window's coordinates through unconverted.
+    # puglRejectOffer, declared everywhere, was only defined for X11.
     supple_apply_patches(pugl)
     if (SUPPLE_METAL)
         supple_declare(nanovg_metal)

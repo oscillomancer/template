@@ -4,6 +4,22 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.15.1
+
+The first CI run since 1.3 found the framework did not build on macOS or
+Windows. What a product must do: nothing.
+
+- macOS and Windows link again: the editor refuses drags and pastes with
+  `puglRejectOffer`, which pugl defined only for X11. A Pugl patch
+  (`pugl-reject-offer`) adds it to both, and on macOS it also clears an
+  earlier acceptance, so a drag that has left a file slot is no longer
+  taken.
+- MSVC builds `Preset` again: it does not implement a braced default for an
+  `std::initializer_list` member.
+- Chord builds with GCC 13 (Ubuntu 24.04), which crashed on its `Chord{}`.
+- `gui-preview` says which step failed when it cannot make its window, and
+  `--all` tries such a scenario once more.
+
 ## 1.15.0
 
 Small fixes, each with the test that would have caught it. What a product

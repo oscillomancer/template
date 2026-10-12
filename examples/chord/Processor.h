@@ -166,7 +166,7 @@ class Processor : public supple::ProcessorBase<Processor> {
     struct Chord {
         bool held = false;
         supple::NoteEvent input{};
-        supple::NoteEvent notes[kMaxNotes]{};
+        supple::NoteEvent notes[kMaxNotes];
         int64_t due[kMaxNotes]{};  // in samples since prepare or reset
         int count = 0, sent = 0;
     };

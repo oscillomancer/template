@@ -47,7 +47,7 @@ struct Preset {
     const char* name;
     const char* category;
     std::initializer_list<PresetValue> values;
-    std::initializer_list<PresetText> texts = {};
+    std::initializer_list<PresetText> texts = std::initializer_list<PresetText>();  // not {}: MSVC refuses it
 };
 
 }  // namespace supple
