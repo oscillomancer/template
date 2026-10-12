@@ -26,6 +26,10 @@
 #include "plugin/EditBridge.h"
 #include "ProductInfo.h"
 
+#define main renderCliMain
+#include "../tools/render_cli.cpp"
+#undef main
+
 using namespace supple;
 
 namespace {
@@ -45,7 +49,35 @@ double parsed(const ParamDef& p, const char* s, bool* ok = nullptr) {
 
 }  // namespace
 
+TEST(the_renderer_rejects_restart_parameter_automation) {
+    if (!product::info::kAudioOutput) return;
+    for (size_t i = 0; i < params::kCount; ++i) {
+        const auto& p = params::at(i);
+        if (!p.is(pflag::kRestart)) continue;
+        std::string assignment = std::string(p.name) + "=" + text(p, hostDefault(p));
+        char program[] = "render-cli", input[] = "nonexistent-input.wav", output[] = "unused.wav";
+        char at[] = "--at", zero[] = "0";
+        char* argv[] = {program, input, output, at, zero, assignment.data()};
+        CHECK(renderCliMain(6, argv) == 2);
+    }
+}
+
 // --- parameter text -------------------------------------------------------------
+
+TEST(signal_differences_never_hide_nonfinite_samples) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (double bad : {nan, double(INFINITY), -double(INFINITY)}) {
+        CHECK(std::isinf(test::maxDifference({{0.0}}, {{bad}})));
+        CHECK(std::isinf(test::maxDifference({{bad}}, {{0.0}})));
+        CHECK(std::isinf(test::maxDifference({{bad}}, {{bad}})));
+    }
+}
+
+TEST(nonautomatable_modifiers_clear_every_modulation_scope) {
+    const auto poly = percent(1, "Level", 50).polyModulatable();
+    for (const auto& p : {poly.notAutomatable(), poly.retired(), poly.output()})
+        CHECK(!p.is(pflag::kAutomatable | pflag::kModulatable | pflag::kPolyMod));
+}
 
 TEST(frequency_text_switches_units_where_the_rounded_value_does) {
     const ParamDef f = frequency(0, "F", 20.0, 20000.0, 1000.0);
@@ -681,6 +713,53 @@ class TransportProbe : public ProcessorBase<TransportProbe> {
 
 }  // namespace
 
+TEST(reset_note_ends_survive_until_the_next_audio_block) {
+    class ResetProbe : public ProcessorBase<ResetProbe> {
+      public:
+        void prepare(const ProcessSetup&, const ParamValues&) {}
+        void update(const ParamValues&) {}
+        void process(Block&) {}
+        void reset() { noteEnded(NoteEvent{}); }
+    };
+    auto e = std::make_unique<BasicEngine<ResetProbe>>();
+    e->activate(48000, 64, 2, 2);
+    double left[64]{}, right[64]{};
+    double* io[] = {left, right};
+    e->process<double>(io, io, 64);
+    e->reset();
+    NoEvents none;
+    e->flush(none);
+    e->process<double>(io, io, 64);
+    CHECK(e->noteOutput().count() == 1);
+    if (e->noteOutput().count()) CHECK(e->noteOutput()[0].time == 0);
+    e->process<double>(io, io, 64);
+    CHECK(e->noteOutput().count() == 0);
+}
+
+TEST(a_store_update_ends_notes_at_the_start_of_the_new_block) {
+    class EndsOnUpdate : public ProcessorBase<EndsOnUpdate> {
+      public:
+        void prepare(const ProcessSetup&, const ParamValues&) {}
+        void update(const ParamValues& v) {
+            if (!v.initial()) noteEnded(NoteEvent{});
+        }
+        void process(Block&) {}
+    };
+    auto e = std::make_unique<BasicEngine<EndsOnUpdate>>();
+    e->activate(48000.0, 64, 2, 2);
+    double left[64]{}, right[64]{};
+    double* io[] = {left, right};
+    e->process<double>(io, io, 64);
+    size_t index = 0;
+    while (index < params::kCount && params::at(index).isOutput()) ++index;
+    if (index == params::kCount) return;
+    const ParamDef& p = params::at(index);
+    e->store().set(index, hostDefault(p) == p.hostMax() ? p.hostMin() : p.hostMax());
+    e->process<double>(io, io, 64);
+    CHECK(e->noteOutput().count() == 1);
+    CHECK(e->noteOutput().count() == 1 && e->noteOutput()[0].time == 0);
+}
+
 TEST(each_split_sees_the_transport_where_it_starts) {
     auto engine = std::make_unique<BasicEngine<TransportProbe>>();
     engine->activate(48000.0, 512, 2, 2);
@@ -822,15 +901,13 @@ namespace {
 // reads it.
 class GlideProbe : public ProcessorBase<GlideProbe> {
   public:
-    static constexpr int kFrames = 64000;
-    GlideProbe() : trace(params::kSmoothedCount, std::vector<double>(kFrames, 0.0)) {}
     void prepare(const ProcessSetup&, const ParamValues&) {}
     void update(const ParamValues&) {}
     void process(Block& b) {
         for (size_t k = 0; k < params::kSmoothedCount; ++k) {
             const uint32_t id = params::at(params::kSmoothedIndices[k]).id;
             const double* v = b.smoothed(id);
-            for (int i = 0; i < b.frames && at + i < kFrames; ++i) trace[k][static_cast<size_t>(at + i)] = v[i];
+            for (int i = 0; i < b.frames && static_cast<size_t>(at + i) < trace[k].size(); ++i) trace[k][static_cast<size_t>(at + i)] = v[i];
             if (!b.gliding(id))
                 for (int i = 1; i < b.frames; ++i) constantLied |= v[i] != v[0];
         }
@@ -843,7 +920,8 @@ class GlideProbe : public ProcessorBase<GlideProbe> {
 
 // Every smoothed parameter starts at `from` and is moved to `to` (both
 // normalized) at frame `when`, through host blocks of the given sizes.
-void glide(BasicEngine<GlideProbe>& e, std::vector<int> blocks, int frames, int when, double from, double to) {
+void glide(BasicEngine<GlideProbe>& e, std::vector<int> blocks, int frames, int when, double from, double to, int trailing = 0) {
+    e.processor().trace.assign(params::kSmoothedCount, std::vector<double>(static_cast<size_t>(frames + trailing)));
     for (uint16_t i : params::kSmoothedIndices) e.store().set(i, fromNormalized(params::at(i), from));
     e.activate(48000.0, *std::max_element(blocks.begin(), blocks.end()), 2, 2);
     struct Moves {
@@ -871,6 +949,13 @@ void glide(BasicEngine<GlideProbe>& e, std::vector<int> blocks, int frames, int 
 }
 
 }  // namespace
+
+TEST(smoothing_capture_is_sized_for_the_requested_duration) {
+    if (!params::kSmoothedCount) return;
+    auto e = std::make_unique<BasicEngine<GlideProbe>>();
+    glide(*e, {512}, 70000, 1000, 0.2, 0.8);
+    CHECK(e->processor().trace.front().size() >= 70000);
+}
 
 TEST(smoothed_parameters_glide_sample_accurately_and_settle_exactly) {
     if (params::kSmoothedCount == 0) {
@@ -911,7 +996,7 @@ TEST(smoothed_parameters_glide_sample_accurately_and_settle_exactly) {
     }
     // Reset snaps: what follows starts at the value, not on the way to it.
     auto reused = std::make_unique<BasicEngine<GlideProbe>>();
-    glide(*reused, {512}, 4096, 1000, 0.2, 0.8);
+    glide(*reused, {512}, 4096, 1000, 0.2, 0.8, 512);
     reused->reset();
     std::vector<double> l(512), r(512);
     double* io[] = {l.data(), r.data()};
@@ -1402,6 +1487,60 @@ TEST(the_editor_gets_the_input_and_output_only_while_it_is_open) {
     CHECK(plain->feed() == nullptr);
 }
 
+TEST(the_audio_feed_silences_a_disconnected_input_channel) {
+    auto e = std::make_unique<BasicEngine<FeedProbe>>();
+    e->activate(48000.0, 64, 2, 2);
+    e->setMetering(true);
+    double input[64], left[64]{}, right[64]{};
+    std::fill_n(input, 64, 0.25);
+    const double* in[] = {input, input};
+    double* out[] = {left, right};
+    FeedFrame frames[64];
+    e->process<double>(in, out, 64);
+    CHECK(e->feed()->read(frames, 64) == 64);
+    in[1] = nullptr;
+    e->process<double>(in, out, 64);
+    CHECK(e->feed()->read(frames, 64) == 64);
+    for (const auto& f : frames) CHECK(f.in[0] == 0.25f && f.in[1] == 0.0f);
+    in[0] = nullptr;
+    e->process<double>(in, out, 64);
+    CHECK(e->feed()->read(frames, 64) == 64);
+    for (const auto& f : frames) CHECK(f.in[0] == 0.0f && f.in[1] == 0.0f);
+}
+
+TEST(editor_note_off_survives_a_full_queue_and_reset_clears_keys) {
+    if (!product::info::kNoteInput) return;
+    class KeyboardProbe : public ProcessorBase<KeyboardProbe> {
+      public:
+        void prepare(const ProcessSetup&, const ParamValues&) {}
+        void update(const ParamValues&) {}
+        void process(Block&) {}
+        void note(const NoteEvent& n) { held = n.type == NoteEvent::Type::On; }
+        bool held = false;
+    };
+    auto e = std::make_unique<BasicEngine<KeyboardProbe>>();
+    e->activate(48000, 512, 2, 2);
+    e->setMetering(true);
+    double l[512]{}, r[512]{};
+    double* io[] = {l, r};
+    for (int i = 0; i < 100; ++i) e->playNote(60, 0.5, true);
+    e->playNote(60, 0, false);
+    e->process<double>(io, io, 512);
+    CHECK(!e->processor().held);
+    e->playNote(64, 0.5, true);
+    e->process<double>(io, io, 512);
+    e->reset();
+    TelemetryFrame frame{};
+    while (e->telemetry().pop(frame)) {}
+    for (int i = 0; i < 8; ++i) e->process<double>(io, io, 512);
+    bool seen = false;
+    while (e->telemetry().pop(frame)) {
+        CHECK(frame.keys[0] == 0 && frame.keys[1] == 0);
+        seen = true;
+    }
+    CHECK(seen);
+}
+
 TEST(the_editors_notes_play_at_the_next_block_and_held_keys_reach_telemetry) {
     auto e = std::make_unique<BasicEngine<SessionProbe>>();
     e->activate(48000.0, 512, 2, 2);
@@ -1543,6 +1682,63 @@ TEST(user_presets_save_load_rename_and_delete) {
     CHECK(lib.entries().size() == presets::kFactoryCount + 1);
     // A factory preset is not the user's to rename or delete.
     if (presets::kFactoryCount > 0) CHECK(!lib.rename(0, "Mine") && !lib.remove(0));
+}
+
+TEST(comparison_slots_follow_preset_identity_through_library_changes) {
+    TempFolder folder;
+    MemoryState st;
+    PresetLibrary lib(st, folder.path);
+    CHECK(lib.save("Zulu", false) == PresetLibrary::SaveResult::Ok);
+    const auto saved = st.saveState(state::Context::Preset);
+    lib.compare(1);
+    CHECK(lib.save("Alpha", false) == PresetLibrary::SaveResult::Ok);
+    lib.compare(0);
+    CHECK(lib.current() >= 0 && lib.entries()[static_cast<size_t>(lib.current())].name == "Zulu");
+    CHECK(lib.rename(lib.current(), "Beta"));
+    lib.compare(1);
+    lib.compare(0);
+    CHECK(lib.currentName() == "Beta");
+    CHECK(lib.current() >= 0 && lib.entries()[static_cast<size_t>(lib.current())].name == "Beta");
+    lib.copyToOther();
+    CHECK(lib.remove(lib.current()));
+    lib.compare(1);
+    CHECK(lib.current() == -1 && lib.modified());
+    CHECK(st.saveState(state::Context::Preset) == saved);
+    lib.refresh();
+    CHECK(lib.current() == -1);
+}
+
+TEST(preset_overwrite_preserves_other_writers_temporary_files) {
+    TempFolder folder;
+    MemoryState st;
+    PresetLibrary lib(st, folder.path);
+    CHECK(lib.save("Mine", false) == PresetLibrary::SaveResult::Ok);
+    const auto other = folder.path / "Mine.preset.tmp";
+    std::ofstream(other) << "other writer";
+    st.host[settable()] = otherValue(settable());
+    const auto wanted = st.saveState(state::Context::Preset);
+    CHECK(lib.save("Mine", true) == PresetLibrary::SaveResult::Ok);
+    CHECK(lib.loadDefaults());
+    CHECK(lib.loadFile(folder.path / "Mine.preset"));
+    CHECK(st.saveState(state::Context::Preset) == wanted);
+    std::string text;
+    std::getline(std::ifstream(other), text);
+    CHECK(text == "other writer");
+}
+
+TEST(a_failed_preset_rename_is_not_reported_as_a_success) {
+    TempFolder folder;
+    MemoryState st;
+    PresetLibrary lib(st, folder.path);
+    const auto target = folder.path / "Blocked.preset";
+    std::filesystem::create_directories(target);
+    std::ofstream(target / "keep") << "keep";
+    st.host[settable()] = otherValue(settable());
+    CHECK(!lib.exportFile(target));
+    CHECK(lib.save("Blocked", true) == PresetLibrary::SaveResult::Failed);
+    CHECK(lib.currentName() == "Default" && lib.modified());
+    CHECK(std::filesystem::exists(target / "keep"));
+    CHECK(!std::filesystem::exists(folder.path / "Blocked.preset.tmp"));
 }
 
 TEST(a_file_that_is_not_ours_is_not_listed_or_loaded) {
@@ -1786,6 +1982,31 @@ TEST(edit_bridge_is_safe_across_threads) {
     consumer.join();
 }
 
+namespace {
+struct ManyProperties {
+    static constexpr size_t kCount = 130, kSlots = kCount;
+    static constexpr PropertyDef at(size_t i) { return property(static_cast<uint32_t>(i), "Text"); }
+};
+}
+
+TEST(activation_drains_more_properties_than_the_retirement_queue_holds) {
+    BasicPropertyStore<ManyProperties> store;
+    for (size_t i = 0; i < ManyProperties::kCount; ++i) CHECK(store.set(i, "new"));
+    size_t seen = 0;
+    store.deliverAll([&](size_t, std::string_view value) {
+        CHECK(value == "new");
+        ++seen;
+    });
+    CHECK(seen == ManyProperties::kCount);
+    for (size_t i = 0; i < ManyProperties::kCount; ++i) CHECK(store.set(i, "next"));
+    seen = 0;
+    store.deliver([&](size_t, std::string_view value) { CHECK(value == "next"); ++seen; });
+    CHECK(seen == 64 && store.needsCollection());
+    store.collect();
+    CHECK(!store.needsCollection());
+    store.deliverAll([&](size_t, std::string_view value) { CHECK(value == "next"); });
+}
+
 // --- file references --------------------------------------------------------------
 
 namespace {
@@ -1834,6 +2055,83 @@ struct FileScratch {
 
 }  // namespace
 
+namespace {
+struct FileTableProbe {
+    static constexpr size_t kCount = 1, kSlots = 1;
+    static inline PropertyDef entry = property(1, "File").file();
+    static const PropertyDef& at(size_t) { return entry; }
+};
+struct SlowFileProbe {
+    using FileContents = int;
+    static inline std::atomic<bool> started{false}, finish{true};
+    static std::unique_ptr<int> loadFile(const FileRequest&, std::string&) {
+        started.store(true);
+        while (!finish.load()) std::this_thread::yield();
+        return std::make_unique<int>(42);
+    }
+};
+}
+
+TEST(file_defaults_load_and_same_session_activation_waits) {
+    FileScratch scratch;
+    const std::string path = scratch.touch("default.file");
+    FileTableProbe::entry.def = path.c_str();
+    FileSlots<SlowFileProbe, FileTableProbe> slots;
+    FileTableProbe::entry.def = "";
+    const FileSlots<SlowFileProbe, FileTableProbe>::Session session{48000, 64, 2};
+    slots.prepare(session);
+    bool loaded = false;
+    slots.deliverAll([&](size_t, const int* p) { loaded = p && *p == 42; });
+    CHECK(loaded);
+    SlowFileProbe::started = false;
+    SlowFileProbe::finish = false;
+    slots.request(0, path, false);
+    while (!SlowFileProbe::started.load()) std::this_thread::yield();
+    std::atomic<bool> returned{false};
+    std::thread activation([&] { slots.prepare(session); returned = true; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(!returned.load());
+    SlowFileProbe::finish = true;
+    activation.join();
+    CHECK(returned.load());
+    slots.deliverAll([&](size_t, const int* p) { loaded = p && *p == 42; });
+    CHECK(loaded);
+}
+
+TEST(concurrent_atomic_writes_leave_a_whole_file_and_no_temporary_files) {
+    FileScratch s;
+    const auto target = s.root / "state";
+    const std::vector<uint8_t> a(8192, 'a'), b(8192, 'b');
+    auto write = [&](const std::vector<uint8_t>& bytes) {
+        for (int i = 0; i < 30; ++i) CHECK(files::writeAtomic(target, bytes.data(), bytes.size()));
+    };
+    std::thread first([&] { write(a); }), second([&] { write(b); });
+    first.join();
+    second.join();
+    std::vector<uint8_t> found;
+    CHECK(files::readBounded(target, found, 8192) && (found == a || found == b));
+    CHECK(files::writeAtomic(target, a.data(), a.size()));
+    CHECK(files::readBounded(target, found, 8192) && found == a);
+    for (const auto& entry : std::filesystem::directory_iterator(s.root))
+        CHECK(entry.path() == target || entry.path() == s.root / "settings");
+}
+
+TEST(bounded_file_reads_reject_oversized_missing_and_nonregular_files) {
+    FileScratch scratch;
+    const auto path = files::fromUtf8(scratch.touch("data"));
+    std::vector<uint8_t> bytes;
+    CHECK(files::readBounded(path, bytes, 1) && bytes == std::vector<uint8_t>{'x'});
+    CHECK(!files::readBounded(path, bytes, 0) && bytes.empty());
+    CHECK(!files::readBounded(scratch.root, bytes, 1024));
+    CHECK(!files::readBounded(scratch.root / "missing", bytes, 1024));
+#ifndef _WIN32
+    std::filesystem::permissions(path, std::filesystem::perms::none);
+    // Elevated test runners may still read it; ordinary CI must reject it.
+    if (!std::ifstream(path).is_open()) CHECK(!files::readBounded(path, bytes, 1024));
+    std::filesystem::permissions(path, std::filesystem::perms::owner_all);
+#endif
+}
+
 TEST(file_extensions_and_names_whichever_system_saved_them) {
     CHECK(files::hasExtension("/a/b/Kick.WAV", "wav flac"));
     CHECK(files::hasExtension("C:\\x\\y.flac", "wav flac"));
@@ -1863,6 +2161,18 @@ TEST(a_moved_file_is_found_by_its_tail_under_remembered_folders) {
     // An existing path is itself; nothing found is "".
     CHECK(files::relocate(moved) == moved);
     CHECK(files::relocate("/nowhere/at/all.wav").empty());
+}
+
+TEST(remembered_folder_overwrite_preserves_other_writers_temporary_files) {
+    FileScratch s;
+    files::rememberFolder("/first");
+    const auto other = s.root / "settings/file-folders.txt.tmp";
+    std::ofstream(other) << "other writer";
+    files::rememberFolder("/second");
+    CHECK(files::searchFolders() == std::vector<std::string>({"/second", "/first"}));
+    std::string text;
+    std::getline(std::ifstream(other), text);
+    CHECK(text == "other writer");
 }
 
 TEST(remembered_folders_are_newest_first_and_bounded) {

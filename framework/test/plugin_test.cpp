@@ -57,7 +57,7 @@ constexpr uint16_t kTuningSpace = 0x2345;  // where this host puts tuning events
 
 struct Host {
     clap_host_t clap{};
-    std::atomic<int> callbacks{0}, restarts{0}, flushRequests{0}, latencyChanges{0}, rescans{0}, tailChanges{0};
+    std::atomic<int> processRequests{0}, callbacks{0}, restarts{0}, flushRequests{0}, latencyChanges{0}, rescans{0}, tailChanges{0};
     std::atomic<int> dirty{0}, presetErrors{0};
     // The last preset the plugin said it loaded (preset-load.loaded).
     uint32_t loadedKind = 99;
@@ -92,7 +92,7 @@ struct Host {
         clap.version = "1";
         clap.get_extension = extension;
         clap.request_restart = [](const clap_host_t* h) { self(h).restarts++; };
-        clap.request_process = [](const clap_host_t*) {};
+        clap.request_process = [](const clap_host_t* h) { self(h).processRequests++; };
         clap.request_callback = [](const clap_host_t* h) {
             self(h).callbacks++;
             self(h).callbackPending = true;
@@ -844,6 +844,17 @@ TEST(preset_discovery_lists_the_factory_and_the_users_folder) {
     CHECK(!provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_FILE,
                                   PresetLibrary::toUtf8(folder.path / "Junk.preset").c_str(), &junk.clap));
     CHECK(junk.presets.empty() && junk.errors == 1);
+    const auto huge = folder.path / "Huge.preset";
+    std::ofstream(huge).close();
+    std::filesystem::resize_file(huge, (64u << 20) + 1);
+    const auto directory = folder.path / "Directory.preset";
+    std::filesystem::create_directory(directory);
+    for (const auto& bad : {huge, directory, folder.path / "Unreadable.preset"}) {
+        Receiver rejected;
+        CHECK(!provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_FILE,
+                                      PresetLibrary::toUtf8(bad).c_str(), &rejected.clap));
+        CHECK(rejected.presets.empty() && rejected.errors == 1);
+    }
     provider->destroy(provider);
     CHECK(factory->create(factory, &indexer.clap, "someone.else") == nullptr);
 }
@@ -1189,6 +1200,35 @@ TEST(a_product_with_note_input_ends_every_note_it_was_given) {
     CHECK(saw77 && saw78);
 }
 
+TEST(refused_note_ends_are_retried_at_the_next_blocks_start) {
+    if (!product::info::kNoteInput) return;
+    Instance i;
+    i.activate();
+    Audio a(i.channels());
+    OutEvents out;
+    NoteList start;
+    start.add(CLAP_EVENT_NOTE_ON, 10, 60, 0, 77);
+    a.run(i.plugin, &start.list, &out);
+    out.refuse = 1.0;
+    NoteList stop;
+    stop.add(CLAP_EVENT_NOTE_CHOKE, 5, 60, 0, 77);
+    a.run(i.plugin, &stop.list, &out);
+    out.refuse = 0.0;
+    a.run(i.plugin, noEvents(), &out);
+    CHECK(out.noteEnds.size() == 1);
+    if (!out.noteEnds.empty()) CHECK(out.noteEnds[0].header.time == 0 && out.noteEnds[0].note_id == 77);
+    a.run(i.plugin, noEvents(), &out);
+    CHECK(out.noteEnds.size() == 1);
+}
+
+TEST(the_editors_keyboard_wakes_a_sleeping_host) {
+    Instance i;
+    auto* editor = supple_test_editor_host(i.plugin);
+    if (!editor || !product::info::kNoteInput) return;
+    editor->playNote(60, 0.5, true);
+    CHECK(i.host.processRequests > 0);
+}
+
 TEST(the_editors_keyboard_plays_through_the_plugin_and_ends_its_notes) {
     Instance i;
     gui::EditorHost* editor = supple_test_editor_host(i.plugin);
@@ -1258,6 +1298,38 @@ struct MixedEvents {
 };
 
 }  // namespace
+
+TEST(truncated_parameter_events_are_ignored) {
+    Instance i;
+    i.activate();
+    size_t index = 0;
+    while (index < params::kCount && params::at(index).isOutput()) ++index;
+    if (index == params::kCount) return;
+    const auto& p = params::at(index);
+    const double before = i.value(index);
+    MixedEvents events;
+    auto& e = events.add<clap_event_param_value_t>(CLAP_EVENT_PARAM_VALUE, 0);
+    e.param_id = p.id;
+    e.value = before == p.hostMax() ? p.hostMin() : p.hostMax();
+    e.header.size = sizeof(clap_event_header_t);
+    events.finish();
+    Audio audio(i.channels());
+    audio.run(i.plugin, &events.events, nullptr);
+    CHECK(i.value(index) == before);
+}
+
+TEST(polyphonic_modulation_is_advertised_to_the_host) {
+    Instance i;
+    const auto* extension = static_cast<const clap_plugin_params_t*>(i.plugin->get_extension(i.plugin, CLAP_EXT_PARAMS));
+    constexpr uint32_t poly = CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID | CLAP_PARAM_IS_MODULATABLE_PER_KEY |
+                              CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL | CLAP_PARAM_IS_MODULATABLE_PER_PORT;
+    for (size_t k = 0; k < params::kCount; ++k) {
+        clap_param_info_t info{};
+        CHECK(extension->get_info(i.plugin, static_cast<uint32_t>(k), &info));
+        CHECK_MSG((info.flags & poly) == (params::at(k).is(pflag::kPolyMod) ? poly : 0u), "%s", params::at(k).name);
+    }
+    if (!params::kAnyPolyMod) std::puts("      (no polyphonic modulation in this product)");
+}
 
 TEST(midi_expressions_and_note_modulation_are_taken_in_any_mix) {
     if (!product::info::kNoteInput) {

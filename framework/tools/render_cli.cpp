@@ -77,7 +77,7 @@ struct Change {
     double host;
 };
 
-bool parseAssignment(const char* text, int frame, std::vector<Change>& out) {
+bool parseAssignment(const char* text, int frame, std::vector<Change>& out, bool automation = false) {
     const char* eq = std::strchr(text, '=');
     if (!eq) return false;
     const std::string name(text, static_cast<size_t>(eq - text));
@@ -86,6 +86,10 @@ bool parseAssignment(const char* text, int frame, std::vector<Change>& out) {
         if (name != p.name) continue;
         if (p.isOutput()) {
             std::fprintf(stderr, "error: %s is an output: the processor reports it\n", p.name);
+            return false;
+        }
+        if (automation && p.is(pflag::kRestart)) {
+            std::fprintf(stderr, "error: --at cannot automate %s: it requires a restart (use --set)\n", p.name);
             return false;
         }
         double host = 0.0;
@@ -133,7 +137,7 @@ int main(int argc, char** argv) {
             if (!parseAssignment(argv[++i], 0, changes)) return 2;
         } else if (arg == "--at" && i + 2 < argc) {
             const int frame = std::atoi(argv[++i]);
-            if (!parseAssignment(argv[++i], std::max(0, frame), changes)) return 2;
+            if (!parseAssignment(argv[++i], std::max(0, frame), changes, true)) return 2;
         } else if (arg == "--preset" && i + 1 < argc) {
             preset = presets::findFactory(argv[++i]);
             if (preset < 0) {

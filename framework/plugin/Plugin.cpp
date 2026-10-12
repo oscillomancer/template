@@ -105,7 +105,7 @@ class ClapEvents {
     bool next(EngineEvent& e) {
         while (index_ < count_) {
             const clap_event_header_t* h = in_->get(in_, index_++);
-            if (!h) continue;
+            if (!h || h->size < sizeof(clap_event_header_t)) continue;
             if (h->space_id == tuningSpace_ && h->space_id != CLAP_CORE_EVENT_SPACE_ID) {
                 if (h->size < sizeof(clap_event_tuning_t)) continue;
                 const auto* t = reinterpret_cast<const clap_event_tuning_t*>(h);
@@ -122,6 +122,7 @@ class ClapEvents {
             e.time = h->time;
             switch (h->type) {
                 case CLAP_EVENT_PARAM_VALUE: {
+                    if (h->size < sizeof(clap_event_param_value_t)) continue;
                     const auto* v = reinterpret_cast<const clap_event_param_value_t*>(h);
                     e.index = params::indexOf(v->param_id);
                     if (e.index < 0 || params::at(static_cast<size_t>(e.index)).isOutput()) continue;
@@ -130,6 +131,7 @@ class ClapEvents {
                     return true;
                 }
                 case CLAP_EVENT_PARAM_MOD: {
+                    if (h->size < sizeof(clap_event_param_mod_t)) continue;
                     const auto* m = reinterpret_cast<const clap_event_param_mod_t*>(h);
                     e.index = params::indexOf(m->param_id);
                     if (e.index < 0 || params::at(static_cast<size_t>(e.index)).isOutput()) continue;
@@ -144,6 +146,7 @@ class ClapEvents {
                     return true;
                 }
                 case CLAP_EVENT_NOTE_EXPRESSION: {
+                    if (h->size < sizeof(clap_event_note_expression_t)) continue;
                     if (!info::kNoteInput) continue;
                     const auto* x = reinterpret_cast<const clap_event_note_expression_t*>(h);
                     if (x->expression_id < CLAP_NOTE_EXPRESSION_VOLUME || x->expression_id > CLAP_NOTE_EXPRESSION_PRESSURE)
@@ -157,6 +160,7 @@ class ClapEvents {
                 case CLAP_EVENT_NOTE_ON:
                 case CLAP_EVENT_NOTE_OFF:
                 case CLAP_EVENT_NOTE_CHOKE: {
+                    if (h->size < sizeof(clap_event_note_t)) continue;
                     if (!info::kNoteInput) continue;
                     const auto* n = reinterpret_cast<const clap_event_note_t*>(h);
                     e.type = EngineEvent::Type::Note;
@@ -171,6 +175,7 @@ class ClapEvents {
                     return true;
                 }
                 case CLAP_EVENT_MIDI: {
+                    if (h->size < sizeof(clap_event_midi_t)) continue;
                     if (!info::kNoteInput) continue;
                     const auto* m = reinterpret_cast<const clap_event_midi_t*>(h);
                     const uint8_t status = m->data[0] & 0xF0;
@@ -641,6 +646,7 @@ struct Plugin : StateAccess
     // After the engine ran (audio thread, or main thread while inactive).
     // `frames` is the block length, 0 for a flush.
     void afterAudioWork(const clap_output_events_t* out, uint32_t frames) {
+        if (engine.properties().needsCollection()) requestCallback();
         if (engine.takeRestartRequest()) {
             restartWanted.store(true, std::memory_order_release);
             requestCallback();
@@ -662,8 +668,9 @@ struct Plugin : StateAccess
         }
         const NoteOutput& sent = engine.noteOutput();
         if (sent.dropped() > 0) report(kNotesDropped);
-        for (int i = 0; out && i < sent.count(); ++i) {
-            const NoteOutput::Entry& entry = sent[i];
+        int delivered = 0;
+        for (; out && delivered < sent.count(); ++delivered) {
+            const NoteOutput::Entry& entry = sent[delivered];
             const uint32_t time = frames ? std::min(entry.time, frames - 1) : 0;
             bool pushed = false;
             if (entry.kind == NoteOutput::Kind::Midi) {
@@ -695,8 +702,9 @@ struct Plugin : StateAccess
                 e.velocity = end ? 0.0 : std::clamp(n.velocity, 0.0, 1.0);
                 pushed = out->try_push(out, &e.header);
             }
-            if (!pushed) break;  // a full queue loses the rest
+            if (!pushed) break;
         }
+        engine.deferNotes(delivered);
         // Outputs last: stamped at the block's final frame, after every note
         // end, since the host's list must stay in time order.
         if (engine.takeOutputsDue()) publishOutputs(out, frames);
@@ -899,6 +907,7 @@ struct Plugin : StateAccess
 
     void playNote(int key, double velocity, bool on) override {
         engine.playNote(key, velocity, on);  // played at the start of the next block
+        if (info::kNoteInput && host && host->request_process) host->request_process(host);
     }
     size_t readAudio(FeedFrame* out, size_t max) override {
         AudioFeed* feed = engine.feed();
@@ -1179,6 +1188,9 @@ bool CLAP_ABI paramsInfo(const clap_plugin_t* plugin, uint32_t index, clap_param
     out->flags = 0;
     if (p.is(pflag::kAutomatable)) out->flags |= CLAP_PARAM_IS_AUTOMATABLE;
     if (p.is(pflag::kModulatable)) out->flags |= CLAP_PARAM_IS_MODULATABLE;
+    if (p.is(pflag::kPolyMod))
+        out->flags |= CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID | CLAP_PARAM_IS_MODULATABLE_PER_KEY |
+                      CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL | CLAP_PARAM_IS_MODULATABLE_PER_PORT;
     if (p.is(pflag::kHidden)) out->flags |= CLAP_PARAM_IS_HIDDEN;
     if (p.is(pflag::kBypass)) out->flags |= CLAP_PARAM_IS_BYPASS;
     if (p.isOutput()) out->flags |= CLAP_PARAM_IS_READONLY;

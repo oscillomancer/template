@@ -149,7 +149,7 @@ struct ParamDef {
     constexpr ParamDef restartOnChange() const { return with(pflag::kRestart); }
     // See the top of this file: only for sessions saved before the move.
     constexpr ParamDef plainHostValue() const { return with(pflag::kPlainHost); }
-    constexpr ParamDef notAutomatable() const { return without(pflag::kAutomatable | pflag::kModulatable); }
+    constexpr ParamDef notAutomatable() const { return without(pflag::kAutomatable | pflag::kModulatable | pflag::kPolyMod); }
     // Keep a removed parameter's ID reserved and loadable, invisible to hosts.
     constexpr ParamDef retired() const { return with(pflag::kHidden).notAutomatable(); }
     // Read-only: reported by the processor with setOutput(), shown to hosts

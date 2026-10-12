@@ -43,7 +43,7 @@ std::string describeFile(const typename P::FileContents& c) {
     }
 }
 
-template <class P>
+template <class P, class Table = PropertyTable>
 class FileSlots {
   public:
     using Contents = typename P::FileContents;
@@ -55,7 +55,10 @@ class FileSlots {
         bool operator==(const Session&) const = default;
     };
 
-    FileSlots() = default;
+    FileSlots() {
+        for (size_t i = 0; i < Table::kCount; ++i)
+            if (Table::at(i).isFile() && Table::at(i).def[0]) request(i, Table::at(i).def, false);
+    }
     ~FileSlots() { worker_.stop(); }
     FileSlots(const FileSlots&) = delete;
     FileSlots& operator=(const FileSlots&) = delete;
@@ -86,14 +89,15 @@ class FileSlots {
     // At activation: a session unlike the last reloads every file, and
     // waits for them.
     void prepare(const Session& session) {
+        bool reload;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (prepared_ && session == session_) return;
+            reload = !prepared_ || !(session == session_);
             prepared_ = true;
             session_ = session;
         }
-        for (size_t i = 0; i < properties::kCount; ++i) {
-            if (!properties::at(i).isFile()) continue;
+        for (size_t i = 0; reload && i < Table::kCount; ++i) {
+            if (!Table::at(i).isFile()) continue;
             std::string path;
             uint64_t ticket = 0;
             {
@@ -122,14 +126,14 @@ class FileSlots {
     // fn(index, contents) for each slot with something new.
     template <class Fn>
     void deliver(Fn&& fn) {
-        for (size_t i = 0; i < properties::kCount; ++i)
-            if (properties::at(i).isFile() && slots_[i].handoff.update()) fn(i, slots_[i].handoff.get());
+        for (size_t i = 0; i < Table::kCount; ++i)
+            if (Table::at(i).isFile() && slots_[i].handoff.update()) fn(i, slots_[i].handoff.get());
     }
     // Every slot, new or not.
     template <class Fn>
     void deliverAll(Fn&& fn) {
-        for (size_t i = 0; i < properties::kCount; ++i) {
-            if (!properties::at(i).isFile()) continue;
+        for (size_t i = 0; i < Table::kCount; ++i) {
+            if (!Table::at(i).isFile()) continue;
             slots_[i].handoff.update();
             fn(i, slots_[i].handoff.get());
         }
@@ -158,7 +162,7 @@ class FileSlots {
             const bool there = !path.empty() && files::exists(path);
             if (there) {
                 FileRequest r;
-                r.id = properties::at(index).id;
+                r.id = Table::at(index).id;
                 r.path = path;
                 r.sampleRate = session.sampleRate;
                 r.maxBlockSize = session.maxBlockSize;
@@ -183,7 +187,7 @@ class FileSlots {
         for (Slot& slot : slots_) slot.handoff.collect();
     }
 
-    Slot slots_[properties::kSlots];
+    Slot slots_[Table::kSlots];
     mutable std::mutex mutex_;
     Session session_;
     bool prepared_ = false;

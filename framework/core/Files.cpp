@@ -4,11 +4,22 @@
 #include "core/Files.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <system_error>
 
 #include "ProductInfo.h"
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -87,6 +98,51 @@ std::string toUtf8(const fs::path& path) {
 }
 
 bool exists(std::string_view path) { return !path.empty() && isFile(fromUtf8(path)); }
+
+bool writeAtomic(const fs::path& path, const uint8_t* bytes, size_t size) {
+    static std::atomic<uint64_t> sequence{0};
+    fs::path temp;
+    std::FILE* out = nullptr;
+    for (int attempt = 0; attempt < 64 && !out; ++attempt) {
+        temp = path;
+        temp += ".tmp-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                "-" + std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
+#ifdef _WIN32
+        out = _wfopen(temp.c_str(), L"wbx");
+#else
+        out = std::fopen(temp.c_str(), "wbx");
+#endif
+        if (!out && errno != EEXIST) return false;
+    }
+    if (!out) return false;
+    const bool written = std::fwrite(bytes, 1, size, out) == size;
+    const bool closed = std::fclose(out) == 0;
+    std::error_code ec;
+    bool replaced = false;
+    if (written && closed) {
+#ifdef _WIN32
+        replaced = MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+        fs::rename(temp, path, ec);
+        replaced = !ec;
+#endif
+    }
+    if (!replaced) fs::remove(temp, ec);
+    return replaced;
+}
+
+bool readBounded(const fs::path& path, std::vector<uint8_t>& bytes, size_t maxBytes) {
+    bytes.clear();
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) return false;
+    const auto size = fs::file_size(path, ec);
+    if (ec || size > maxBytes) return false;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    bytes.resize(static_cast<size_t>(size));
+    if (size) in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
+    return in && in.peek() == std::char_traits<char>::eof();
+}
 
 std::string fileName(std::string_view path) {
     const std::vector<std::string> parts = components(path);
@@ -175,15 +231,9 @@ void rememberFolder(std::string_view folder) {
     if (folders.size() > kRemembered) folders.resize(kRemembered);
     std::error_code ec;
     fs::create_directories(settingsFolder(), ec);
-    // Written whole, then renamed over the old list: never half a list.
-    fs::path temp = remembered();
-    temp += ".tmp";
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        for (const std::string& f : folders) out << f << '\n';
-        if (!out) return;
-    }
-    fs::rename(temp, remembered(), ec);
+    std::string text;
+    for (const std::string& f : folders) text += f + '\n';
+    writeAtomic(remembered(), reinterpret_cast<const uint8_t*>(text.data()), text.size());
 }
 
 }  // namespace supple::files
