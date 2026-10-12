@@ -1,0 +1,30 @@
+cmake_minimum_required(VERSION 3.27)
+get_filename_component(root "${FRAMEWORK}/.." ABSOLUTE)
+# Framework copies in real products have no template examples; generator
+# identity checks still cover their own product in that case.
+file(REMOVE_RECURSE "${WORK}")
+file(GLOB definitions "${root}/examples/*/product.cmake")
+list(APPEND definitions "${root}/product/product.cmake")
+function(generate name id code allow success)
+    execute_process(COMMAND "${CMAKE_COMMAND}" "-DNAME=${name}" "-DID=${id}" "-DCODE=${code}"
+        "-DDEST=${WORK}/generated" "-DALLOW_EXAMPLE_CODE=${allow}"
+        -P "${FRAMEWORK}/tools/new_product.cmake"
+        RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out)
+    if ((success AND NOT result EQUAL 0) OR (NOT success AND result EQUAL 0))
+        message(FATAL_ERROR "unexpected generation result for ${name}/${id}/${code}: ${out}")
+    endif()
+    if (NOT success AND EXISTS "${WORK}/generated")
+        message(FATAL_ERROR "refused generation wrote its destination")
+    endif()
+endfunction()
+foreach(definition IN LISTS definitions)
+    include("${definition}")
+    string(TOUPPER "${PRODUCT_NAME}" upper_name)
+    generate("${upper_name}" "org.audit.unique" "AuD2" OFF FALSE)
+    generate("Audit Unique" "${PRODUCT_ID}" "AuD2" OFF FALSE)
+    generate("Audit Unique" "org.audit.unique" "${PRODUCT_AU_SUBTYPE}" OFF FALSE)
+endforeach()
+generate("${PRODUCT_NAME}" "${PRODUCT_ID}" "${PRODUCT_AU_SUBTYPE}" ON TRUE)
+file(REMOVE_RECURSE "${WORK}/generated")
+generate("Audit Unique" "org.audit.unique" "AuD2" OFF TRUE)
+file(REMOVE_RECURSE "${WORK}/generated")
