@@ -104,9 +104,9 @@ constexpr bool valuesValid() {
         for (const PresetValue& v : factory(i).values) {
             // By index: comparing a pointer with null is not a constant
             // expression under some sanitizers.
-            const int i = params::indexOf(v.id);
-            if (i < 0) return false;
-            const ParamDef& p = params::at(static_cast<size_t>(i));
+            const int k = params::indexOf(v.id);
+            if (k < 0) return false;
+            const ParamDef& p = params::at(static_cast<size_t>(k));
             if (p.isOutput() || !(v.plain >= p.min && v.plain <= p.max)) return false;
             if (p.stepped() && v.plain != static_cast<double>(static_cast<long long>(v.plain))) return false;
         }

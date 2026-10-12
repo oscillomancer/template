@@ -2,7 +2,9 @@
 // Copyright (c) 2026 Supple Audio
 //
 // Small DSP building blocks that nearly every product needs. All of them are
-// real-time safe after prepare(): no allocation, no locks, no I/O.
+// real-time safe after prepare(): no allocation, no locks, no I/O. The rest
+// of the library -- filters, dynamics, oversampling, oscillators, voices,
+// convolution, files -- is in framework/dsp.
 #pragma once
 
 #include <algorithm>
@@ -12,20 +14,16 @@
 #include <vector>
 
 #include "core/ProcessorBase.h"
+#include "dsp/Math.h"
 
 namespace supple::dsp {
 
-inline constexpr double kPi = 3.14159265358979323846;
-
-inline double dbToGain(double db) { return std::pow(10.0, db * 0.05); }
-inline double gainToDb(double gain, double floorDb = -120.0) {
-    return gain > 0.0 ? std::max(20.0 * std::log10(gain), floorDb) : floorDb;
-}
-
 // One-pole exponential smoother. Natural for gains and cutoffs: it never
 // overshoots and costs one multiply-add per sample. Snaps to the target once
-// within 1e-9 of it, so a settled smoother costs nothing extra and never
-// leaves an endless subnormal residue behind.
+// within its precision of it (1e-9 unless set), so a settled smoother costs
+// nothing extra and never leaves an endless subnormal residue behind. Set the
+// precision in proportion to the range it moves over: 1e-9 of a 200 ms
+// range takes far longer to reach than 1e-9 of a gain.
 class Smoother {
   public:
     void setTime(double milliseconds, double sampleRate) {
@@ -37,10 +35,11 @@ class Smoother {
         if (snap) current_ = target;
     }
     void reset(double value) { current_ = target_ = value; }
+    void setPrecision(double epsilon) { epsilon_ = epsilon > 0.0 ? epsilon : 1e-9; }
     double next() {
         if (current_ != target_) {
             current_ = target_ + coefficient_ * (current_ - target_);
-            if (std::fabs(current_ - target_) < 1e-9) current_ = target_;
+            if (std::fabs(current_ - target_) < epsilon_) current_ = target_;
         }
         return current_;
     }
@@ -52,6 +51,7 @@ class Smoother {
     double current_ = 0.0;
     double target_ = 0.0;
     double coefficient_ = 0.0;
+    double epsilon_ = 1e-9;
 };
 
 // Linear ramp of fixed duration. Use it for crossfades, where the fade must

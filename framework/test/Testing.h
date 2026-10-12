@@ -190,7 +190,7 @@ inline Signal render(const Signal& input, const RenderOptions& o, Engine* engine
         }
         for (const auto& [id, value] : o.properties) {
             const int i = properties::indexOf(id);
-            if (i >= 0) engine->properties().set(static_cast<size_t>(i), value);
+            if (i >= 0) engine->setProperty(static_cast<size_t>(i), value, true);  // a file loads, too
         }
         engine->setTuning(o.tuning);
         engine->setOffline(o.offline);

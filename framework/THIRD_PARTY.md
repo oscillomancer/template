@@ -17,6 +17,7 @@ whenever a pinned dependency moves.
 | NanoVG | zlib | |
 | nanovg_metal (wjakob fork) | MIT | macOS only |
 | nanosvg | zlib | the editor's SVGs (`gui/Images.h`); parsed only, never rasterized |
+| dr_wav, dr_flac (dr_libs) | MIT-0 (or public domain) | WAV, AIFF and FLAC decoding (`dsp/AudioFile.h`) |
 | IBM Plex Mono, Plex Sans Condensed | SIL OFL 1.1 | subsets in `gui/fonts`, compiled in |
 | Inter | SIL OFL 1.1 | subsets in `gui/fonts`, compiled in |
 | MTS-ESP client | 0BSD | only with `PRODUCT_TUNING ON`; its notice is added to the product's NOTICES.txt then |

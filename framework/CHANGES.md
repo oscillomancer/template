@@ -4,6 +4,73 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.11.0
+
+The DSP library, and files. Nothing for a product to do unless its editor
+switches over `Widget` without a default (`File` was added), or its
+Processor already has members called `file`, `loadFile`, `describeFile` or
+`FileContents` (they are now hooks: rename yours). Every addition is used
+by including it, or by declaring a file property.
+
+- **The DSP library** (`framework/dsp/`): header-only but for file
+  decoding, depending on nothing of the product's (`dsp/Math.h` now holds
+  `kPi`, `dbToGain` and `gainToDb`; `core/Notes.h` the note and MIDI types;
+  both still arrive through `core/Dsp.h` and `core/ProcessorBase.h`),
+  allocation-free in `process`, the same samples on every platform:
+  - `Filters.h`: cookbook biquads with their responses, Butterworth and
+    Linkwitz-Riley cascades to order 16, a two-band `Crossover`, `OnePole`
+    (low, high, all-pass; safe under modulation), `DcBlocker`.
+  - `Dynamics.h`: `EnvelopeFollower`, `RmsFollower`, `GainComputer`,
+    `SlidingMax`, `Lookahead` (a limiter's gain, never late), `TruePeak`.
+  - `Oversampler.h`: 2x to 16x, linear phase (a pure delay in the passband,
+    `latency()` whole samples) or minimum phase (HIIR's elliptic
+    half-bands), images and aliases 95 dB down. `Shapers.h`: hard, tanh and
+    cubic clippers with antiderivative anti-aliasing.
+  - `Stft.h` (overlap-add; `Fft::inverse` added) and `Convolution.h`
+    (uniformly partitioned, zero latency by computing the first partition
+    directly).
+  - `Oscillators.h`: `Random` (PCG32), `Noise` (white, pink, brown),
+    polyBLEP `Oscillator`, mip-mapped `Wavetable`, `Lfo` with `syncTo` the
+    song position. `Envelope.h`: `Adsr` with curves. `Interpolation.h`:
+    Hermite, Lagrange, `FractionalDelay`, `AllpassDelay`.
+  - `Voices.h`: allocation and stealing, the sustain pedal, mono and legato,
+    glide, bend, MPE, every note reported over exactly once; the sound stays
+    the product's.
+  - `Loudness.h`: BS.1770 K-weighting (to the specification's table at
+    48 kHz), momentary, short-term and gated integrated LUFS, `Correlation`.
+  - `Worker.h`: a worker thread and `Handoff<T>`, for results the audio
+    thread takes without a lock and never frees. `AudioFile.h`: WAV, AIFF
+    and FLAC in (dr_wav and dr_flac, MIT-0, now fetched at configure),
+    WAV out, `resample()`, and `DiskStream` for files too long to hold.
+- **File properties**: `property(k, "Impulse").audioFile()` (or
+  `.file("scl tun")`) holds a path. On a session load the framework
+  relocates a file that moved -- under this user's home, under folders the
+  user picked files from (remembered per product in its settings folder;
+  `SUPPLE_SETTINGS_DIR` for tests), matching as much of the path's tail as
+  it can -- reports one found nowhere as missing and keeps its reference,
+  and loads it on a worker thread with the processor's `loadFile()`
+  (default: decoded audio at the session's rate; declare `FileContents` to
+  build anything else there), handing it to `file(id, contents)` at the
+  start of a block. Session loads and activations wait for their files.
+  `Engine::setProperty` does all this; `Engine::fileStatus` and
+  `EditorHost::fileStatus` say what became of a file.
+- **File slots**: `ui().fileSlot(property, rect)` shows a file property's
+  file and its state, opens the dialog on a click, takes a file dropped on
+  it, and clears from Delete or its menu. The automatic editor gives each
+  file property one; `gui-preview` reports file states.
+- **Smoothing settles in proportion**: the framework's glides now snap to
+  their target within a billionth of the parameter's range (in log space,
+  of its value), where before it was 1e-9 absolute, which a 200 ms range
+  took far longer to reach. `Smoother::setPrecision()` sets it. Output
+  differs only below that.
+- The engine re-reads a processor's tail, latency and voices after a file
+  arrives, as after an update.
+- `host-smoke` restarts the plugin when it asked to after a state load, as
+  a host does, before comparing it with a fresh instance.
+- Tests: `dsp-tests` (new); core, UI and plugin tests for files, relocation
+  and file slots, which run in a product with a file property (the new
+  `room` example).
+
 ## 1.10.0
 
 The editor toolkit. Nothing for a product to do unless its editor switches

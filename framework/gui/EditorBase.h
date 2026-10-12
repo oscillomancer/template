@@ -83,7 +83,8 @@ class EditorBase {
     }
     // Files dragged over the editor: true where they would be taken, and
     // onDrop() then gets them, as paths (UTF-8). Preset files dropped on an
-    // editor with presets load without either.
+    // editor with presets load without either, and so does a file dropped
+    // on a file slot (Ui::fileSlot).
     virtual bool acceptsDrop(float x, float y) {
         (void)x, (void)y;
         return false;

@@ -22,10 +22,12 @@
 
 #include "Check.h"
 #include "core/Engine.h"
+#include "core/Files.h"
 #include "core/ParamTable.h"
 #include "core/Preset.h"
 #include "core/PresetLibrary.h"
 #include "core/PropertyTable.h"
+#include "dsp/AudioFile.h"
 #include "gui/EditorHost.h"
 #include "plugin/Entry.h"
 #include "plugin/TestHooks.h"
@@ -596,6 +598,77 @@ TEST(properties_are_state_and_reach_the_processor_only_through_their_store) {
         CHECK(editor->property(properties::at(k).id) == "v" + std::to_string(k));
     CHECK(saveState(b) == saved);
     CHECK(b.host.dirty == 0);  // the host loaded it: nothing to tell it
+}
+
+TEST(a_session_finds_the_files_it_names_after_they_move) {
+    int k = -1;
+    for (size_t i = 0; i < properties::kCount && k < 0; ++i)
+        if (properties::at(i).isFile() && files::hasExtension("x.wav", properties::at(i).extensions)) k = static_cast<int>(i);
+    if (k < 0) {
+        std::puts("      (no file property taking WAV in this product)");
+        return;
+    }
+    const uint32_t id = properties::at(static_cast<size_t>(k)).id;
+    // Its own settings folder, so remembered folders stay out of the user's.
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("supple-plugin-files-" + std::to_string(std::random_device{}()));
+    std::filesystem::create_directories(root / "settings");
+    auto setSettings = [](const std::string& value) {
+#if defined(_WIN32)
+        _putenv_s("SUPPLE_SETTINGS_DIR", value.c_str());
+#else
+        if (!value.empty()) setenv("SUPPLE_SETTINGS_DIR", value.c_str(), 1);
+        else unsetenv("SUPPLE_SETTINGS_DIR");
+#endif
+    };
+    setSettings(files::toUtf8(root / "settings"));
+    dsp::AudioData audio;
+    audio.sampleRate = 48000.0;
+    audio.channel.assign(2, std::vector<float>(4800, 0.0f));
+    audio.channel[0][0] = audio.channel[1][0] = 1.0f;
+    std::filesystem::create_directories(root / "old" / "Kit");
+    const std::string before = files::toUtf8(root / "old" / "Kit" / "ir.wav");
+    CHECK(dsp::saveWavFile(before, audio));
+
+    std::vector<uint8_t> saved;
+    {
+        Instance a;
+        gui::EditorHost* editor = supple_test_editor_host(a.plugin);
+        if (!editor) {
+            std::puts("      (no editor host in this build)");
+            setSettings("");
+            return;
+        }
+        CHECK(editor->setProperty(id, before));
+        a.activate();
+        CHECK(editor->fileStatus(id).state == FileStatus::State::Ready);
+        saved = saveState(a);
+    }
+    // The library moves; the user has picked from it since.
+    std::filesystem::rename(root / "old", root / "new");
+    files::rememberFolder(files::toUtf8(root / "new"));
+    const std::string after = files::toUtf8(root / "new" / "Kit" / "ir.wav");
+    {
+        Instance b;
+        CHECK(loadState(b, saved));
+        gui::EditorHost* editor = supple_test_editor_host(b.plugin);
+        CHECK(editor && editor->property(id) == after);
+        b.activate();
+        CHECK(editor && editor->fileStatus(id).state == FileStatus::State::Ready);
+    }
+    // Gone altogether: the reference is kept, and saved as it was.
+    std::error_code ec;
+    std::filesystem::remove_all(root / "new", ec);
+    {
+        Instance c;
+        CHECK(loadState(c, saved));
+        gui::EditorHost* editor = supple_test_editor_host(c.plugin);
+        CHECK(editor && editor->property(id) == before);
+        CHECK(editor && editor->fileStatus(id).state == FileStatus::State::Missing);
+        CHECK(saveState(c) == saved);
+    }
+    setSettings("");
+    std::filesystem::remove_all(root, ec);
 }
 
 TEST(the_preset_context_leaves_the_session_alone) {
@@ -1504,7 +1577,7 @@ TEST(the_hosts_tuning_retunes_and_its_unmapped_keys_end_at_once) {
     choose.port_index = -1;
     choose.channel = -1;
     choose.tunning_id = 7;
-    for (int16_t key : {60, 61}) {
+    for (int16_t key : {int16_t{60}, int16_t{61}}) {
         auto& on = m.add<clap_event_note_t>(CLAP_EVENT_NOTE_ON, static_cast<uint32_t>(key - 50));
         on.note_id = key;
         on.port_index = 0;

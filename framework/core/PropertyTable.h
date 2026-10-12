@@ -36,6 +36,15 @@ inline constexpr const PropertyDef& at(size_t) { return kNone; }
 // For arrays sized by the table.
 inline constexpr size_t kSlots = kCount > 0 ? kCount : 1;
 
+inline constexpr size_t countFiles() {
+    size_t n = 0;
+    for (size_t i = 0; i < kCount; ++i)
+        if (at(i).isFile()) ++n;
+    return n;
+}
+// Properties marked file(): the framework loads what they name.
+inline constexpr size_t kFileCount = countFiles();
+
 namespace detail {
 
 constexpr size_t length(const char* s) {

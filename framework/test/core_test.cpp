@@ -6,9 +6,11 @@
 // engine's block, precision and bypass contracts, state, and the editor-to-
 // host edit bridge.
 #include <atomic>
+#include <chrono>
 #include <clocale>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <map>
 #include <random>
@@ -16,9 +18,11 @@
 
 #include "Check.h"
 #include "Testing.h"
+#include "core/Files.h"
 #include "core/Preset.h"
 #include "core/PresetLibrary.h"
 #include "core/StateFormat.h"
+#include "dsp/AudioFile.h"
 #include "plugin/EditBridge.h"
 #include "ProductInfo.h"
 
@@ -833,7 +837,10 @@ TEST(smoothed_parameters_glide_sample_accurately_and_settle_exactly) {
         std::printf("      (no smoothed parameters in this product)\n");
         return;
     }
-    const int frames = 60000, when = 3000;
+    // Long enough for the slowest to settle: 25 time constants and more.
+    double slowest = 0.0;
+    for (size_t k = 0; k < params::kSmoothedCount; ++k) slowest = std::max(slowest, params::at(params::kSmoothedIndices[k]).smoothing);
+    const int when = 3000, frames = when + std::max(57000, static_cast<int>(25.0 * slowest * 48.0));
     auto one = std::make_unique<BasicEngine<GlideProbe>>(), split = std::make_unique<BasicEngine<GlideProbe>>();
     glide(*one, {4096}, frames, when, 0.2, 0.8);
     glide(*split, {1, 7, 64, 513, 2, 1000}, frames, when, 0.2, 0.8);
@@ -852,7 +859,8 @@ TEST(smoothed_parameters_glide_sample_accurately_and_settle_exactly) {
         CHECK_MSG(before, "%s moved before its change", p.name);
         CHECK_MSG(x[when] != from, "%s did not start moving at its change's frame", p.name);
         CHECK_MSG(monotonic, "%s overshot or turned back", p.name);
-        CHECK_MSG(x[frames - 1] == to, "%s settled at %.17g, not %.17g", p.name, x[frames - 1], to);
+        const size_t last = static_cast<size_t>(frames - 1);
+        CHECK_MSG(x[last] == to, "%s settled at %.17g, not %.17g", p.name, x[last], to);
         // One time constant covers 1 - 1/e of the way, measured where it glides
         // (log frequency for a log taper).
         auto domain = [&](double v) { return p.taper == Taper::Log ? std::log(v) : v; };
@@ -1067,8 +1075,19 @@ TEST(state_rejects_damage_and_skips_what_it_does_not_know) {
     auto bytes = state::save(0x54455354, s);
     state::Snapshot out;
     CHECK(state::load(bytes.data(), bytes.size(), 0x41424344, out) == state::LoadResult::NotOurs);
-    for (size_t cut = 1; cut < bytes.size(); cut += 3)
+    // Cut anywhere inside a chunk. (Cut exactly between two, what is left is
+    // a whole, shorter state, and loads as one.)
+    std::vector<size_t> boundaries = {8};
+    for (size_t at = 8; at + 8 <= bytes.size();) {
+        const size_t length = static_cast<size_t>(bytes[at + 4]) | static_cast<size_t>(bytes[at + 5]) << 8 |
+                              static_cast<size_t>(bytes[at + 6]) << 16 | static_cast<size_t>(bytes[at + 7]) << 24;
+        at += 8 + length;
+        boundaries.push_back(at);
+    }
+    for (size_t cut = 1; cut < bytes.size(); cut += 3) {
+        if (std::find(boundaries.begin(), boundaries.end(), cut) != boundaries.end()) continue;
         CHECK_MSG(state::load(bytes.data(), cut, 0x54455354, out) != state::LoadResult::Ok, "accepted %zu bytes", cut);
+    }
     // An unknown chunk from a future version is skipped.
     state::Writer w;
     w.tag(0x54455354);
@@ -1725,6 +1744,199 @@ TEST(edit_bridge_is_safe_across_threads) {
     for (size_t i = 0; i < params::kCount; ++i) bridge.end(i);
     done = true;
     consumer.join();
+}
+
+// --- file references --------------------------------------------------------------
+
+namespace {
+
+void setEnv(const char* name, const std::string& value) {
+#ifdef _WIN32
+    _putenv_s(name, value.c_str());
+#else
+    if (!value.empty()) setenv(name, value.c_str(), 1);
+    else unsetenv(name);
+#endif
+}
+
+// A scratch folder that is also the settings folder (remembered folders go
+// there), and is gone afterwards.
+struct FileScratch {
+    std::filesystem::path root;
+    FileScratch() {
+        root = std::filesystem::temp_directory_path() /
+               ("supple-files-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(root / "settings");
+        setEnv("SUPPLE_SETTINGS_DIR", files::toUtf8(root / "settings"));
+    }
+    ~FileScratch() {
+        setEnv("SUPPLE_SETTINGS_DIR", "");
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+    std::string touch(const std::filesystem::path& relative) const {
+        const std::filesystem::path p = root / relative;
+        std::filesystem::create_directories(p.parent_path());
+        std::ofstream(p) << "x";
+        return files::toUtf8(p);
+    }
+    std::string wav(const std::filesystem::path& relative, double rate = 44100.0) const {
+        const std::filesystem::path p = root / relative;
+        std::filesystem::create_directories(p.parent_path());
+        dsp::AudioData a;
+        a.sampleRate = rate;
+        a.channel.assign(2, std::vector<float>(static_cast<size_t>(rate / 10)));
+        for (size_t n = 0; n < a.channel[0].size(); ++n) a.channel[0][n] = a.channel[1][n] = (n % 100 == 0) ? 0.5f : 0.0f;
+        dsp::saveWavFile(files::toUtf8(p), a);
+        return files::toUtf8(p);
+    }
+};
+
+}  // namespace
+
+TEST(file_extensions_and_names_whichever_system_saved_them) {
+    CHECK(files::hasExtension("/a/b/Kick.WAV", "wav flac"));
+    CHECK(files::hasExtension("C:\\x\\y.flac", "wav flac"));
+    CHECK(!files::hasExtension("/a/b/notes.txt", "wav flac"));
+    CHECK(!files::hasExtension("/a/b/wav", "wav"));
+    CHECK(files::hasExtension("/a/b/anything.xyz", ""));
+    CHECK(files::fileName("C:\\Users\\ana\\kick.wav") == "kick.wav");
+    CHECK(files::fileName("/home/ana/kick.wav") == "kick.wav");
+}
+
+TEST(a_moved_file_is_found_by_its_tail_under_remembered_folders) {
+    FileScratch s;
+    const std::string moved = s.touch("new disk/Library/Samples/Drums/kick.wav");
+    const std::string saved = "/Volumes/Old Disk/Library/Samples/Drums/kick.wav";
+    CHECK(files::relocate(saved).empty());  // nowhere to look yet
+    files::rememberFolder(files::toUtf8(s.root / "new disk"));
+    CHECK(files::relocate(saved) == moved);
+    // Saved on Windows, the same.
+    CHECK(files::relocate("D:\\Library\\Samples\\Drums\\kick.wav") == moved);
+    // The deepest tail that matches wins over a same-named file higher up.
+    const std::string decoy = s.touch("new disk/kick.wav");
+    CHECK(files::relocate(saved) == moved);
+    CHECK(files::relocate("/elsewhere/kick.wav") == decoy);
+    // A folder the caller adds is tried first.
+    const std::string other = s.touch("other/Drums/kick.wav");
+    CHECK(files::relocate(saved, {files::toUtf8(s.root / "other")}) == other);
+    // An existing path is itself; nothing found is "".
+    CHECK(files::relocate(moved) == moved);
+    CHECK(files::relocate("/nowhere/at/all.wav").empty());
+}
+
+TEST(remembered_folders_are_newest_first_and_bounded) {
+    FileScratch s;
+    for (int k = 0; k < 20; ++k) files::rememberFolder("/folder/" + std::to_string(k));
+    files::rememberFolder("/folder/5");
+    const std::vector<std::string> folders = files::searchFolders();
+    CHECK(folders.size() == 16);
+    CHECK(!folders.empty() && folders[0] == "/folder/5");
+    CHECK(folders.size() > 1 && folders[1] == "/folder/19");
+    CHECK(std::count(folders.begin(), folders.end(), "/folder/5") == 1);
+}
+
+TEST(a_file_under_another_users_home_is_found_under_this_ones) {
+    FileScratch s;
+    const std::string mine = s.touch("home/Music/loop.wav");
+#ifdef _WIN32
+    const char* homeVar = "USERPROFILE";
+#else
+    const char* homeVar = "HOME";
+#endif
+    const char* before = std::getenv(homeVar);
+    const std::string saved = before ? before : "";
+    setEnv(homeVar, files::toUtf8(s.root / "home"));
+    CHECK(files::relocate("/Users/somebody/Music/loop.wav") == mine);
+    CHECK(files::relocate("/home/somebody/Music/loop.wav") == mine);
+    CHECK(files::relocate("C:\\Users\\somebody\\Music\\loop.wav") == mine);
+    setEnv(homeVar, saved);
+}
+
+TEST(file_properties_load_relocate_and_report_what_became_of_them) {
+    int k = -1;
+    for (size_t i = 0; i < properties::kCount && k < 0; ++i)
+        if (properties::at(i).isFile() && files::hasExtension("x.wav", properties::at(i).extensions)) k = static_cast<int>(i);
+    if (k < 0) {
+        std::printf("      (no file property taking WAV in this product)\n");
+        return;
+    }
+    const size_t index = static_cast<size_t>(k);
+    FileScratch s;
+    using State = FileStatus::State;
+    auto e = std::make_unique<Engine>();
+    const int in = product::info::kAudioInput ? 2 : 0;
+    CHECK(e->fileStatus(index).state == State::Empty);
+    // Before the first activation nothing loads; activating loads it.
+    const std::string first = s.wav("a/first.wav");
+    CHECK(e->setProperty(index, first, true));
+    CHECK(e->fileStatus(index).state == State::Loading);
+    e->activate(48000.0, 256, in, 2);
+    CHECK(e->fileStatus(index).state == State::Ready);
+    CHECK(!e->fileStatus(index).summary.empty());
+    std::vector<double> l(256, 0.0), r(256, 0.0);
+    double* io[2] = {l.data(), r.data()};
+    e->process(io, io, 256);
+    // Missing: kept, and reported.
+    CHECK(e->setProperty(index, "/nowhere/at/all/missing.wav", true));
+    CHECK(e->properties().get(index) == "/nowhere/at/all/missing.wav");
+    CHECK(e->fileStatus(index).state == State::Missing);
+    e->process(io, io, 256);
+    // Moved: found, and the property follows it.
+    const std::string moved = s.wav("b/Samples/moved.wav");
+    files::rememberFolder(files::toUtf8(s.root / "b"));
+    CHECK(e->setProperty(index, "/old/place/Samples/moved.wav", true));
+    CHECK(e->properties().get(index) == moved);
+    CHECK(e->fileStatus(index).state == State::Ready);
+    // Not audio: failed, with a reason.
+    const std::string bad = s.touch("c/bad.wav");
+    CHECK(e->setProperty(index, bad, true));
+    CHECK(e->fileStatus(index).state == State::Failed && !e->fileStatus(index).error.empty());
+    // A file the user chose: its folder is remembered for next time.
+    const std::string chosen = s.wav("d/Kit/snare.wav");
+    CHECK(e->setProperty(index, chosen, true));
+    e->fileChosen(index);
+    CHECK(!files::searchFolders().empty() && files::searchFolders()[0] == files::folderOf(chosen));
+    // A new rate reloads it.
+    CHECK(e->setProperty(index, moved, true));
+    e->deactivate();
+    e->activate(96000.0, 256, in, 2);
+    CHECK(e->fileStatus(index).state == State::Ready);
+    e->process(io, io, 256);
+    // Cleared.
+    CHECK(e->setProperty(index, "", true));
+    CHECK(e->fileStatus(index).state == State::Empty);
+    e->process(io, io, 256);
+}
+
+TEST(a_file_loaded_while_the_audio_runs_arrives_whole) {
+    int k = -1;
+    for (size_t i = 0; i < properties::kCount && k < 0; ++i)
+        if (properties::at(i).isFile() && files::hasExtension("x.wav", properties::at(i).extensions)) k = static_cast<int>(i);
+    if (k < 0) {
+        std::printf("      (no file property taking WAV in this product)\n");
+        return;
+    }
+    FileScratch s;
+    auto e = std::make_unique<Engine>();
+    e->activate(48000.0, 128, product::info::kAudioInput ? 2 : 0, 2);
+    const std::string a = s.wav("one.wav"), b = s.wav("two.wav", 22050.0);
+    std::atomic<bool> stop{false};
+    std::thread audio([&] {
+        std::vector<double> l(128, 0.0), r(128, 0.0);
+        double* io[2] = {l.data(), r.data()};
+        while (!stop.load()) {
+            std::fill(l.begin(), l.end(), 0.0);
+            std::fill(r.begin(), r.end(), 0.0);
+            e->process(io, io, 128);
+        }
+    });
+    for (int n = 0; n < 40; ++n) e->setProperty(static_cast<size_t>(k), n % 2 ? a : b, n % 5 == 0);
+    e->waitForFiles();
+    stop = true;
+    audio.join();
+    CHECK(e->fileStatus(static_cast<size_t>(k)).state == FileStatus::State::Ready);
+    CHECK(e->properties().get(static_cast<size_t>(k)) == a);
 }
 
 SUPPLE_TEST_MAIN

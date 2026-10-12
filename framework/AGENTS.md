@@ -15,7 +15,7 @@ Read this file, then `docs/CONVENTIONS.md` for the reasons behind the rules.
 | --- | --- |
 | Name, plugin ID, version, AU codes, kind, layouts, capabilities (sidechain, aux outputs, notes, presets, tuning), sources | `product/product.cmake` |
 | Parameters: names, ranges, tapers, units, defaults, flags | `product/Params.h` |
-| State that is not a parameter: text, a label, a curve (optional) | `product/Properties.h` |
+| State that is not a parameter: text, a label, a curve, a file (optional) | `product/Properties.h` |
 | Factory presets (optional, with `PRODUCT_PRESETS ON`) | `product/Presets.h` |
 | What the plugin does to sound | `product/Processor.h` (and any `.cpp` listed in product.cmake) |
 | Layout, the product's own drawing, its custom interaction (optional: without them, the automatic editor) | `product/Editor.h`, `product/Editor.cpp` |
@@ -200,6 +200,19 @@ byte (`core/StateFormat.h`). There is nothing to write for it.
   it alone. The editor edits one with `ui().textField(id, rect)` or reads and
   writes it through `host().property(id)` / `setProperty(id, text)`; the
   processor hears each in `property(id, value)` (see DSP). The chord example.
+- **File references**: a property marked `.file("scl tun")` (or
+  `.audioFile()`, for WAV, AIFF and FLAC) holds a path, and the framework
+  minds the file (`core/Files.h`). Loading a session whose file has moved
+  looks for it -- under this user's home for one saved under another's, and
+  under every folder the user has lately picked a file from, matching as
+  much of the path's tail as it can -- and the property then holds where it
+  was found. A file found nowhere keeps its path (saving keeps the
+  reference) and is reported missing until the user points at it, which
+  remembers that folder and so finds the rest of a moved library too. The
+  file is loaded off the audio thread (see DSP), and the editor shows it
+  with `ui().fileSlot(id, rect)`. `SUPPLE_SETTINGS_DIR` replaces the
+  per-user settings folder the remembered folders live in, for tests. The
+  room example.
 - **Factory presets** (`product/Presets.h`, needs `PRODUCT_PRESETS ON`): a
   table of name, category, parameter values in plain units as `update` reads
   them (a percent as 0..1, a choice by index, a note value by
@@ -313,9 +326,51 @@ contract is at the top of `core/ProcessorBase.h`. In short:
   itself (a scope, a spectrum analyser), declare
   `static constexpr bool kAudioFeed = true;` and the framework copies the
   main input and output to an open editor; nothing to write in `process()`.
+- Files (`.file()` properties): the processor's `loadFile(request, error)`
+  runs on the framework's loading thread whenever the path changes, and
+  again when the sample rate, block size or width does; the default
+  decodes audio and resamples it to the session's rate (`dsp::AudioData`).
+  Declare `using FileContents = T;` and a static `loadFile` returning
+  `std::unique_ptr<T>` to make anything else there -- a whole convolution,
+  partitions and FFTs, so the audio thread only swaps it in -- and
+  optionally `static std::string describeFile(const T&)` for the editor.
+  `file(id, T* contents)` hands it over at the start of a block (null: no
+  file, a missing one, one that failed); it is the processor's, state and
+  all, until the next call for that id, and the framework frees it later,
+  elsewhere. Nothing loads before the first activation; a session load and
+  an activation wait for their files, so a bounce right after has them.
+  The room example.
 - `core/Dsp.h` has `Smoother`, `Ramp`, `DelayLine`, `DryWet`, `Svf` and gain
-  helpers. Products copy no DSP from other plugins; papers and measurements
-  are fine, with provenance noted.
+  helpers. The rest of the library is in `framework/dsp/`, header-only but
+  for file decoding, depending on nothing of the product's, allocation-free
+  in `process` and deterministic (the same samples on every platform):
+  - `Filters.h`: the cookbook biquads (`Biquad::lowpass`, `peak`,
+    `lowShelf`...), Butterworth and Linkwitz-Riley cascades to order 16, a
+    `Crossover`, `OnePole` (low, high, all-pass; modulation-safe) and a
+    `DcBlocker`. Each answers `response(hz, rate)` for drawing curves.
+  - `Dynamics.h`: `EnvelopeFollower`, `RmsFollower`, `GainComputer`
+    (threshold, ratio, knee), `SlidingMax`, `Lookahead` (a limiter's gain,
+    never late) and `TruePeak`.
+  - `Oversampler.h`: 2x to 16x, linear or minimum phase, its `latency()` to
+    report. `Shapers.h`: hard, tanh and cubic clippers with antiderivative
+    anti-aliasing (`Adaa<TanhShape>`). The drive example has both.
+  - `Stft.h` (overlap-add, with `core/Fft.h`) and `Convolution.h`
+    (partitioned, zero latency).
+  - `Oscillators.h`: `Random` (PCG32, the same everywhere), `Noise`,
+    polyBLEP `Oscillator`, mip-mapped `Wavetable`, `Lfo` (with `syncTo` the
+    song position). `Envelope.h`: `Adsr` with curves. `Interpolation.h`:
+    Hermite and Lagrange, `FractionalDelay`, `AllpassDelay`.
+  - `Voices.h`: which voice plays which note -- allocation, stealing, the
+    sustain pedal, mono and legato, glide, bend, MPE -- keeping the note-end
+    books; the sound stays the product's. The instrument example.
+  - `Loudness.h`: K-weighted momentary, short-term and gated integrated
+    LUFS (BS.1770), and `Correlation`.
+  - `Worker.h`: a thread for what the audio thread may not do, and
+    `Handoff<T>` to pass the result over without a lock. `AudioFile.h`:
+    WAV, AIFF and FLAC in (dr_wav, dr_flac), WAV out, `resample`, and
+    `DiskStream` for files too long to hold.
+  Products copy no DSP from other plugins; papers and measurements are fine,
+  with provenance noted.
 - A product moving onto this framework with sessions in the wild implements
   `static loadLegacyState` for its old format.
 
@@ -342,7 +397,10 @@ drive example). Write your own once the product is past its sketch.
     gesture.
   - Without a parameter: `button(rect, label, action)`; `momentary(param,
     rect)`, on while held; `textField(propertyId, rect)` for a property (its
-    label is the placeholder); `presetBar(rect)` and `presetList(rect)`;
+    label is the placeholder); `fileSlot(propertyId, rect)` for a file
+    property: its name and state (loading, loaded, missing), a dialog on a
+    click, a file dropped on it taken, cleared from its menu;
+    `presetBar(rect)` and `presetList(rect)`;
     `list(rect, rows)` over a `ListSource` of the product's (a file
     browser); `keyboard(rect, low, high)`, which plays the processor's
     `note()` and lights every key held, from anywhere (needs note input).
@@ -398,8 +456,9 @@ drive example). Write your own once the product is past its sketch.
   system's dialog without blocking the host; `done` runs later with the
   paths, or none. Files dragged onto the editor: `acceptsDrop(x, y)` says
   where they are welcome (`dropping()` lights it) and `onDrop(x, y, paths)`
-  takes them. A `.preset` file dropped on an editor with presets loads;
-  the preset bar's menu imports and exports them.
+  takes them. A `.preset` file dropped on an editor with presets loads, and
+  a file dropped on a file slot is taken there; the preset bar's menu
+  imports and exports presets.
 - Custom interactive drawing (a graph handle, an EQ node): override
   `onPointerDown/Move/Up` and edit through `ui().dragEdit(control, value)`
   (or `dragEdit(controlX, x, controlY, y)` for two at once) and

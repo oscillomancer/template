@@ -24,6 +24,7 @@ if (UNIX AND EXISTS "${SUPPLE_ROOT}/.github/scripts/clap-probe-mac.sh")
 endif()
 
 supple_test(core-tests SOURCES ${SUPPLE_FRAMEWORK}/test/core_test.cpp LINK product-core)
+supple_test(dsp-tests SOURCES ${SUPPLE_FRAMEWORK}/test/dsp_test.cpp LINK product-core)
 if (product_test_sources)
     supple_test(processor-tests SOURCES ${product_test_sources} LINK product-core)
 endif()

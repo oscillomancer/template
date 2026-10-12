@@ -223,10 +223,10 @@ int main(int argc, char** argv) {
         }
         for (const PresetText& t : p.texts) {
             const int i = properties::indexOf(t.id);
-            if (i >= 0) engine->properties().set(static_cast<size_t>(i), t.value);
+            if (i >= 0) engine->setProperty(static_cast<size_t>(i), t.value, true);
         }
     }
-    for (const auto& [k, value] : propertyValues) engine->properties().set(k, value);
+    for (const auto& [k, value] : propertyValues) engine->setProperty(k, value, true);
     std::stable_sort(changes.begin(), changes.end(), [](const Change& a, const Change& b) { return a.frame < b.frame; });
     size_t next = 0;
     while (next < changes.size() && changes[next].frame == 0) {

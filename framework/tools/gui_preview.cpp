@@ -59,10 +59,21 @@ class PreviewHost : public EditorHost, public StateAccess {
     bool setProperty(uint32_t id, std::string_view value) override {
         const int i = properties::indexOf(id);
         if (i < 0 || !properties_.set(static_cast<size_t>(i), value)) return false;
-        if (engine_) engine_->properties().set(static_cast<size_t>(i), value);
+        if (engine_) engine_->setProperty(static_cast<size_t>(i), value, true);
         return true;
     }
     uint64_t propertiesVersion() const override { return properties_.version(); }
+    FileStatus fileStatus(uint32_t id) const override {
+        const int i = properties::indexOf(id);
+        if (i < 0) return {};
+        if (engine_) return engine_->fileStatus(static_cast<size_t>(i));
+        FileStatus s;  // before any audio: what the path says
+        s.path = properties_.get(static_cast<size_t>(i));
+        s.state = s.path.empty() ? FileStatus::State::Empty
+                  : files::exists(s.path) ? FileStatus::State::Loading
+                                          : FileStatus::State::Missing;
+        return s;
+    }
     PresetLibrary* presetLibrary() override { return presets_.get(); }
 
     // The track, as a host would say it.
@@ -131,7 +142,7 @@ class PreviewHost : public EditorHost, public StateAccess {
         if (!engine_) {
             engine_ = std::make_unique<Engine>();
             for (size_t i = 0; i < params::kCount; ++i) engine_->store().set(i, values_[i]);
-            for (size_t i = 0; i < properties::kCount; ++i) engine_->properties().set(i, properties_.get(i));
+            for (size_t i = 0; i < properties::kCount; ++i) engine_->setProperty(i, properties_.get(i), true);
             engine_->activate(kRate, kPeriodMax, product::info::kAudioInput ? width : 0, width);
             engine_->setMetering(true);
         }
@@ -410,7 +421,8 @@ int main(int argc, char** argv) {
         }
         const int k = propertyByName(name);
         for (int i = 0; k >= 0 && i < ui.count() && c < 0; ++i)
-            if (ui.control(i).widget == Widget::TextField && ui.control(i).param == properties::at(static_cast<size_t>(k)).id)
+            if ((ui.control(i).widget == Widget::TextField || ui.control(i).widget == Widget::File) &&
+                ui.control(i).param == properties::at(static_cast<size_t>(k)).id)
                 c = i;
         const int p = paramByName(name);
         if (c < 0 && p >= 0) c = ui.find(params::at(static_cast<size_t>(p)).id);
@@ -490,7 +502,7 @@ int main(int argc, char** argv) {
     if (!capture.got) return 4;
     // If a window manager sized the window anyway, Window letterboxed the
     // panel: crop to it, so the image is always the panel and only the panel.
-    const float fit = std::min(capture.w / editor.width(), capture.h / editor.height());
+    const float fit = std::min(static_cast<float>(capture.w) / editor.width(), static_cast<float>(capture.h) / editor.height());
     const int w = static_cast<int>(std::lround(editor.width() * fit));
     const int h = static_cast<int>(std::lround(editor.height() * fit));
     const int x0 = (capture.w - w) / 2, y0 = (capture.h - h) / 2;

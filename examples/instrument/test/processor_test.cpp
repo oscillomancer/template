@@ -322,4 +322,70 @@ TEST(a_tuning_moves_every_note_and_an_unmapped_key_stays_silent) {
     CHECK(test::peak(test::render(test::silence(2, 9600), o)) == 0.0);
 }
 
+// --- the voice manager's modes --------------------------------------------------------------
+
+TEST(the_sustain_pedal_holds_a_released_note) {
+    test::RenderOptions o;
+    o.initial = {{kRelease, 5.0}};
+    o.events = {test::midi(0, MidiMessage::cc(0, 64, 127)), test::noteOn(0, 69), test::noteOff(4800, 69)};
+    const test::Signal held = test::render(test::silence(2, 24000), o);
+    CHECK(test::rms(test::Signal{{held[0].begin() + 12000, held[0].end()}}) > 0.05);  // still sounding
+    o.events.push_back(test::midi(12000, MidiMessage::cc(0, 64, 0)));
+    const test::Signal lifted = test::render(test::silence(2, 24000), o);
+    CHECK(test::peak(lifted, 12000 + 480) == 0.0);  // released when the pedal lifts
+}
+
+namespace {
+// The pitch over part of a signal, from its rising zero crossings.
+double hertzBetween(const test::Signal& s, size_t from, size_t to) {
+    int crossings = 0;
+    for (size_t i = from + 1; i < to; ++i) crossings += s[0][i - 1] < 0.0 && s[0][i] >= 0.0;
+    return crossings * static_cast<double>(kSecond) / static_cast<double>(to - from);
+}
+}  // namespace
+
+TEST(mono_plays_one_note_and_glides_between_them) {
+    test::RenderOptions o;
+    o.initial = {{kMode, 1}, {kGlide, 100.0}};
+    o.events = {test::noteOn(0, 57), test::noteOn(9600, 69)};
+    auto engine = std::make_unique<Engine>();
+    const test::Signal out = test::render(test::silence(2, 4 * 9600), o, engine.get());
+    CHECK(engine->voices() == 1);
+    // Before the second note, A3; a glide later, A4: one voice, no chord.
+    CHECK_NEAR(hertzBetween(out, 0, 9600), 220.0, 6.0);
+    CHECK_NEAR(hertzBetween(out, 2 * 9600, 4 * 9600), 440.0, 3.0);
+    // And on the way, somewhere between.
+    const double middle = hertzBetween(out, 9600 + 1600, 9600 + 3200);
+    CHECK(middle > 240.0 && middle < 420.0);
+}
+
+TEST(legato_does_not_restart_the_envelope) {
+    // The first note has decayed to a low sustain when the second arrives
+    // over it: mono attacks again, legato carries on at the sustain level.
+    auto levelAfter = [](int mode) {
+        test::RenderOptions o;
+        o.initial = {{kMode, mode}, {kAttack, 5.0}, {kDecay, 50.0}, {kSustain, 0.2}};
+        o.events = {test::noteOn(0, 60), test::noteOn(9600, 67)};
+        const test::Signal out = test::render(test::silence(2, 9600 + 960), o);
+        return test::peak(out, 9600 + 480);
+    };
+    CHECK(levelAfter(1) > 2.0 * levelAfter(2));
+}
+
+TEST(the_saw_is_band_limited_live) {
+    // C8's saw: harmonics past Nyquist fold back, much quieter than a naive
+    // saw would put them. Its 7th, at 29.3 kHz, folds to 18.7 kHz.
+    test::RenderOptions o;
+    o.blocks = {64, 512, 1000};
+    o.initial = {{kWaveform, 2}};
+    o.events = {test::noteOn(0, 108)};
+    const test::Signal raw = test::render(test::silence(2, kSecond + 4800), o);
+    const test::Signal out{{raw[0].begin() + 4800, raw[0].end()}};
+    const double f = 440.0 * std::exp2((108 - 69) / 12.0);
+    const double alias = levelDb(out, kSecond - 7 * f) - levelDb(out, f);
+    // A naive saw's 7th is 1/7 of its fundamental: -17 dB. (Up here
+    // polyBLEP's gain is smallest; lower notes do far better.)
+    CHECK_MSG(alias < -27.0, "the 7th harmonic folds back at %.1f dB", alias);
+}
+
 SUPPLE_TEST_MAIN

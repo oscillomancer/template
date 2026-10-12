@@ -7,8 +7,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
 #include <utility>
 
+#include "core/Files.h"
 #include "core/ParamTable.h"
 #include "core/PresetLibrary.h"
 #include "core/PropertyTable.h"
@@ -263,7 +266,7 @@ Control& Ui::envelope(Rect r, uint32_t attack, uint32_t decay, uint32_t sustain,
 uint32_t Ui::paramOf(int i, int slot) const {
     if (i < 0 || i >= count()) return kNoParam;
     const Control& c = controls_[static_cast<size_t>(i)];
-    return c.widget == Widget::TextField ? kNoParam : c.paramAt(slot);
+    return c.widget == Widget::TextField || c.widget == Widget::File ? kNoParam : c.paramAt(slot);
 }
 
 const ParamDef* Ui::def(int i, int slot) const {
@@ -287,7 +290,7 @@ int Ui::slots(int i) const {
 int Ui::find(uint32_t param) const {
     for (int i = 0; i < count(); ++i) {
         const Control& c = controls_[static_cast<size_t>(i)];
-        if (c.widget == Widget::TextField) continue;
+        if (c.widget == Widget::TextField || c.widget == Widget::File) continue;
         for (int k = 0; k < Control::kSlots; ++k)
             if (c.paramAt(k) == param && param != kNoParam) return i;
     }
@@ -329,6 +332,13 @@ ControlState Ui::state(int i) const {
     s.active = drag_.control == i || gesture_.involves(i) || (menu_.open && menu_.control == i) || s.editing;
     switch (c.widget) {
         case Widget::TextField: s.text = host_.property(c.param); break;
+        case Widget::File: {
+            s.text = host_.property(c.param);
+            const FileStatus status = host_.fileStatus(c.param);
+            s.file = status.state;
+            s.detail = status.state == FileStatus::State::Failed ? status.error : status.summary;
+            break;
+        }
         case Widget::PresetBar:
             s.text = presetName_;
             s.modified = presetModified_;
@@ -392,6 +402,10 @@ bool Ui::interactive(int i) const {
     if (!c.enabled) return false;
     switch (c.widget) {
         case Widget::TextField: return properties::indexOf(c.param) >= 0;
+        case Widget::File: {
+            const int k = properties::indexOf(c.param);
+            return k >= 0 && properties::at(static_cast<size_t>(k)).isFile();
+        }
         case Widget::PresetBar: return host_.presetLibrary() != nullptr;
         case Widget::Button: return static_cast<bool>(c.action);
         case Widget::Tabs: return !c.pages.empty();
@@ -637,6 +651,20 @@ bool Ui::pointerDown(float x, float y, int button, uint32_t mods, bool doubleCli
     }
     if (button == 1) {  // secondary: the context menu
         const int i = controlAt(x, y);
+        if (i >= 0 && controls_[static_cast<size_t>(i)].widget == Widget::File && interactive(i)) {
+            endGesture();
+            setFocus(i);
+            const uint32_t id = controls_[static_cast<size_t>(i)].param;
+            const bool chosen = !host_.property(id).empty();
+            popup(Rect{x, y, 0.0f, 0.0f},
+                  {MenuItem::item("Choose\xE2\x80\xA6", false, files_ != nullptr), MenuItem::item("Clear", false, chosen)},
+                  [this, i, id](int row) {
+                      if (row == 0) chooseFile(i);
+                      else host_.setProperty(id, "");
+                  },
+                  140.0f, i);
+            return true;
+        }
         if (i < 0 || parameterless(i) || controls_[static_cast<size_t>(i)].widget == Widget::List) return false;
         endGesture();
         setFocus(i);
@@ -660,6 +688,7 @@ bool Ui::pointerDown(float x, float y, int button, uint32_t mods, bool doubleCli
     dirty_ = true;
     switch (c.widget) {
         case Widget::TextField: openTextEdit(i); return true;
+        case Widget::File: chooseFile(i); return true;
         case Widget::PresetBar: presetAction(i, presetPartAt(i, x)); return true;
         case Widget::Button: {
             const std::function<void()> action = c.action;  // it may add controls
@@ -1013,6 +1042,11 @@ bool Ui::key(uint32_t code, uint32_t mods) {
         case Widget::TextField:
             if (enter) openTextEdit(i);
             return enter;
+        case Widget::File:
+            if (enter || code == key::kSpace) chooseFile(i);
+            else if (code == key::kDelete || code == key::kBackspace) host_.setProperty(c.param, "");
+            else return false;
+            return true;
         case Widget::PresetBar:
             if (enter) presetAction(i, presetbar::kName);
             else if (code == key::kLeft || code == key::kUp) presetAction(i, presetbar::kPrevious);
@@ -1562,6 +1596,18 @@ void Ui::openTooltip() {
     const int i = hover_;
     if (i < 0) return;
     const Control& c = controls_[static_cast<size_t>(i)];
+    if (c.widget == Widget::File && !c.tooltip) {
+        // The whole path, which the slot shortens to its name.
+        const std::string_view path = host_.property(c.param);
+        if (path.empty()) return;
+        tooltip_.open = true;
+        tooltip_.control = i;
+        tooltip_.anchor = c.bounds;
+        tooltip_.title = "";
+        tooltip_.text = std::string(path);
+        dirty_ = true;
+        return;
+    }
     const ParamDef* p = def(i);
     const char* text = c.tooltip ? c.tooltip : p ? p->description : nullptr;
     if (!text) return;
@@ -1571,6 +1617,67 @@ void Ui::openTooltip() {
     tooltip_.title = p && !c.tooltip ? p->name : "";
     tooltip_.text = text;
     dirty_ = true;
+}
+
+// --- file slots ---------------------------------------------------------------------
+
+namespace {
+const PropertyDef* fileProperty(uint32_t id) {
+    const int k = properties::indexOf(id);
+    return k >= 0 && properties::at(static_cast<size_t>(k)).isFile() ? &properties::at(static_cast<size_t>(k)) : nullptr;
+}
+}  // namespace
+
+int Ui::fileSlotAt(float x, float y, const std::vector<std::string>& paths) const {
+    const int i = controlAt(x, y);
+    if (i < 0 || controls_[static_cast<size_t>(i)].widget != Widget::File || !interactive(i)) return -1;
+    const PropertyDef* p = fileProperty(controls_[static_cast<size_t>(i)].param);
+    if (paths.empty()) return i;  // still being dragged: what it holds is not known yet
+    for (const std::string& path : paths)
+        if (files::hasExtension(path, p->extensions)) return i;
+    return -1;
+}
+
+bool Ui::dropFiles(float x, float y, const std::vector<std::string>& paths) {
+    if (paths.empty()) return false;
+    const int i = fileSlotAt(x, y, paths);
+    if (i < 0) return false;
+    const Control& c = controls_[static_cast<size_t>(i)];
+    for (const std::string& path : paths) {
+        if (!files::hasExtension(path, fileProperty(c.param)->extensions)) continue;
+        setFocus(i);
+        host_.setProperty(c.param, path);
+        dirty_ = true;
+        return true;
+    }
+    return false;
+}
+
+void Ui::chooseFile(int i) {
+    if (i < 0 || i >= count() || !files_ || !interactive(i)) return;
+    const Control& c = controls_[static_cast<size_t>(i)];
+    const PropertyDef* p = fileProperty(c.param);
+    if (!p) return;
+    FileDialogs::Options o;
+    o.title = std::string("Choose ") + (c.label ? c.label : p->name);
+    for (std::string_view types = p->extensions; !types.empty();) {
+        const size_t space = types.find(' ');
+        const std::string_view type = types.substr(0, space);
+        if (!type.empty()) o.extensions.push_back("." + std::string(type));
+        types = space == std::string_view::npos ? std::string_view() : types.substr(space + 1);
+    }
+    // Where the present file is, if it is anywhere.
+    const std::string current(host_.property(c.param));
+    if (!current.empty()) {
+        const std::string folder = files::folderOf(current);
+        std::error_code ec;
+        if (std::filesystem::is_directory(files::fromUtf8(folder), ec)) o.folder = folder;
+    }
+    const uint32_t id = c.param;
+    files_->open(o, [this, id](const std::vector<std::string>& paths) {
+        if (!paths.empty()) host_.setProperty(id, paths.front());
+        dirty_ = true;
+    });
 }
 
 // --- presets -----------------------------------------------------------------------
@@ -1780,6 +1887,14 @@ void Ui::applyRules() {
 
 void Ui::idle(double seconds) {
     applyRules();
+    // A file loads, or goes missing, without any property changing.
+    fileStates_.resize(controls_.size(), 0xFF);
+    for (size_t i = 0; i < controls_.size(); ++i) {
+        if (controls_[i].widget != Widget::File) continue;
+        const auto now = static_cast<uint8_t>(host_.fileStatus(controls_[i].param).state);
+        if (now != fileStates_[i]) dirty_ = true;
+        fileStates_[i] = now;
+    }
     presetPoll_ += seconds;
     if (presetPoll_ >= 0.25) syncPresets(false);
     if ((gesture_.control[0] >= 0 || gesture_.control[1] >= 0) && gesture_.timed) {

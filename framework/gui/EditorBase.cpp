@@ -149,7 +149,11 @@ void EditorBase::render(NVGcontext* vg) {
     }
     ui_.applyRules();
     paint(vg);
-    if (dropping_) widgets::dropTarget(vg, theme_, {0.0f, 0.0f, width_, height_});
+    if (dropping_) {
+        // Over a file slot, the slot is the target; elsewhere, the editor.
+        const int slot = ui_.fileSlotAt(dropX_, dropY_, {});
+        widgets::dropTarget(vg, theme_, slot >= 0 ? ui_.control(slot).bounds : Rect{0.0f, 0.0f, width_, height_});
+    }
     widgets::overlays(vg, theme_, ui_);
     ui_.takeDirty();  // drawn: whatever Ui changed is on screen now
     dirty_ = false;
@@ -214,7 +218,7 @@ void EditorBase::focusLost() {
 // --- files dropped -------------------------------------------------------------------
 
 bool EditorBase::dropOver(float x, float y) {
-    const bool wanted = acceptsDrop(x, y) || host_.presetLibrary() != nullptr;
+    const bool wanted = ui_.fileSlotAt(x, y, {}) >= 0 || acceptsDrop(x, y) || host_.presetLibrary() != nullptr;
     if (wanted != dropping_ || x != dropX_ || y != dropY_) dirty_ = true;
     dropping_ = wanted;
     dropX_ = x;
@@ -234,6 +238,7 @@ void EditorBase::drop(float x, float y, const std::vector<std::string>& paths) {
         if (PresetLibrary* library = host_.presetLibrary()) library->loadFile(PresetLibrary::fromUtf8(paths.front()));
         return;
     }
+    if (ui_.dropFiles(x, y, paths)) return;
     if (acceptsDrop(x, y)) onDrop(x, y, paths);
 }
 

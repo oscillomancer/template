@@ -517,6 +517,7 @@ int main(int argc, char** argv) {
             return out;
         };
 
+        g_restarts = 0;
         setAll(0.35);
         MemStream wanted;
         clap_ostream_t ow{&wanted, memWrite};
@@ -528,6 +529,15 @@ int main(int argc, char** argv) {
         }
         clap_istream_t iw{&wanted, memRead};
         check(state->load(plug, &iw), "a state loads into the active instance");
+        // A restart parameter moved (a latency, an oversampling factor): a
+        // host restarts the plugin when asked, so do that first.
+        if (g_restarts > 0) {
+            plug->stop_processing(plug);
+            plug->deactivate(plug);
+            plug->activate(plug, 48000.0, 32, block);
+            plug->start_processing(plug);
+            g_restarts = 0;
+        }
         plug->reset(plug);
         const std::vector<float> reused = render(plug, 60);
 

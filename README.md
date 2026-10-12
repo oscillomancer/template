@@ -54,11 +54,12 @@ beside `framework/`, not in it, so products do not carry them.
 
 | Example | What it shows |
 | --- | --- |
-| `instrument` (Tone) | Notes at their exact sample, voices and voice info, note ends for the host, pitch bend and the mod wheel, tuning and volume note expressions, per-note modulation of a parameter, microtuning (MTS-ESP, CLAP tuning), a better oscillator for offline bounces; an envelope editor and an on-screen keyboard |
+| `instrument` (Tone) | Notes at their exact sample, a voice manager (stealing, the sustain pedal, mono and legato with glide, pitch bend) and voice info, note ends for the host, the mod wheel's LFO, tuning and volume note expressions, per-note modulation of a parameter, microtuning (MTS-ESP, CLAP tuning), a polyBLEP saw and a better oscillator for offline bounces; an envelope editor and an on-screen keyboard |
 | `pulse` (Pulse) | A tempo-synced rate, framework-smoothed parameters, a level off at its minimum (-inf dB), an output parameter the host displays, factory presets in categories and the preset bar; tab pages, a preset browser, an XY pad, controls enabled by a rule, an SVG logo and a light and dark look |
 | `duck` (Duck) | A sidechain input, a named aux output, surround (5.1, 7.1.4) and ambisonic layouts, the track's name and colour; the audio scrolling by, gain reduction over time, RMS metering |
 | `chord` (Chord) | A note effect: notes and MIDI in and out, no audio, notes sent at exact frames; properties (a chord typed as text, a per-project label) and presets that set them; keys named by the chord they play |
-| `drive` (Drive) | A saturator with no editor code: the automatic editor, from groups and help text |
+| `drive` (Drive) | A saturator with no editor code: the automatic editor, from groups and help text; oversampling (its latency reported, a restart to change it) and anti-aliased clipping; true-peak and loudness (LUFS) readouts |
+| `room` (Room) | A convolution reverb: an impulse response from a file -- relocated when a session moves, reported when missing, loaded and turned into a convolution off the audio thread -- or its own room; a file slot to choose or drop one; pre-delay through a fractional delay |
 
 Bigger capabilities are switched on in `product.cmake` (`PRODUCT_SIDECHAIN ON`,
 `PRODUCT_AUX_OUTPUTS "Kick" "Snare"`, `PRODUCT_NOTE_OUTPUT ON`, `PRODUCT_PRESETS ON`, `PRODUCT_TUNING ON`, ...); a product

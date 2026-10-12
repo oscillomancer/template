@@ -203,9 +203,10 @@ supple_vendored(product-assets)
 
 # Everything SDK-free: parameters, the engine, the product's DSP.
 add_library(product-core STATIC ${SUPPLE_FRAMEWORK}/core/Param.cpp ${SUPPLE_FRAMEWORK}/core/PresetLibrary.cpp
-    ${product_dsp_sources})
+    ${SUPPLE_FRAMEWORK}/core/Files.cpp ${SUPPLE_FRAMEWORK}/dsp/AudioFile.cpp ${product_dsp_sources})
 target_include_directories(product-core PUBLIC ${SUPPLE_FRAMEWORK} ${SUPPLE_PRODUCT} ${SUPPLE_GENERATED})
-target_link_libraries(product-core PUBLIC product-assets)
+find_package(Threads REQUIRED)
+target_link_libraries(product-core PUBLIC product-assets supple-drlibs Threads::Threads)
 supple_defaults(product-core)
 
 if (SUPPLE_BUILD_GUI)

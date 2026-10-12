@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Supple Audio
 //
-// A small radix-2 FFT, for an editor's spectrum analyser: complex, in place,
-// any power-of-two size, tables built once. Not tuned for the audio thread;
-// a product doing spectral processing there wants a faster one.
+// A small radix-2 FFT: complex, in place, any power-of-two size, tables built
+// once. resize() allocates; forward() and inverse() do not, so it serves the
+// audio thread too (dsp/Stft.h, dsp/Convolution.h). Plain and deterministic
+// rather than fast: the same input gives the same bits on every platform.
 #pragma once
 
 #include <cmath>
@@ -52,6 +53,14 @@ class Fft {
                 }
             }
         }
+    }
+
+    // The inverse, scaled by 1/N: inverse(forward(x)) is x.
+    void inverse(std::complex<double>* x) const {
+        for (size_t i = 0; i < n_; ++i) x[i] = std::conj(x[i]);
+        forward(x);
+        const double scale = 1.0 / static_cast<double>(n_);
+        for (size_t i = 0; i < n_; ++i) x[i] = std::conj(x[i]) * scale;
     }
 
   private:

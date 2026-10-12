@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "core/Files.h"
+
 namespace supple::gui::widgets {
 namespace {
 
@@ -215,6 +217,7 @@ void control(NVGcontext* vg, const Theme& t, const Control& c, const ControlStat
     if (!c.visible) return;
     switch (c.widget) {
         case Widget::TextField: return textField(vg, t, c, s);
+        case Widget::File: return fileSlot(vg, t, c, s);
         case Widget::PresetBar: return presetBar(vg, t, c, s);
         case Widget::Button: return button(vg, t, c, s);
         case Widget::Tabs: return tabs(vg, t, c, s);
@@ -260,6 +263,69 @@ void textField(NVGcontext* vg, const Theme& t, const Control& c, const ControlSt
         nvgResetScissor(vg);
     }
     if (s.focused && !s.editing) focusOutline(vg, t, b, radius);
+    nvgRestore(vg);
+}
+
+void fileSlot(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
+    using State = FileStatus::State;
+    const Rect b = c.bounds;
+    const float radius = std::min(5.0f, b.h * 0.5f);
+    nvgSave(vg);
+    if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
+    well(vg, t, b, radius);
+    if (s.hover || s.active) {
+        roundedRect(vg, b.inset(0.5f), radius);
+        nvgStrokeColor(vg, rgb(t.lineLit));
+        nvgStrokeWidth(vg, 1.0f);
+        nvgStroke(vg);
+    }
+    // A page with its corner folded.
+    const float h = std::min(14.0f, b.h - 10.0f), w = h * 0.78f, x = b.x + 10.0f, y = b.cy() - h * 0.5f, fold = w * 0.38f;
+    const NVGcolor glyph = s.file == State::Missing || s.file == State::Failed ? rgb(t.alert)
+                           : s.file == State::Ready                            ? rgb(t.accent)
+                                                                               : rgb(t.textMuted);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, x, y);
+    nvgLineTo(vg, x + w - fold, y);
+    nvgLineTo(vg, x + w, y + fold);
+    nvgLineTo(vg, x + w, y + h);
+    nvgLineTo(vg, x, y + h);
+    nvgClosePath(vg);
+    nvgMoveTo(vg, x + w - fold, y);
+    nvgLineTo(vg, x + w - fold, y + fold);
+    nvgLineTo(vg, x + w, y + fold);
+    nvgStrokeColor(vg, glyph);
+    nvgStrokeWidth(vg, 1.2f);
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStroke(vg);
+
+    // The state on the right; the name in what is left.
+    const char* tag = nullptr;
+    NVGcolor tagColour = rgb(t.textFaint);
+    switch (s.file) {
+        case State::Loading: tag = "Loading\xE2\x80\xA6"; break;
+        case State::Missing: tag = "Missing"; tagColour = rgb(t.alert); break;
+        case State::Failed: tag = "Can\xE2\x80\x99t load"; tagColour = rgb(t.alert); break;
+        case State::Ready: tag = s.detail.empty() ? nullptr : s.detail.c_str(); break;
+        case State::Empty: break;
+    }
+    float right = b.right() - 9.0f;
+    if (tag) {
+        const float tw = textWidth(vg, tag, 10.0f, font::kUi);
+        if (tw < b.w * 0.45f) {
+            label(vg, right, b.cy() + 0.5f, tag, 10.0f, tagColour, Align::Right);
+            right -= tw + 10.0f;
+        }
+    }
+    const float left = x + w + 9.0f;
+    nvgScissor(vg, left, b.y, std::max(0.0f, right - left), b.h);
+    const std::string name = files::fileName(s.text);
+    if (!name.empty())
+        label(vg, left, b.cy() + 0.5f, name.c_str(), 11.5f, s.file == State::Missing ? rgb(t.textMuted) : rgb(t.text));
+    else
+        label(vg, left, b.cy() + 0.5f, c.label ? c.label : "Choose or drop a file", 11.5f, rgb(t.textFaint));
+    nvgResetScissor(vg);
+    if (s.focused) focusOutline(vg, t, b, radius);
     nvgRestore(vg);
 }
 

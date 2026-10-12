@@ -64,7 +64,7 @@ namespace supple::gui {
 
 enum class Widget : uint8_t {
     Knob, HSlider, VSlider, Toggle, Segmented, Dropdown, Readout, TextField, PresetBar,
-    Button, Momentary, XYPad, Tabs, List, Keyboard, Envelope,
+    Button, Momentary, XYPad, Tabs, List, Keyboard, Envelope, File,
 };
 
 // An unused parameter slot.
@@ -189,11 +189,13 @@ struct ControlState {
     bool editing = false;     // its text field is open
     int hoverIndex = -1;      // segment, preset bar part, tab, list row, key or envelope handle under the pointer
     int activeIndex = -1;     // the envelope handle, or the key, being held
-    std::string_view text;    // a text field's value; a preset bar's preset name
+    std::string_view text;    // a text field's value; a preset bar's preset name; a file slot's path
     bool modified = false;    // preset bar: changed since the preset loaded
     int slot = 0;             // preset bar: 0 for A, 1 for B
     bool available = true;    // preset bar: there is a preset library
     uint64_t keys[2] = {};    // keyboard: keys held, from anywhere (bit k of keys[k / 64])
+    FileStatus::State file = FileStatus::State::Empty;  // file slot: what became of it
+    std::string detail;       // file slot: the loaded file's summary, or why it failed
 
     const char* label(const Control& c) const { return c.label ? c.label : def ? def->displayLabel() : ""; }
     bool keyHeld(int key) const { return key >= 0 && key < 128 && (keys[key >> 6] >> (key & 63) & 1u); }
@@ -221,6 +223,10 @@ class Ui {
     Control& readout(uint32_t param, Rect r) { return add(param, Widget::Readout, r); }
     // A property's value as one line of text, edited in place.
     Control& textField(uint32_t property, Rect r) { return add(property, Widget::TextField, r); }
+    // A file() property's file: its name and what became of it (loading,
+    // loaded, missing). Clicking opens a dialog, a file dropped on it is
+    // taken, and the right-click menu clears it.
+    Control& fileSlot(uint32_t property, Rect r) { return add(property, Widget::File, r); }
     // Previous, the preset's name (a menu of presets and what to do with
     // them), next, and A/B. Needs PRODUCT_PRESETS ON.
     Control& presetBar(Rect r) { return add(kNoParam, Widget::PresetBar, r); }
@@ -291,6 +297,13 @@ class Ui {
     // Keys held anywhere, for the keyboard to light (EditorBase passes what
     // telemetry says).
     void setKeysHeld(const uint64_t keys[2]);
+    // Files dragged over the editor: the file slot under (x, y) that would
+    // take them, or -1; dropping them there sets its property (the first
+    // file it accepts).
+    int fileSlotAt(float x, float y, const std::vector<std::string>& paths) const;
+    bool dropFiles(float x, float y, const std::vector<std::string>& paths);
+    // The file slot's dialog, as a click opens it.
+    void chooseFile(int control);
 
     struct Menu {
         bool open = false;
@@ -478,6 +491,7 @@ class Ui {
     int buildingPage_ = 0;
     int playing_ = -1;      // the key the keyboard is sounding
     uint64_t keysHeld_[2] = {};
+    std::vector<uint8_t> fileStates_;  // each control's last FileStatus::State, to repaint when one moves
     Clipboard* clipboard_ = nullptr;
     FileDialogs* files_ = nullptr;
     // What the preset bars show, polled from the library.

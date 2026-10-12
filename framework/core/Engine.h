@@ -40,6 +40,9 @@
 //   - what the editor plays and sees: notes from its keyboard (playNote),
 //     the keys held (in telemetry), and the audio itself for a processor
 //     that declared kAudioFeed (feed()), each only while an editor is open.
+//   - the files file() properties name (setProperty): relocated when they
+//     have moved, loaded on a worker thread with the processor's
+//     loadFile(), and handed to its file() hook at the start of a block.
 #pragma once
 
 #include <algorithm>
@@ -53,6 +56,8 @@
 #include "core/AudioFeed.h"
 #include "core/Denormals.h"
 #include "core/Dsp.h"
+#include "core/FileSlots.h"
+#include "core/Files.h"
 #include "core/ParamTable.h"
 #include "core/ParamValues.h"
 #include "core/PropertyStore.h"
@@ -144,6 +149,7 @@ class BasicEngine {
         processor_.bindNoteOutput(&noteOutput_);
         processor_.bindOutputs(outputs_);
         processor_.bindNoteNamesChanged(&namesChanged_);
+        if constexpr (properties::kFileCount > 0) files_ = std::make_unique<FileSlots<P>>();
     }
 
     ParamStore& store() { return store_; }
@@ -152,6 +158,48 @@ class BasicEngine {
     // processor at the start of the next block.
     PropertyStore& properties() { return properties_; }
     const PropertyStore& properties() const { return properties_; }
+
+    // Main thread: sets a property (false when its value is too long). For a
+    // file() property, a path that names nothing is first relocated
+    // (core/Files.h) -- the property then holds where the file was found --
+    // and the file is loaded off the audio thread; `wait` blocks until the
+    // processor will have it at its next block, as loading a session or
+    // rendering offline wants. Setting what it already holds reloads it,
+    // unless it loaded.
+    bool setProperty(size_t index, std::string_view value, bool wait = false) {
+        if (index >= properties::kCount) return false;
+        if (!properties::at(index).isFile() || !files_) return properties_.set(index, value);
+        std::string path(value);
+        if (!path.empty() && !files::exists(path))
+            if (std::string found = files::relocate(path); !found.empty()) path = found;
+        const bool same = properties_.get(index) == path;
+        if (!properties_.set(index, path)) return false;
+        if (!same || files_->status(index).state != FileStatus::State::Ready) files_->request(index, path, wait);
+        else if (wait) files_->wait();
+        return true;
+    }
+    // Main thread: the user picked this file property's file. Its folder is
+    // remembered for relocating others, and any other file property whose
+    // file is missing looks there now.
+    void fileChosen(size_t index) {
+        if (!files_ || index >= properties::kCount || !properties::at(index).isFile()) return;
+        const std::string folder = files::folderOf(properties_.get(index));
+        files::rememberFolder(folder);
+        for (size_t i = 0; i < properties::kCount; ++i) {
+            if (i == index || !properties::at(i).isFile()) continue;
+            if (files_->status(i).state != FileStatus::State::Missing) continue;
+            if (std::string found = files::relocate(properties_.get(i), {folder}); !found.empty()) setProperty(i, found);
+        }
+    }
+    // What became of a file property's file.
+    FileStatus fileStatus(size_t index) const {
+        if (!files_ || index >= properties::kCount || !properties::at(index).isFile()) return {};
+        return files_->status(index);
+    }
+    // Main thread: until every file asked for so far is loaded.
+    void waitForFiles() {
+        if (files_) files_->wait();
+    }
     Processor& processor() { return processor_; }
     const Processor& processor() const { return processor_; }
 
@@ -193,6 +241,9 @@ class BasicEngine {
             const ParamDef& p = params::at(params::kSmoothedIndices[k]);
             glides_[k].smoother.setTime(p.smoothing, sampleRate_);
             glides_[k].log = p.taper == Taper::Log;
+            // Settled at a billionth of the range (in log space, a billionth
+            // of the value): as soon as a large range as a small one.
+            glides_[k].smoother.setPrecision(glides_[k].log ? 1e-9 : 1e-9 * std::max(1.0, p.max - p.min));
             glidePointers_[k] = glideBuffer_.data() + k * static_cast<size_t>(maxBlock_);
         }
         editorNotes_.clear();
@@ -224,6 +275,11 @@ class BasicEngine {
         processor_.prepare(ProcessSetup{sampleRate_, maxBlock_, channelsOut_, layout_, offlineNow_}, values_);
         properties_.deliverAll(
             [this](size_t i, std::string_view value) { processor_.property(properties::at(i).id, value); });
+        if (files_) {
+            // Loaded for this rate, block size and width before the first block.
+            files_->prepare({sampleRate_, maxBlock_, channelsOut_});
+            files_->deliverAll([this](size_t i, auto* contents) { processor_.file(properties::at(i).id, contents); });
+        }
         retargetGlides(true);
         processor_.update(values_);
         values_.clearChanges();
@@ -447,6 +503,16 @@ class BasicEngine {
                 properties_.deliver(
                     [this](size_t i, std::string_view value) { processor_.property(properties::at(i).id, value); });
         }
+        if constexpr (properties::kFileCount > 0) {
+            if (active_ && files_) {
+                bool delivered = false;
+                files_->deliver([this, &delivered](size_t i, auto* contents) {
+                    processor_.file(properties::at(i).id, contents);
+                    delivered = true;
+                });
+                if (delivered) reread();
+            }
+        }
     }
 
     void apply(const EngineEvent& e) {
@@ -530,21 +596,27 @@ class BasicEngine {
             for (size_t k = 0; k < params::kSmoothedCount; ++k)
                 if (values_.changed(params::at(params::kSmoothedIndices[k]).id)) retarget(k, values_.initial());
             processor_.update(values_);
-            const int voices = processor_.voiceCount();
-            if (voices != voices_.load(std::memory_order_relaxed)) {
-                voices_.store(voices, std::memory_order_relaxed);
-                voicesChanged_ = true;
-            }
-            const int latency = std::max(0, processor_.latencySamples());
-            dryLatency_ = std::min(latency, delayCapacity_);
-            if (latency != activeLatency_) restartWanted_.store(true, std::memory_order_release);
-            const uint32_t tail = processor_.tailSamples();
-            if (tail != tail_.load(std::memory_order_relaxed)) {
-                tail_.store(tail, std::memory_order_relaxed);
-                tailChanged_ = true;
-            }
+            reread();
         }
         values_.clearChanges();
+    }
+
+    // What the processor reports about itself, after anything that may have
+    // changed it: an update, a file.
+    void reread() {
+        const int voices = processor_.voiceCount();
+        if (voices != voices_.load(std::memory_order_relaxed)) {
+            voices_.store(voices, std::memory_order_relaxed);
+            voicesChanged_ = true;
+        }
+        const int latency = std::max(0, processor_.latencySamples());
+        dryLatency_ = std::min(latency, delayCapacity_);
+        if (latency != activeLatency_) restartWanted_.store(true, std::memory_order_release);
+        const uint32_t tail = processor_.tailSamples();
+        if (tail != tail_.load(std::memory_order_relaxed)) {
+            tail_.store(tail, std::memory_order_relaxed);
+            tailChanged_ = true;
+        }
     }
 
     void reinitialize() {
@@ -878,6 +950,8 @@ class BasicEngine {
     uint8_t held_[128]{};
     std::unique_ptr<AudioFeed> feed_;
     std::vector<std::vector<float>> feedIn_;  // [channel][frame]: this split's input
+    // Last: its worker stops before anything a load might touch goes.
+    std::unique_ptr<FileSlots<P>> files_;
 };
 
 using Engine = BasicEngine<product::Processor>;

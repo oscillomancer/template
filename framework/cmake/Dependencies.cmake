@@ -45,6 +45,21 @@ function(supple_apply_patch source_dir patch)
     set_property(GLOBAL APPEND PROPERTY SUPPLE_PATCHES "${name}|${source_dir}|${patch}")
 endfunction()
 
+# --- dr_libs: WAV, AIFF and FLAC decoding (dsp/AudioFile.h) ---------------------------
+
+# David Reid's single-file decoders, MIT-0. Every product builds them; one
+# that never loads a file links none of it.
+FetchContent_Declare(dr_libs
+    GIT_REPOSITORY https://github.com/mackron/dr_libs.git
+    GIT_TAG dfe8377631000664666519fdb83da193fd8037f4  # dr_wav 0.14.6, dr_flac 0.13.4
+    GIT_SHALLOW OFF
+    SOURCE_SUBDIR none)  # header-only here
+FetchContent_MakeAvailable(dr_libs)
+add_library(supple-drlibs STATIC ${SUPPLE_FRAMEWORK}/dsp/DrLibs.c)
+target_include_directories(supple-drlibs SYSTEM PUBLIC ${dr_libs_SOURCE_DIR})
+set_target_properties(supple-drlibs PROPERTIES C_STANDARD 99)
+supple_vendored(supple-drlibs)
+
 # --- clap-wrapper: CLAP SDK, VST3 and AUv2 --------------------------------------------
 
 if (SUPPLE_BUILD_PLUGIN)

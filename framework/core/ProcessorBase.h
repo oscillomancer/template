@@ -51,14 +51,18 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "core/Files.h"
 #include "core/Layout.h"
+#include "core/Notes.h"
 #include "core/ParamTable.h"
 #include "core/ParamValues.h"
 #include "core/Tuning.h"
+#include "dsp/AudioFile.h"
 #include "ProductInfo.h"
 
 namespace supple {
@@ -143,76 +147,6 @@ struct Block {
 
 // Seconds in a number of beats (quarter notes) at a tempo.
 inline double beatsToSeconds(double beats, double bpm) { return beats * 60.0 / bpm; }
-
-struct NoteEvent {
-    enum class Type : uint8_t { On, Off, Choke };
-    Type type = Type::On;
-    int16_t key = 60;      // 0..127
-    int16_t channel = 0;   // 0..15
-    int16_t port = 0;
-    int32_t noteId = -1;   // CLAP note id, -1 when unknown (MIDI)
-    double velocity = 1.0; // 0..1
-};
-
-// Which notes an event names, as CLAP addresses them: every field it gives
-// must match, and -1 gives none (matches anything). A release from MIDI has
-// no note ID, so it matches by key and channel.
-struct NoteAddress {
-    int32_t noteId = -1;
-    int16_t port = -1, channel = -1, key = -1;
-
-    static NoteAddress of(const NoteEvent& e) { return {e.noteId, e.port, e.channel, e.key}; }
-    bool matches(const NoteEvent& voice) const {
-        return (noteId < 0 || noteId == voice.noteId) && (key < 0 || key == voice.key) &&
-               (channel < 0 || channel == voice.channel) && (port < 0 || port == voice.port);
-    }
-};
-
-// A MIDI 1.0 channel message other than a note: controllers, pitch bend,
-// pressure, program changes. Notes from MIDI arrive as NoteEvents instead.
-struct MidiMessage {
-    uint8_t data[3] = {0, 0, 0};
-    int16_t port = 0;
-
-    int status() const { return data[0] & 0xF0; }
-    int channel() const { return data[0] & 0x0F; }
-    bool isController() const { return status() == 0xB0; }
-    int controller() const { return data[1]; }  // the CC number
-    int value() const { return data[2]; }       // the CC value, 0..127
-    bool isPitchBend() const { return status() == 0xE0; }
-    double pitchBend() const { return ((data[2] << 7 | data[1]) - 8192) / 8192.0; }  // -1 .. +1, 0 centred
-    bool isChannelPressure() const { return status() == 0xD0; }
-    bool isPolyPressure() const { return status() == 0xA0; }  // key data[1], pressure data[2]
-    double pressure() const { return (isPolyPressure() ? data[2] : data[1]) / 127.0; }
-    bool isProgramChange() const { return status() == 0xC0; }
-
-    static MidiMessage make(int status, int channel, int a, int b = 0) {
-        MidiMessage m;
-        m.data[0] = static_cast<uint8_t>((status & 0xF0) | (channel & 0x0F));
-        m.data[1] = static_cast<uint8_t>(a & 0x7F);
-        m.data[2] = static_cast<uint8_t>(b & 0x7F);
-        return m;
-    }
-    static MidiMessage cc(int channel, int number, int value) { return make(0xB0, channel, number, value); }
-    // `bend` -1..+1.
-    static MidiMessage bend(int channel, double bend) {
-        const double clamped = bend < -1.0 ? -1.0 : bend > 1.0 ? 1.0 : bend;
-        int v = static_cast<int>(std::lround(8192.0 + clamped * 8192.0));
-        v = v < 0 ? 0 : v > 16383 ? 16383 : v;
-        return make(0xE0, channel, v & 0x7F, v >> 7);
-    }
-};
-
-// A per-note expression (CLAP note expressions; MPE and VST3 note
-// expressions arrive as these). Values: Volume a linear gain 0..4, Pan 0..1
-// (0.5 centre), Tuning in semitones, the rest 0..1. A voice starts at
-// neutral (gain 1, centre, 0) and keeps each expression until it changes.
-struct NoteExpression {
-    enum class Type : uint8_t { Volume, Pan, Tuning, Vibrato, Expression, Brightness, Pressure };
-    Type type = Type::Volume;
-    NoteAddress address;
-    double value = 0.0;
-};
 
 // Per-note modulation of a parameter marked polyModulatable(): `amount` is
 // an offset in host units for the notes `address` names, on top of the
@@ -368,6 +302,31 @@ class ProcessorBase {
     // valid until that property's next delivery; copy or parse what is
     // needed, without allocating.
     void property(uint32_t id, std::string_view value) { (void)id, (void)value; }
+
+    // File properties (.file(), .audioFile()): what a file becomes for
+    // process(), made on the framework's loading thread -- never the audio
+    // thread -- whenever the property's path changes, and again when the
+    // sample rate does. The default decodes audio (WAV, AIFF, FLAC) and
+    // resamples it to the session's rate. A processor wanting something else
+    // -- a convolution kernel, a parsed scale -- declares its own:
+    //
+    //   using FileContents = Impulse;
+    //   static std::unique_ptr<Impulse> loadFile(const supple::FileRequest& r, std::string& error);
+    //
+    // returning null, with a reason in `error`, for a file it cannot use.
+    using FileContents = dsp::AudioData;
+    static std::unique_ptr<dsp::AudioData> loadFile(const FileRequest& request, std::string& error) {
+        auto audio = std::make_unique<dsp::AudioData>();
+        if (!dsp::loadAudioFile(request.path, *audio, &error)) return nullptr;
+        if (audio->sampleRate != request.sampleRate) *audio = dsp::resample(*audio, request.sampleRate);
+        return audio;
+    }
+    // On the audio thread, at the start of a block and after prepare(): a
+    // file property's contents as loadFile() made them, or null -- no file,
+    // a missing one, one that failed. The processor's alone, state and all
+    // (a convolution runs in it), until the next call for that id; the
+    // framework frees it, later, elsewhere.
+    void file(uint32_t id, dsp::AudioData* contents) { (void)id, (void)contents; }
 
     // Names for keys (CLAP note-name), for a product with note input: a drum
     // map's "Kick" on 36. A processor that has them defines

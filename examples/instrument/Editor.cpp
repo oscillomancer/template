@@ -34,12 +34,18 @@ Editor::Editor(EditorHost& host) : EditorBase(host, kTheme, kEditorWidth, kEdito
     // The Sound panel: the waveform's switch on the left, the envelope's
     // four stages dragged on its curve in the rest.
     Rect sound = panelBody(kShapePanel);
-    ui().segmented(kWaveform, sound.cutLeft(140.0f, 16.0f).centred(140.0f, 28.0f));
+    ui().segmented(kWaveform, sound.cutLeft(170.0f, 16.0f).centred(170.0f, 28.0f));
     ui().envelope(sound, kAttack, kDecay, kSustain, kRelease);
     ui().knob(kLevel, {kLevelPanel.x + 16, kLevelPanel.y + 44, 110, 120});
     ui().knob(kBendRange, {kLevelPanel.x + 24, kLevelPanel.y + 172, 94, 100});
     // Played with the pointer; lit by whatever is held, from anywhere.
     ui().keyboard(kKeysPanel.inset(16.0f, 12.0f), 36, 84);
+    // Under the lamps: how the voices are used, and the glide between notes.
+    Rect modes = panelBody(kVoicePanel);
+    modes.cutTop(52.0f, 8.0f);
+    const Grid two = row(modes, 2, 16.0f);
+    ui().segmented(kMode, two[0].centred(two[0].w, 26.0f));
+    ui().hslider(kGlide, two[1].centred(two[1].w, 30.0f));
 }
 
 std::unique_ptr<EditorBase> createEditor(EditorHost& host) { return std::make_unique<Editor>(host); }
@@ -85,7 +91,7 @@ void Editor::paint(NVGcontext* vg) {
     w::panel(vg, t, kVoicePanel, "Voices");
     const float cell = (kVoicePanel.w - 32) / Processor::kVoices;
     for (int v = 0; v < Processor::kVoices; ++v) {
-        const Rect r{kVoicePanel.x + 16 + cell * v + 4, kVoicePanel.y + 52, cell - 8, 74};
+        const Rect r{kVoicePanel.x + 16 + cell * v + 4, kVoicePanel.y + 44, cell - 8, 52};
         const bool on = keys_[v] >= 0;
         w::well(vg, t, r, 5.0f);
         if (on) {

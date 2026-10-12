@@ -22,6 +22,7 @@
 #include "core/Fft.h"
 #include "core/ParamTable.h"
 #include "core/Preset.h"
+#include "core/Files.h"
 #include "core/PresetLibrary.h"
 #include "core/PropertyTable.h"
 #include "gui/EditorBase.h"
@@ -72,6 +73,8 @@ struct MockHost : EditorHost, StateAccess {
         return i >= 0 && props.set(static_cast<size_t>(i), value);
     }
     uint64_t propertiesVersion() const override { return props.version(); }
+    FileStatus files;  // what every file property's file says, as a test sets it
+    FileStatus fileStatus(uint32_t) const override { return files; }
     PresetLibrary* presetLibrary() override { return presets.get(); }
     std::vector<uint8_t> saveState(state::Context context) override {
         state::Snapshot s;
@@ -653,6 +656,85 @@ void choose(Ui& ui, int row) {
 }
 }  // namespace
 
+namespace {
+struct FakeDialogs : FileDialogs {
+    Options last;
+    Done done;
+    int opened = 0;
+    bool open(const Options& o, Done d) override {
+        last = o;
+        done = std::move(d);
+        ++opened;
+        return true;
+    }
+    bool save(const Options& o, Done d) override { return open(o, std::move(d)); }
+};
+}  // namespace
+
+TEST(a_file_slot_chooses_takes_drops_clears_and_shows_its_state) {
+    int k = -1;
+    for (size_t i = 0; i < properties::kCount && k < 0; ++i)
+        if (properties::at(i).isFile()) k = static_cast<int>(i);
+    if (k < 0) {
+        std::printf("      (no file properties in this product)\n");
+        return;
+    }
+    const PropertyDef& p = properties::at(static_cast<size_t>(k));
+    MockHost host;
+    Ui ui{host, 400.0f, 200.0f};
+    FakeDialogs dialogs;
+    ui.setFileDialogs(&dialogs);
+    ui.fileSlot(p.id, {20, 20, 300, 30});
+    CHECK(ui.find(p.id) < 0);  // a property, not a parameter
+    // A click opens the dialog, offering what the property takes.
+    CHECK(ui.pointerDown(100, 35, 0, 0, false));
+    ui.pointerUp(100, 35, 0, 0);
+    CHECK(dialogs.opened == 1);
+    CHECK(dialogs.last.title.find(p.name) != std::string::npos);
+    std::string offered;
+    for (const std::string& e : dialogs.last.extensions) offered += (offered.empty() ? "" : " ") + e.substr(1);
+    CHECK(offered == p.extensions);
+    dialogs.done({"/some/where/ir.wav"});
+    CHECK(host.property(p.id) == "/some/where/ir.wav");
+    dialogs.done({});  // cancelled: nothing changes
+    CHECK(host.property(p.id) == "/some/where/ir.wav");
+    // A drop takes the first file it accepts, over the slot only.
+    const bool picky = *p.extensions != 0;
+    if (picky) CHECK(ui.fileSlotAt(100, 35, {"/x/notes.txt.unknown"}) < 0);
+    CHECK(ui.fileSlotAt(100, 35, {}) == 0);  // still being dragged
+    CHECK(ui.fileSlotAt(5, 5, {"/x/b.wav"}) < 0);
+    CHECK(ui.dropFiles(100, 35, {"/x/notes.txt.unknown", "/x/b.wav"}) == (!picky || files::hasExtension("b.wav", p.extensions)));
+    // Delete clears it; so does the menu.
+    ui.key(key::kDelete, 0);
+    CHECK(host.property(p.id).empty());
+    host.setProperty(p.id, "/x/b.wav");
+    CHECK(ui.pointerDown(100, 35, 1, 0, false));
+    CHECK(ui.menu().open && menuRow(ui, "Clear") >= 0);
+    choose(ui, menuRow(ui, "Clear"));
+    CHECK(host.property(p.id).empty());
+    // What it shows follows the host, and a change repaints.
+    host.setProperty(p.id, "/gone/cathedral.wav");
+    host.files.state = FileStatus::State::Missing;
+    ui.idle(0.01);
+    ui.takeDirty();
+    CHECK(ui.state(0).file == FileStatus::State::Missing && ui.state(0).text == "/gone/cathedral.wav");
+    host.files.state = FileStatus::State::Ready;
+    host.files.summary = "stereo, 1.20 s";
+    ui.idle(0.01);
+    CHECK(ui.takeDirty());
+    CHECK(ui.state(0).file == FileStatus::State::Ready && ui.state(0).detail == "stereo, 1.20 s");
+    // It draws in every state.
+    NVGcontext* vg = test::createHeadlessCanvas();
+    for (auto state : {FileStatus::State::Empty, FileStatus::State::Loading, FileStatus::State::Ready,
+                       FileStatus::State::Missing, FileStatus::State::Failed}) {
+        host.files.state = state;
+        nvgBeginFrame(vg, 400, 200, 1.0f);
+        widgets::control(vg, Theme{}, ui.control(0), ui.state(0));
+        nvgEndFrame(vg);
+    }
+    nvgDeleteInternal(vg);
+}
+
 TEST(the_preset_bar_steps_compares_saves_renames_and_deletes) {
     MockHost host;
     Ui ui{host, 800.0f, 600.0f};
@@ -1059,7 +1141,7 @@ TEST(the_fft_matches_a_direct_transform) {
     fft.forward(y.data());
     for (size_t k = 0; k < 16; ++k) {
         std::complex<double> sum = 0.0;
-        for (size_t n = 0; n < 16; ++n) sum += x[n] * std::polar(1.0, -2.0 * 3.14159265358979323846 * k * n / 16.0);
+        for (size_t n = 0; n < 16; ++n) sum += x[n] * std::polar(1.0, -2.0 * 3.14159265358979323846 * static_cast<double>(k * n) / 16.0);
         CHECK_NEAR(std::abs(sum - y[k]), 0.0, 1e-9);
     }
 }
@@ -1177,9 +1259,12 @@ TEST(the_layout_is_inside_the_panel_and_controls_do_not_overlap) {
     CHECK(ui.count() > 0);
     for (int i = 0; i < ui.count(); ++i) {
         const Control& a = ui.control(i);
-        if (a.widget == Widget::TextField) {
+        if (a.widget == Widget::TextField || a.widget == Widget::File) {
             CHECK_MSG(properties::indexOf(a.param) >= 0, "text field %d names property %u, which is not in the table", i,
                       a.param);
+            CHECK_MSG(a.widget != Widget::File || (properties::indexOf(a.param) >= 0 &&
+                                                   properties::at(static_cast<size_t>(properties::indexOf(a.param))).isFile()),
+                      "file slot %d names property %u, which is not a file()", i, a.param);
         } else if (a.widget == Widget::PresetBar) {
             CHECK_MSG(product::info::kPresets, "control %d is a preset bar, and presets are off", i);
         } else if (a.widget == Widget::Keyboard) {

@@ -7,7 +7,8 @@
 // each control chosen from the parameter -- a knob for a value, a toggle, a
 // segmented switch for up to four choices and a dropdown for more, a
 // readout for an output -- and the bypass, the presets and the meters in
-// the header. Properties get text fields. Help text is each tooltip.
+// the header. Properties get text fields, file properties file slots. Help
+// text is each tooltip.
 //
 // It is a start, not a design: a product past its first sketch writes its
 // own Editor.cpp and lists it in product.cmake, which drops this file.
@@ -117,9 +118,10 @@ Plan plan() {
     }
     for (size_t i = 0; i < properties::kCount; ++i) {
         Cell c;
-        c.widget = Widget::TextField;
+        const bool file = properties::at(i).isFile();
+        c.widget = file ? Widget::File : Widget::TextField;
         c.id = properties::at(i).id;
-        c.w = 200.0f;
+        c.w = file ? 300.0f : 200.0f;
         c.h = 26.0f + kCaption;
         c.caption = true;
         groupNamed("").cells.push_back(c);
@@ -258,7 +260,7 @@ class AutoEditor : public EditorBase {
             for (const Cell& c : g.cells) {
                 if (!c.caption) continue;
                 const Rect r = c.at.offset(body.x, body.y);
-                const char* text = c.widget == Widget::TextField
+                const char* text = c.widget == Widget::TextField || c.widget == Widget::File
                                        ? properties::at(static_cast<size_t>(properties::indexOf(c.id))).name
                                        : params::find(c.id)->displayLabel();
                 widgets::caption(vg, r.x + 1.0f, r.y + 6.0f, text, rgb(t.textMuted), widgets::Align::Left, 9.5f);

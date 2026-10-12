@@ -19,12 +19,16 @@ enum ParamId : uint32_t {
     kBendRange = 4,
     kDecay = 5,
     kSustain = 6,
+    kMode = 7,
+    kGlide = 8,
 };
 
-inline constexpr const char* kWaveformLabels[] = {"Sine", "Triangle"};
+inline constexpr const char* kWaveformLabels[] = {"Sine", "Triangle", "Saw"};
+inline constexpr const char* kModeLabels[] = {"Poly", "Mono", "Legato"};
 
 inline constexpr supple::ParamDef kParams[] = {
-    supple::choice(kWaveform, "Waveform", kWaveformLabels, 0).help("Sine is pure; the triangle adds odd harmonics."),
+    supple::choice(kWaveform, "Waveform", kWaveformLabels, 0)
+        .help("Sine is pure; the triangle adds odd harmonics, the saw every harmonic."),
     supple::milliseconds(kAttack, "Attack", 1.0, 2000.0, 5.0).modulatable()
         .help("How long a note takes to rise to full level."),
     supple::milliseconds(kRelease, "Release", 5.0, 5000.0, 250.0).modulatable()
@@ -37,6 +41,11 @@ inline constexpr supple::ParamDef kParams[] = {
     supple::milliseconds(kDecay, "Decay", 1.0, 5000.0, 200.0).modulatable()
         .help("How long a note takes to fall from full level to the sustain level."),
     supple::percent(kSustain, "Sustain", 100.0).modulatable().help("The level a held note settles at."),
+    supple::choice(kMode, "Mode", kModeLabels, 0)
+        .help("Poly plays chords. Mono plays one note, the newest held; Legato too, without restarting the "
+              "envelope when one note runs into the next."),
+    supple::milliseconds(kGlide, "Glide", 0.0, 1000.0, 0.0)
+        .help("Each note slides from the last one's pitch over this long."),
 };
 
 }  // namespace product

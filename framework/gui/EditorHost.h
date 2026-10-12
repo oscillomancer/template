@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "core/AudioFeed.h"
+#include "core/Files.h"
 #include "core/Telemetry.h"
 #include "gui/Menu.h"
 
@@ -72,6 +73,11 @@ class EditorHost {
     }
     // Changes whenever any property does, so an editor knows to repaint.
     virtual uint64_t propertiesVersion() const { return 0; }
+    // What became of a file() property's file: loading, ready, missing.
+    virtual FileStatus fileStatus(uint32_t id) const {
+        (void)id;
+        return {};
+    }
 
     // The preset library, for a product with presets (core/PresetLibrary.h).
     virtual PresetLibrary* presetLibrary() { return nullptr; }

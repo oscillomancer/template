@@ -504,10 +504,13 @@ struct Plugin : StateAccess
         // Outputs are the processor's, and state does not carry them.
         for (size_t i = 0; i < params::kCount; ++i)
             if (!params::at(i).isOutput()) engine.store().set(i, snapshot.host[i]);
+        // A file property's file is relocated if it moved, and loaded before
+        // this returns, so the next block plays it.
         for (size_t i = 0; i < properties::kCount; ++i) {
             if (!session && properties::at(i).perProjectOnly()) continue;
-            engine.properties().set(i, snapshot.hasProperty[i] ? std::string_view(snapshot.property[i])
-                                                               : std::string_view(properties::at(i).def));
+            engine.setProperty(i, snapshot.hasProperty[i] ? std::string_view(snapshot.property[i])
+                                                          : std::string_view(properties::at(i).def),
+                               true);
         }
         if (session && snapshot.editorScale > 0.0) restoreEditorScale(snapshot.editorScale);
         if (session && presets) presets->restore(snapshot);
@@ -782,7 +785,9 @@ struct Plugin : StateAccess
         const int i = properties::indexOf(id);
         if (i < 0) return false;
         const uint64_t before = engine.properties().version();
-        if (!engine.properties().set(static_cast<size_t>(i), value)) return false;
+        if (!engine.setProperty(static_cast<size_t>(i), value)) return false;
+        // The user chose this file: its folder helps find others.
+        if (properties::at(static_cast<size_t>(i)).isFile() && !value.empty()) engine.fileChosen(static_cast<size_t>(i));
         if (engine.properties().version() != before) {
             markDirty();
             if (active) requestFlush();
@@ -790,6 +795,10 @@ struct Plugin : StateAccess
         return true;
     }
     uint64_t propertiesVersion() const override { return engine.properties().version(); }
+    FileStatus fileStatus(uint32_t id) const override {
+        const int i = properties::indexOf(id);
+        return i >= 0 ? engine.fileStatus(static_cast<size_t>(i)) : FileStatus{};
+    }
     PresetLibrary* presetLibrary() override { return presets.get(); }
 
     gui::TrackInfo trackInfo;

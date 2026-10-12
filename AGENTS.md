@@ -26,7 +26,8 @@ Supple Audio product, plus a starter product in `product/` that exercises it.
   Keep it small and bit-transparent at its defaults. It uses knobs, toggles,
   a segmented control, a custom drag and a spectrum; `ui-tests` covers the
   other kinds (sliders, dropdown, buttons, XY pad, tabs, lists, keyboard,
-  envelope) on a synthetic layout, and the examples show them.
+  envelope; file slots where a product has a file property) on a synthetic
+  layout, and the examples show them.
 
 ## The examples
 
@@ -40,9 +41,12 @@ name, ID and codes, which `new_product` then refuses to reuse.
   bend and mod wheel, `PRODUCT_NOTE_EXPRESSIONS tuning volume`, a
   `polyModulatable()` Level, microtuning (`PRODUCT_TUNING`: MTS-ESP and CLAP
   tuning through `retuning()`), and `kOfflineMode`: bounces get a
-  band-limited triangle, measured against the live, naive one. An ADSR
-  dragged on an `envelope()`, and an on-screen `keyboard()` that plays the
-  processor and lights whatever is held.
+  band-limited triangle, measured against the live, naive one. Built on the
+  DSP library: `dsp::Voices` (stealing, the sustain pedal, Mono and Legato
+  with Glide, bend) keeping the note-end books, a `dsp::Adsr` per voice, a
+  polyBLEP saw, an `Lfo` for the mod wheel. An ADSR dragged on an
+  `envelope()`, and an on-screen `keyboard()` that plays the processor and
+  lights whatever is held.
 - `pulse` (Pulse): a tremolo and auto-pan. Tempo sync (`noteValue`, the
   song position when playing), `smoothed()` parameters read from
   `Block::smoothed`, an `offAtMinimum()` level, degrees, an `output()`
@@ -63,7 +67,18 @@ name, ID and codes, which `new_product` then refuses to reuse.
   named by the chord it plays, renamed when Shape changes.
 - `drive` (Drive): a saturator with no editor code (`PRODUCT_EDITOR_SOURCES
   ""`): the automatic editor, laid out from the parameters' groups, with
-  their help as tooltips, presets and an output readout.
+  their help as tooltips, presets and output readouts. Its shaper runs
+  oversampled (`dsp::Oversampler`, Quality a `restartOnChange()` choice, the
+  latency reported and the dry path delayed to match) with anti-aliased
+  clipping (`dsp::Adaa`); its readouts are a true peak and short-term
+  loudness (`dsp::TruePeak`, `dsp::Loudness`).
+- `room` (Room): a convolution reverb whose impulse response is a file: an
+  `audioFile()` property, relocated when a session has moved, reported
+  missing, loaded on the framework's thread by the processor's own
+  `loadFile()` -- which builds the whole `dsp::Convolution` there -- and
+  swapped in by `file()`, declicked. Without one, a room of its own, built
+  in `prepare()`. A `fileSlot()` in a small editor; pre-delay through a
+  `dsp::FractionalDelay`.
 
 ## The starter product
 

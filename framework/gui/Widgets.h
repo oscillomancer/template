@@ -59,6 +59,7 @@ void dropdown(NVGcontext* vg, const Theme& t, const Control& c, const ControlSta
 void readout(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s);
 // A property's text in a well; the control's label shows when it is empty.
 void textField(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s);
+void fileSlot(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s);
 // Previous, preset name (with * when modified), next, and A/B.
 void presetBar(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s);
 // A raised face with its label; a momentary control is lit while held.
