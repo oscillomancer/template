@@ -18,6 +18,8 @@
 #include <thread>
 #include <vector>
 
+#include "ProbeAudio.h"
+
 namespace {
 int failures = 0;
 void check(bool ok, const char* what) {
@@ -169,6 +171,11 @@ int main(int argc, char** argv) {
     host.gui = static_cast<const clap_plugin_gui_t*>(host.plugin->get_extension(host.plugin, CLAP_EXT_GUI));
     host.timer = static_cast<const clap_plugin_timer_support_t*>(host.plugin->get_extension(host.plugin, CLAP_EXT_TIMER_SUPPORT));
     if (!host.gui) return 2;
+    supple::probe::Audio buffers;
+    if (!buffers.configure(host.plugin, 512)) {
+        std::fprintf(stderr, "cannot query the plugin's audio ports\n");
+        return 2;
+    }
     check(host.gui->is_api_supported(host.plugin, CLAP_WINDOW_API_X11, false), "X11 embedded API");
     check(host.plugin->activate(host.plugin, 48000, 1, 512), "activation");
     host.processing = true;
@@ -176,21 +183,17 @@ int main(int argc, char** argv) {
     std::atomic<bool> audioGood{true};
     std::thread audio([&] {
         if (!host.plugin->start_processing(host.plugin)) { audioGood = false; return; }
-        float left[512]{}, right[512]{};
-        float* data[]{left, right};
-        clap_audio_buffer_t buffer{};
-        buffer.data32 = data; buffer.channel_count = 2;
         clap_input_events_t in{nullptr, [](const clap_input_events_t*) -> uint32_t { return 0; },
             [](const clap_input_events_t*, uint32_t) -> const clap_event_header_t* { return nullptr; }};
         clap_output_events_t out{nullptr, [](const clap_output_events_t*, const clap_event_header_t*) { return true; }};
         clap_process_t p{};
-        p.frames_count = 512; p.audio_inputs = &buffer; p.audio_outputs = &buffer;
-        p.audio_inputs_count = p.audio_outputs_count = 1; p.in_events = &in; p.out_events = &out;
+        buffers.bind(p);
+        p.in_events = &in; p.out_events = &out;
         double phase = 0;
         while (run) {
-            for (int i = 0; i < 512; ++i) { left[i] = 0.2f * std::sin(phase); right[i] = 0.17f * std::cos(phase * 1.37); phase += 0.0576; }
+            buffers.fillInputs(phase);
             if (host.plugin->process(host.plugin, &p) == CLAP_PROCESS_ERROR) audioGood = false;
-            for (int i = 0; i < 512; ++i) if (!std::isfinite(left[i]) || !std::isfinite(right[i])) audioGood = false;
+            if (!buffers.finiteOutputs()) audioGood = false;
             p.steady_time += 512;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
