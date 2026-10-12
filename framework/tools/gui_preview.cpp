@@ -481,12 +481,6 @@ int preview(const char* output, std::vector<std::string> args) {
         if (!std::strcmp(name, "Presets")) {
             for (int k = 0; k < ui.count() && c < 0; ++k)
                 if (ui.control(k).widget == Widget::PresetBar) c = k;
-            if (c >= 0) {  // its name, which opens the menu
-                const Rect r = Ui::presetPart(ui.control(c).bounds, presetbar::kName);
-                x = r.cx();
-                y = r.cy();
-                return true;
-            }
         }
         const int k = propertyByName(name);
         for (int i = 0; k >= 0 && i < ui.count() && c < 0; ++i)
@@ -502,7 +496,12 @@ int preview(const char* output, std::vector<std::string> args) {
             std::fprintf(stderr, "no control for \"%s\"\n", name);
             return false;
         }
-        const Rect r = editor.layout().control(c).bounds;
+        if (!ui.shown(c) || !ui.interactive(c)) {
+            std::fprintf(stderr, "control \"%s\" is hidden or disabled/non-interactive\n", name);
+            return false;
+        }
+        const Rect r = ui.control(c).widget == Widget::PresetBar
+            ? Ui::presetPart(ui.control(c).bounds, presetbar::kName) : ui.control(c).bounds;
         x = r.cx();
         y = r.cy();
         return true;
@@ -517,17 +516,28 @@ int preview(const char* output, std::vector<std::string> args) {
         editor.pointerUp(r.cx(), r.cy(), 0, 0);
         break;
     }
-    if (focus && centre(focus, x, y)) {
+    if (focus) {
+        if (!centre(focus, x, y)) return 2;
         editor.pointerDown(x, y, 0, 0, false);
         editor.pointerUp(x, y, 0, 0);
     }
-    if (menu && centre(menu, x, y)) editor.pointerDown(x, y, 0, 0, false);
-    if (context && centre(context, x, y)) editor.pointerDown(x, y, 1, 0, false);
-    if (text && centre(text, x, y)) {
+    if (menu) {
+        if (!centre(menu, x, y)) return 2;
+        editor.pointerDown(x, y, 0, 0, false);
+    }
+    if (context) {
+        if (!centre(context, x, y)) return 2;
+        editor.pointerDown(x, y, 1, 0, false);
+    }
+    if (text) {
+        if (!centre(text, x, y)) return 2;
         editor.pointerDown(x, y, 0, mod::kCtrl, false);
         if (propertyByName(text) >= 0) editor.key(key::kEnd, 0);  // the caret, not a selection
     }
-    if (hover && centre(hover, x, y)) editor.pointerMove(x, y, 0);
+    if (hover) {
+        if (!centre(hover, x, y)) return 2;
+        editor.pointerMove(x, y, 0);
+    }
     // A key held down on the first keyboard, as the pointer would.
     for (int k = 0; play >= 0 && k < editor.layout().count(); ++k) {
         const Control& c = editor.layout().control(k);
@@ -538,7 +548,8 @@ int preview(const char* output, std::vector<std::string> args) {
     }
     if (drop) editor.dropOver(editor.width() * 0.5f, editor.height() * 0.5f);
     // Held still, long enough for the tooltip.
-    if (tooltip && centre(tooltip, x, y)) {
+    if (tooltip) {
+        if (!centre(tooltip, x, y)) return 2;
         editor.pointerMove(x, y, 0);
         editor.idle(Ui::kTooltipSeconds + 0.1);
     }

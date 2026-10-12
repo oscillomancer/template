@@ -58,6 +58,24 @@ if (SUPPLE_BUILD_GUI)
     # build/<preset>/previews. Skipped without a display.
     add_test(NAME previews COMMAND gui-preview --all ${CMAKE_BINARY_DIR}/previews)
     set_tests_properties(previews PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    # Check the exit status as well as the diagnostic: a missing display must
+    # not accidentally make this negative test pass.
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/preview-invalid.cmake" CONTENT [=[
+if(CMAKE_HOST_UNIX AND NOT CMAKE_HOST_APPLE AND "$ENV{DISPLAY}" STREQUAL "")
+    message("No display: skipped")
+    return()
+endif()
+execute_process(COMMAND "$<TARGET_FILE:gui-preview>" invalid.png --seconds 0 --hover __missing_preview_control__
+    RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(result EQUAL 77)
+    message("No display: skipped")
+elseif(NOT result EQUAL 2 OR NOT err MATCHES "no control for")
+    message(FATAL_ERROR "Expected an unknown-control error, got ${result}: ${out}${err}")
+endif()
+]=])
+    add_test(NAME preview-invalid-control COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/preview-invalid.cmake")
+    set_tests_properties(preview-invalid-control PROPERTIES SKIP_REGULAR_EXPRESSION "No display: skipped" RUN_SERIAL TRUE)
+
 endif()
 
 # --- plugin -------------------------------------------------------------------------------
