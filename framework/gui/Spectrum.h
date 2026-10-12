@@ -61,6 +61,16 @@ class Spectrum {
             moving_ = moving_ || db_[k] > kFloorDb;
         }
     }
+    // Decay without analysing stale samples when the host stops processing.
+    void fall(double seconds) {
+        const float amount = fallDbPerSecond * static_cast<float>(std::max(0.0, seconds));
+        moving_ = false;
+        for (float& db : db_) {
+            db = std::max(kFloorDb, db - amount);
+            moving_ = moving_ || db > kFloorDb;
+        }
+    }
+
     void clear() {
         std::fill(db_.begin(), db_.end(), kFloorDb);
         moving_ = false;

@@ -76,12 +76,14 @@ void Editor::onAudio(size_t) { fresh_ = true; }
 void Editor::animate(double seconds) {
     // At most 30 analyses a second, and only while there is audio to see.
     sinceAnalysis_ += seconds;
-    if (!fresh_ || sinceAnalysis_ < 1.0 / 30.0) return;
+    if (sinceAnalysis_ < 1.0 / 30.0) return;
+    const bool changed = fresh_ || spectrum_.moving();
     const double rate = host().sampleRate() > 0.0 ? host().sampleRate() : 48000.0;
-    spectrum_.analyse(audio(), Signal::output(), rate, sinceAnalysis_);
+    if (fresh_) spectrum_.analyse(audio(), Signal::output(), rate, sinceAnalysis_);
+    else spectrum_.fall(sinceAnalysis_);
     sinceAnalysis_ = 0.0;
     fresh_ = false;
-    markDirty();
+    if (changed) markDirty();
 }
 
 // --- graph geometry -----------------------------------------------------------------------

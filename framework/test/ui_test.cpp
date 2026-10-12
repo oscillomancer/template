@@ -1292,6 +1292,14 @@ TEST(the_spectrum_reads_a_full_scale_sine_at_0_dB_and_its_rms_at_minus_3) {
     CHECK_NEAR(s.db(hz), 0.0, 0.05);
     CHECK(s.db(hz * 3.0) < -90.0);  // nothing where there is nothing
     CHECK_NEAR(s.peak(hz * 0.9, hz * 1.1), 0.0, 0.05);
+    // No new samples: elapsed time alone brings the trace to rest.
+    s.fall(-1.0);
+    CHECK_NEAR(s.db(hz), 0.0, 0.05);
+    s.fall(0.5);
+    CHECK_NEAR(s.db(hz), -18.0, 0.05);
+    CHECK(s.moving());
+    s.fall(10.0);
+    CHECK(s.db(hz) == Spectrum::kFloorDb && !s.moving());
     // Between bins, Hann's scalloping: never more than 1.5 dB low.
     frames.assign(8192, {});
     const double between = hz + 0.5 * rate / 4096.0;
