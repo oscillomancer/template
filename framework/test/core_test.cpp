@@ -681,6 +681,29 @@ class TransportProbe : public ProcessorBase<TransportProbe> {
 
 }  // namespace
 
+TEST(reset_note_ends_survive_until_the_next_audio_block) {
+    class ResetProbe : public ProcessorBase<ResetProbe> {
+      public:
+        void prepare(const ProcessSetup&, const ParamValues&) {}
+        void update(const ParamValues&) {}
+        void process(Block&) {}
+        void reset() { noteEnded(NoteEvent{}); }
+    };
+    auto e = std::make_unique<BasicEngine<ResetProbe>>();
+    e->activate(48000, 64, 2, 2);
+    double left[64]{}, right[64]{};
+    double* io[] = {left, right};
+    e->process<double>(io, io, 64);
+    e->reset();
+    NoEvents none;
+    e->flush(none);
+    e->process<double>(io, io, 64);
+    CHECK(e->noteOutput().count() == 1);
+    if (e->noteOutput().count()) CHECK(e->noteOutput()[0].time == 0);
+    e->process<double>(io, io, 64);
+    CHECK(e->noteOutput().count() == 0);
+}
+
 TEST(a_store_update_ends_notes_at_the_start_of_the_new_block) {
     class EndsOnUpdate : public ProcessorBase<EndsOnUpdate> {
       public:

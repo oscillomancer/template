@@ -1189,6 +1189,27 @@ TEST(a_product_with_note_input_ends_every_note_it_was_given) {
     CHECK(saw77 && saw78);
 }
 
+TEST(refused_note_ends_are_retried_at_the_next_blocks_start) {
+    if (!product::info::kNoteInput) return;
+    Instance i;
+    i.activate();
+    Audio a(i.channels());
+    OutEvents out;
+    NoteList start;
+    start.add(CLAP_EVENT_NOTE_ON, 10, 60, 0, 77);
+    a.run(i.plugin, &start.list, &out);
+    out.refuse = 1.0;
+    NoteList stop;
+    stop.add(CLAP_EVENT_NOTE_CHOKE, 5, 60, 0, 77);
+    a.run(i.plugin, &stop.list, &out);
+    out.refuse = 0.0;
+    a.run(i.plugin, noEvents(), &out);
+    CHECK(out.noteEnds.size() == 1);
+    if (!out.noteEnds.empty()) CHECK(out.noteEnds[0].header.time == 0 && out.noteEnds[0].note_id == 77);
+    a.run(i.plugin, noEvents(), &out);
+    CHECK(out.noteEnds.size() == 1);
+}
+
 TEST(the_editors_keyboard_plays_through_the_plugin_and_ends_its_notes) {
     Instance i;
     gui::EditorHost* editor = supple_test_editor_host(i.plugin);

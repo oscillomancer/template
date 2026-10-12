@@ -662,8 +662,9 @@ struct Plugin : StateAccess
         }
         const NoteOutput& sent = engine.noteOutput();
         if (sent.dropped() > 0) report(kNotesDropped);
-        for (int i = 0; out && i < sent.count(); ++i) {
-            const NoteOutput::Entry& entry = sent[i];
+        int delivered = 0;
+        for (; out && delivered < sent.count(); ++delivered) {
+            const NoteOutput::Entry& entry = sent[delivered];
             const uint32_t time = frames ? std::min(entry.time, frames - 1) : 0;
             bool pushed = false;
             if (entry.kind == NoteOutput::Kind::Midi) {
@@ -695,8 +696,9 @@ struct Plugin : StateAccess
                 e.velocity = end ? 0.0 : std::clamp(n.velocity, 0.0, 1.0);
                 pushed = out->try_push(out, &e.header);
             }
-            if (!pushed) break;  // a full queue loses the rest
+            if (!pushed) break;
         }
+        engine.deferNotes(delivered);
         // Outputs last: stamped at the block's final frame, after every note
         // end, since the host's list must stay in time order.
         if (engine.takeOutputsDue()) publishOutputs(out, frames);

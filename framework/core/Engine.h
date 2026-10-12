@@ -368,6 +368,14 @@ class BasicEngine {
     // What the processor sent during the last process() or flush(): note
     // ends, and notes and MIDI of its own.
     const NoteOutput& noteOutput() const { return noteOutput_; }
+    // Audio thread: keep unaccepted events for frame zero of the next block.
+    void deferNotes(int first) {
+        for (int i = first; i < noteOutput_.count(); ++i) {
+            const auto& e = noteOutput_[i];
+            pendingNotes_.push(e.kind, e.note, e.midi, 0);
+        }
+        noteOutput_.clear();
+    }
     // Audio thread: true about kOutputHz times a second while processing,
     // when the caller should tell the host the output parameters' values
     // (the store's) that changed since it last did.
@@ -384,11 +392,15 @@ class BasicEngine {
     // glided to: what follows depends only on the current state.
     void reset() SUPPLE_REALTIME {
         if (!active_) return;
+        noteOutput_.clear();
+        noteOutput_.setOffset(0);
         syncStore();
         processor_.reset();
+        for (auto& key : held_) key = 0;
         for (auto& d : bypassDelay_) d.clear();
         bypass_.set(bypassOn() ? 1.0 : 0.0, true);
         reinitialize();
+        deferNotes(0);
     }
 
     // Parameter events with no audio (CLAP params.flush). Valid active or not.
@@ -420,6 +432,11 @@ class BasicEngine {
         noteOutput_.setOffset(0);
         if (!active_ || frames <= 0 || (!io.out && channelsOut_ > 0)) return;
         ScopedFlushDenormals noDenormals;
+        for (int i = 0; i < pendingNotes_.count(); ++i) {
+            const auto& e = pendingNotes_[i];
+            noteOutput_.push(e.kind, e.note, e.midi, 0);
+        }
+        pendingNotes_.clear();
         syncStore();
         offlineNow_ = offline_.load(std::memory_order_relaxed);
 
@@ -928,6 +945,7 @@ class BasicEngine {
     bool tailChanged_ = false;
     Transport transport_;
     NoteOutput noteOutput_;
+    NoteOutput pendingNotes_;
     std::atomic<bool> restartWanted_{false};
     std::atomic<uint32_t> safetyResets_{0};
     std::vector<dsp::DelayLine> bypassDelay_;
