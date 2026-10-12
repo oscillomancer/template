@@ -20,6 +20,7 @@
 
 #include "Check.h"
 #include "core/Fft.h"
+#include "core/Realtime.h"
 #include "dsp/AudioFile.h"
 #include "dsp/Convolution.h"
 #include "dsp/Dynamics.h"
@@ -88,6 +89,75 @@ std::filesystem::path scratchFolder(const char* name) {
 }  // namespace
 
 // --- filters ----------------------------------------------------------------------
+
+namespace {
+template <class F>
+void runPrepared(F&& run) SUPPLE_REALTIME {
+    run();
+}
+}
+
+TEST(prepared_primitives_run_inside_a_realtime_context) {
+    Fft fft(64);
+    std::complex<double> bins[64] = {};
+    Stft stft;
+    stft.prepare(1, 64);
+    Convolution convolution;
+    const double impulse[65] = {1.0};
+    const double* ir[] = {impulse};
+    convolution.prepare(ir, 1, 65, 1, 16);
+    FractionalDelay delay;
+    delay.prepare(32);
+    AllpassDelay allpass;
+    allpass.prepare(32);
+    Loudness loudness;
+    loudness.prepare(kRate, 1);
+    TruePeak peak;
+    TruePeak::State peakState;
+    Adsr envelope;
+    envelope.setTimes(1, 10, 0.5, 10, kRate);
+    Biquad filter = Biquad::lowpass(1000, 0.707, kRate);
+    Biquad::State filterState;
+    Adaa<TanhShape>::State shaper;
+    Handoff<int> handoff;
+    handoff.publish(std::make_unique<int>(7));
+    double checksum = 0.0;
+    for (auto phase : {Oversampler::Phase::Linear, Oversampler::Phase::Minimum}) {
+        Oversampler over;
+        over.prepare(1, 64, 4, phase);
+        runPrepared([&] {
+            envelope.gate(true);
+            handoff.update();
+            for (int block = 0; block < 16; ++block) {
+                double audio[64];
+                for (double& x : audio) {
+                    x = filter.tick(filterState, envelope.tick());
+                    x = delay.process(x, 4.5);
+                    x = allpass.process(x, 4.5);
+                    loudness.tick(&x);
+                    checksum += peak.tick(peakState, x);
+                }
+                double* high = over.up(0, audio, 64);
+                for (int n = 0; n < 256; ++n) high[n] = Adaa<TanhShape>::tick(shaper, high[n]);
+                over.down(0, audio, 64);
+                convolution.process(0, audio, 64);
+                stft.process(0, audio, 64, [](std::complex<double>*, int) {});
+                bins[0] = audio[0];
+                fft.forward(bins);
+                fft.inverse(bins);
+                checksum += bins[0].real();
+            }
+            over.reset();
+            convolution.reset();
+            stft.reset();
+            delay.clear();
+            allpass.clear();
+            loudness.reset();
+        });
+    }
+    CHECK(std::isfinite(checksum) && checksum > 0.0);
+    CHECK(handoff.get() && *handoff.get() == 7);
+}
 
 TEST(biquads_do_what_their_responses_say) {
     const Biquad designs[] = {
