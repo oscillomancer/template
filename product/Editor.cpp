@@ -31,9 +31,11 @@ constexpr Rect kLevelPanel{640, 76, 236, 460};
 constexpr double kMinHz = 20.0, kMaxHz = 20000.0;
 constexpr double kTopDb = 12.0, kBottomDb = -48.0;
 
+}  // namespace
+
 // The filter section exactly as Processor builds it, so the curve on screen
 // is the response the audio has.
-struct Response {
+struct Editor::Response {
     dsp::Svf low2, low4a, low4b, high2, high4a, high4b;
     double sampleRate, input, output, mix, low, high, steep;
 
@@ -49,8 +51,6 @@ struct Response {
         return dsp::gainToDb(std::abs(total));
     }
 };
-
-}  // namespace
 
 Editor::Editor(EditorHost& host) : EditorBase(host, kTheme, kEditorWidth, kEditorHeight) {
     graph_ = {kGraphPanel.x + 52, kGraphPanel.y + 44, kGraphPanel.w - 68, kGraphPanel.h - 76};
@@ -103,7 +103,7 @@ float Editor::yOf(double db) const {
     return graph_.y + graph_.h * static_cast<float>(t);
 }
 
-double Editor::responseDb(double hz) const {
+Editor::Response Editor::response() const {
     Response r;
     r.sampleRate = host().sampleRate() > 0.0 ? host().sampleRate() : 48000.0;
     const double low = effective(kLowCut), high = effective(kHighCut);
@@ -119,8 +119,10 @@ double Editor::responseDb(double hz) const {
     r.low = effective(kLowCutOn) > 0.5 ? 1.0 : 0.0;
     r.high = effective(kHighCutOn) > 0.5 ? 1.0 : 0.0;
     r.steep = effective(kSlope) > 0.5 ? 1.0 : 0.0;
-    return r.db(hz);
+    return r;
 }
+
+double Editor::responseDb(double hz) const { return response().db(hz); }
 
 namespace {
 constexpr uint32_t kHandleParams[2] = {kLowCut, kHighCut};
@@ -184,6 +186,7 @@ void Editor::paintHeader(NVGcontext* vg) {
 }
 
 void Editor::paintResponse(NVGcontext* vg) {
+    const Response filter = response();
     const Theme& t = theme();
     w::well(vg, t, graph_.inset(-1.0f), 4.0f);
 
@@ -222,7 +225,7 @@ void Editor::paintResponse(NVGcontext* vg) {
         nvgBeginPath(vg);
         for (int i = 0; i < points; ++i) {
             const float x = graph_.x + graph_.w * static_cast<float>(i) / static_cast<float>(points - 1);
-            const float y = yOf(responseDb(hzAt(x)));
+            const float y = yOf(filter.db(hzAt(x)));
             if (i == 0) nvgMoveTo(vg, x, y);
             else nvgLineTo(vg, x, y);
         }
@@ -252,7 +255,7 @@ void Editor::paintResponse(NVGcontext* vg) {
         const double hz = plain(kHandleParams[i]);
         const bool on = plain(kHandleToggles[i]) > 0.5;
         const bool hot = i == hovering_ || i == dragging_;
-        const float x = xOf(hz), y = yOf(responseDb(hz));
+        const float x = xOf(hz), y = yOf(filter.db(hz));
         w::hairline(vg, std::floor(x) + 0.5f, graph_.y, std::floor(x) + 0.5f, graph_.bottom(),
                     rgba(on ? t.accent : t.textFaint, hot ? 0.45f : 0.18f));
         nvgBeginPath(vg);

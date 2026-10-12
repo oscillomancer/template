@@ -38,6 +38,8 @@ class Editor : public supple::gui::EditorBase {
     float xOf(double hz) const;
     double hzAt(float x) const;
     float yOf(double db) const;
+    struct Response;
+    Response response() const;
     double responseDb(double hz) const;
     int handleAt(float x, float y) const;
 
