@@ -4,6 +4,25 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.15.2
+
+Windows passes its tests again, for the first time since 1.3. What a product
+must do: nothing; `Presets.h` is written as before.
+
+- Factory presets keep their values and texts by value (`PresetList`), not
+  as `std::initializer_list` members, whose storage MSVC lost by the time
+  the program ran: loading one of Chord's crashed.
+- `files::fromUtf8` and `toUtf8` (and `PresetLibrary`'s, now the same
+  functions) no longer throw: on Windows a path that is not UTF-8, as a
+  damaged session can hold, aborted the plugin. It is empty instead.
+- `files::writeAtomic` waits briefly when Windows refuses to replace a file
+  that another write, or a reader, has in hand.
+- MSVC's C4702 (unreachable code after `if constexpr (...) return;`) is off;
+  two shadowed names and a needless lambda capture are gone, so the debug
+  builds pass on Windows and macOS.
+- The test runner flushes after each test and, on Windows, names a test
+  that crashes; `host-smoke` writes unbuffered.
+
 ## 1.15.1
 
 The first CI run since 1.3 found the framework did not build on macOS or
