@@ -950,6 +950,30 @@ TEST(loudness_reads_ebu_test_signals) {
     CHECK_NEAR(l.shortTerm(), -36.0, 0.1);
 }
 
+TEST(loudness_gates_quiet_content_below_loud_and_overflow_groups) {
+    // Steady blocks at +37 and +137 LUFS both used to read as silence once
+    // their relative gate exceeded the old histogram ceiling of +10.
+    for (double loud : {100.0, 1e7}) {
+        Loudness meter;
+        meter.prepare(kRate, 1);
+        for (int n = 0; n < 5 * static_cast<int>(kRate); ++n) {
+            double x = loud * std::sin(2.0 * kPi * 1000.0 * n / kRate);
+            meter.tick(&x);
+        }
+        const double onlyLoud = meter.integrated();
+        CHECK_NEAR(onlyLoud, 20.0 * std::log10(loud) - 3.0036, 0.02);
+        for (int n = 0; n < 5 * static_cast<int>(kRate); ++n) {
+            double x = 0.001 * std::sin(2.0 * kPi * 1000.0 * n / kRate);
+            meter.tick(&x);
+        }
+        // Only the three 400 ms transition windows alter the integrated
+        // mean; five seconds of the quiet tone must be gated away.
+        CHECK_NEAR(meter.integrated(), onlyLoud, 0.16);
+        meter.reset();
+        CHECK(meter.integrated() == Loudness::kFloor);
+    }
+}
+
 TEST(correlation_tells_mono_from_inverted_from_unrelated) {
     Correlation c;
     c.prepare(kRate);

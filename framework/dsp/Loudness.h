@@ -110,6 +110,13 @@ class Loudness {
     }
 
     // LUFS, kFloor when there is nothing to measure yet.
+    // Histogram gates have 0.01 LU resolution through +100 LUFS. Above
+    // that, one overflow group retains exact summed energy and count. It
+    // always passes the relative gate: its mean is at least the ungated
+    // mean. If the gate itself exceeds +100, individual overflow blocks
+    // cannot be separated. The reported value then under-reads exact gating
+    // by at most max(overflow block LUFS) - LUFS(overflow mean energy).
+    // A constant overflow level remains exact; no loud group becomes silence.
     double momentary() const { return lufs(mean(4)); }
     double shortTerm() const { return lufs(mean(30)); }
     double integrated() const {
@@ -124,7 +131,7 @@ class Loudness {
         const double gate = lufs(energy / static_cast<double>(count)) - 10.0;
         energy = 0.0;
         count = 0;
-        for (int b = std::max(0, bin(gate)); b < kBins; ++b) {
+        for (int b = std::clamp(bin(gate), 0, kBins - 1); b < kBins; ++b) {
             energy += histogramEnergy_[static_cast<size_t>(b)];
             count += histogramCount_[static_cast<size_t>(b)];
         }
@@ -134,8 +141,8 @@ class Loudness {
   private:
     static constexpr int kMaxChannels = 16;
     static constexpr int kHistory = 30;  // 100 ms blocks: 3 seconds
-    // Gating blocks binned by loudness, 0.01 LU wide, from kFloor to +10.
-    static constexpr int kBins = 8000;
+    // Normal bins cover [-70, +100) in 0.01 LU; the last is overflow.
+    static constexpr int kBins = 17001;
     struct Lane {
         Biquad::State shelf, highpass;
     };
