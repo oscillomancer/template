@@ -1385,6 +1385,38 @@ TEST(a_preset_file_dropped_on_the_editor_loads) {
     std::filesystem::remove(file, ec);
 }
 
+TEST(the_last_meter_frame_repaints_before_the_editor_idles) {
+    struct MeterEditor : EditorBase {
+        explicit MeterEditor(EditorHost& host) : EditorBase(host, Theme{}, 100, 100) {}
+        void paint(NVGcontext*) override {}
+        bool moving() const { return outputMeters()[0].moving(); }
+    };
+    MockHost host;
+    MeterEditor editor(host);
+    NVGcontext* vg = test::createHeadlessCanvas();
+    CHECK(editor.attach(vg));
+    TelemetryFrame frame{};
+    frame.outputPeak[0] = 0.5f;
+    host.ring.push(frame);
+    editor.idle(0.016);
+    CHECK(editor.moving());
+    for (int i = 0; i < 200 && editor.moving(); ++i) {
+        nvgBeginFrame(vg, 100, 100, 1.0f);
+        editor.render(vg);
+        nvgEndFrame(vg);
+        editor.idle(0.05);
+        CHECK(editor.needsRepaint());  // includes the tick that reaches the floor
+    }
+    CHECK(!editor.moving());
+    nvgBeginFrame(vg, 100, 100, 1.0f);
+    editor.render(vg);
+    nvgEndFrame(vg);
+    editor.idle(0.05);
+    CHECK(!editor.needsRepaint());
+    editor.detach();
+    nvgDeleteInternal(vg);
+}
+
 TEST(an_idle_editor_repaints_when_the_host_changes_a_value) {
     ProductEditor p;
     p.editor->idle(0.016);

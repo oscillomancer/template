@@ -105,6 +105,7 @@ void EditorBase::idle(double seconds) {
     }
     bool moving = false;
     for (int c = 0; c < kMeterChannels; ++c) {
+        moving = moving || input_[c].moving() || output_[c].moving();
         input_[c].advance(seconds);
         output_[c].advance(seconds);
         moving = moving || input_[c].moving() || output_[c].moving();
