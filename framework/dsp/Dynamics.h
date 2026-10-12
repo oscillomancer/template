@@ -188,7 +188,9 @@ class TruePeak {
   public:
     static constexpr int kFactor = 4, kTaps = 40;  // per phase
     struct State {
-        double history[kTaps] = {};
+        // Each sample is kept twice, kTaps apart, so the newest kTaps are
+        // always contiguous: no wrapping index per tap.
+        double history[2 * kTaps] = {};
         int write = 0;
     };
 
@@ -204,12 +206,13 @@ class TruePeak {
     // has 19.875 input samples of delay (160 taps at 4x); the sample floor
     // is immediate. There is no delay imposed on the audio signal.
     double tick(State& s, double x) const {
-        s.history[s.write] = x;
-        s.write = (s.write + 1) % kTaps;
+        s.history[s.write] = s.history[s.write + kTaps] = x;
+        const double* newest = s.history + s.write + kTaps;
+        s.write = s.write + 1 == kTaps ? 0 : s.write + 1;
         double peak = std::fabs(x);
         for (int p = 0; p < kFactor; ++p) {
             double y = 0.0;
-            for (int k = 0; k < kTaps; ++k) y += phase_[p][k] * s.history[(s.write + kTaps - 1 - k) % kTaps];
+            for (int k = 0; k < kTaps; ++k) y += phase_[p][k] * newest[-k];
             peak = std::max(peak, std::fabs(y));
         }
         return peak;
