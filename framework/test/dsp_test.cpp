@@ -657,6 +657,31 @@ TEST(voices_steal_the_oldest_and_end_each_note_once) {
     CHECK(log.ended.size() == 4);
 }
 
+TEST(voice_controllers_are_omni_and_mpe_sustain_comes_from_the_master) {
+    Voices<4> v;
+    VoiceLog log;
+    v.note(on(60, 0), log);
+    v.note(on(64, 1), log);
+    v.midi(cc(64, 127, 3), log);
+    v.note(off(60, 0), log);
+    v.note(off(64, 1), log);
+    CHECK(v[0].pedal && v[1].pedal);
+    v.midi(cc(64, 0, 4), log);
+    CHECK(log.released.size() == 2);
+    v.midi(cc(120, 0, 5), log);
+    CHECK(log.ended.size() == 2);
+    v.note(on(60, 0), log);
+    v.note(on(64, 1), log);
+    v.midi(cc(123, 0, 5), log);
+    CHECK(!v[0].held && !v[1].held);
+    v.reset(log);
+    v.setMpe(Voices<4>::Mpe::Lower);
+    v.midi(cc(64, 127, 1), log);
+    CHECK(!v.sustainPedal());
+    v.midi(cc(64, 127, 0), log);
+    CHECK(v.sustainPedal());
+}
+
 TEST(changing_voice_mode_releases_tails_and_forgets_held_keys) {
     using Mode = Voices<4>::Mode;
     for (Mode from : {Mode::Poly, Mode::Mono, Mode::Legato}) {

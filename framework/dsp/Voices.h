@@ -123,6 +123,9 @@ class Voices {
         }
     }
 
+    // Sustain and CC120/123 are omni: they affect voices on all channels.
+    // MPE accepts sustain from the master only, then applies it to the whole
+    // zone. Outside MPE, sustain from any channel controls that same pedal.
     template <class H>
     void midi(const MidiMessage& m, H& h) {
         const int channel = m.channel();
