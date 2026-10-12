@@ -704,6 +704,8 @@ class BasicEngine {
                     for (int i = 0; i < n; ++i) feedIn_[static_cast<size_t>(c)][static_cast<size_t>(i)] = static_cast<float>(src[i]);
             } else {
                 std::fill(s, s + n, 0.0);
+                if (P::kAudioFeed && metering && c < 2)
+                    std::fill_n(feedIn_[static_cast<size_t>(c)].data(), n, 0.0f);
             }
         }
 

@@ -1402,6 +1402,27 @@ TEST(the_editor_gets_the_input_and_output_only_while_it_is_open) {
     CHECK(plain->feed() == nullptr);
 }
 
+TEST(the_audio_feed_silences_a_disconnected_input_channel) {
+    auto e = std::make_unique<BasicEngine<FeedProbe>>();
+    e->activate(48000.0, 64, 2, 2);
+    e->setMetering(true);
+    double input[64], left[64]{}, right[64]{};
+    std::fill_n(input, 64, 0.25);
+    const double* in[] = {input, input};
+    double* out[] = {left, right};
+    FeedFrame frames[64];
+    e->process<double>(in, out, 64);
+    CHECK(e->feed()->read(frames, 64) == 64);
+    in[1] = nullptr;
+    e->process<double>(in, out, 64);
+    CHECK(e->feed()->read(frames, 64) == 64);
+    for (const auto& f : frames) CHECK(f.in[0] == 0.25f && f.in[1] == 0.0f);
+    in[0] = nullptr;
+    e->process<double>(in, out, 64);
+    CHECK(e->feed()->read(frames, 64) == 64);
+    for (const auto& f : frames) CHECK(f.in[0] == 0.0f && f.in[1] == 0.0f);
+}
+
 TEST(the_editors_notes_play_at_the_next_block_and_held_keys_reach_telemetry) {
     auto e = std::make_unique<BasicEngine<SessionProbe>>();
     e->activate(48000.0, 512, 2, 2);
