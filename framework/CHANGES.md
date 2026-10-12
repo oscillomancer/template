@@ -4,6 +4,26 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.15.4
+
+Two AU threading bugs in clap-wrapper, found with a new test that hosts the
+AU in process. What a product must do: nothing.
+
+- `au-parameter-race` (macOS): the AU registered from its own bundle,
+  rendering on one thread, automated from two more, while state loads (each
+  a parameter rescan) run on the main thread. The CI workflow now runs the
+  tsan preset on macOS too, where it is a race check.
+- `SetParameter`, which hosts call from any thread and several at once,
+  appended to the event list the audio thread was rendering from; under load
+  that corrupted it (pluginval's parameter thread safety test crashed on it
+  once). A patch (`auv2-parameter-queue`) passes changes through a fixed
+  queue the next render takes.
+- A state load rescans the parameters, and the rescan rewrote what
+  `SetParameter` reads unlocked: each parameter's info (now only when it
+  changed, `auv2-rescan-race`) and the bypass parameter's ID, cleared and
+  set again (now atomic and never cleared, in `auv2-bypass-sync`).
+  `GetParameterList` takes the parameter tree's lock.
+
 ## 1.15.3
 
 What a product must do: nothing.
