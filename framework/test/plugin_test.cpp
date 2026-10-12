@@ -844,6 +844,17 @@ TEST(preset_discovery_lists_the_factory_and_the_users_folder) {
     CHECK(!provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_FILE,
                                   PresetLibrary::toUtf8(folder.path / "Junk.preset").c_str(), &junk.clap));
     CHECK(junk.presets.empty() && junk.errors == 1);
+    const auto huge = folder.path / "Huge.preset";
+    std::ofstream(huge).close();
+    std::filesystem::resize_file(huge, (64u << 20) + 1);
+    const auto directory = folder.path / "Directory.preset";
+    std::filesystem::create_directory(directory);
+    for (const auto& bad : {huge, directory, folder.path / "Unreadable.preset"}) {
+        Receiver rejected;
+        CHECK(!provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_FILE,
+                                      PresetLibrary::toUtf8(bad).c_str(), &rejected.clap));
+        CHECK(rejected.presets.empty() && rejected.errors == 1);
+    }
     provider->destroy(provider);
     CHECK(factory->create(factory, &indexer.clap, "someone.else") == nullptr);
 }

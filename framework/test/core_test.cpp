@@ -1984,6 +1984,22 @@ TEST(file_defaults_load_and_same_session_activation_waits) {
     CHECK(loaded);
 }
 
+TEST(bounded_file_reads_reject_oversized_missing_and_nonregular_files) {
+    FileScratch scratch;
+    const auto path = files::fromUtf8(scratch.touch("data"));
+    std::vector<uint8_t> bytes;
+    CHECK(files::readBounded(path, bytes, 1) && bytes == std::vector<uint8_t>{'x'});
+    CHECK(!files::readBounded(path, bytes, 0) && bytes.empty());
+    CHECK(!files::readBounded(scratch.root, bytes, 1024));
+    CHECK(!files::readBounded(scratch.root / "missing", bytes, 1024));
+#ifndef _WIN32
+    std::filesystem::permissions(path, std::filesystem::perms::none);
+    // Elevated test runners may still read it; ordinary CI must reject it.
+    if (!std::ifstream(path).is_open()) CHECK(!files::readBounded(path, bytes, 1024));
+    std::filesystem::permissions(path, std::filesystem::perms::owner_all);
+#endif
+}
+
 TEST(file_extensions_and_names_whichever_system_saved_them) {
     CHECK(files::hasExtension("/a/b/Kick.WAV", "wav flac"));
     CHECK(files::hasExtension("C:\\x\\y.flac", "wav flac"));

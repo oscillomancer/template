@@ -88,6 +88,19 @@ std::string toUtf8(const fs::path& path) {
 
 bool exists(std::string_view path) { return !path.empty() && isFile(fromUtf8(path)); }
 
+bool readBounded(const fs::path& path, std::vector<uint8_t>& bytes, size_t maxBytes) {
+    bytes.clear();
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) return false;
+    const auto size = fs::file_size(path, ec);
+    if (ec || size > maxBytes) return false;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    bytes.resize(static_cast<size_t>(size));
+    if (size) in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
+    return in && in.peek() == std::char_traits<char>::eof();
+}
+
 std::string fileName(std::string_view path) {
     const std::vector<std::string> parts = components(path);
     return parts.empty() ? std::string() : parts.back();

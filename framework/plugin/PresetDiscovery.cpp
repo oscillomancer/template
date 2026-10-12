@@ -3,13 +3,13 @@
 #include "plugin/PresetDiscovery.h"
 
 #include <cstring>
-#include <fstream>
 #include <string>
 #include <system_error>
 #include <vector>
 
 #include "ProductInfo.h"
 #include "core/Preset.h"
+#include "core/Files.h"
 #include "core/PresetLibrary.h"
 #include "core/StateFormat.h"
 
@@ -76,12 +76,8 @@ bool CLAP_ABI providerMetadata(const clap_preset_discovery_provider_t*, uint32_t
     if (kind != CLAP_PRESET_DISCOVERY_LOCATION_FILE || !location) return false;
     const std::filesystem::path file = PresetLibrary::fromUtf8(location);
     std::vector<uint8_t> bytes;
-    {
-        std::ifstream in(file, std::ios::binary);
-        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    }
     state::Snapshot snapshot;
-    if (bytes.size() > (64u << 20) ||
+    if (!files::readBounded(file, bytes, 64u << 20) ||
         state::load(bytes.data(), bytes.size(), state::fourcc(info::kStateTag), snapshot) != state::LoadResult::Ok) {
         receiver->on_error(receiver, 0, "not a preset of this plugin");
         return false;

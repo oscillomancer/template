@@ -10,6 +10,7 @@
 
 #include "ProductInfo.h"
 #include "core/Preset.h"
+#include "core/Files.h"
 
 namespace supple {
 
@@ -24,17 +25,6 @@ std::string lower(std::string_view s) {
     std::string out(s);
     for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return out;
-}
-
-bool readFile(const fs::path& file, std::vector<uint8_t>& out) {
-    std::error_code ec;
-    const auto size = fs::file_size(file, ec);
-    if (ec || size > kMaxFile) return false;
-    std::ifstream in(file, std::ios::binary);
-    if (!in) return false;
-    out.resize(static_cast<size_t>(size));
-    if (size > 0) in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(size));
-    return static_cast<bool>(in);
 }
 
 // Written beside the target and renamed over it, so a failure leaves the old
@@ -217,7 +207,7 @@ bool PresetLibrary::loadFactory(size_t index) {
 
 bool PresetLibrary::loadFile(const fs::path& file) {
     std::vector<uint8_t> bytes;
-    if (!readFile(file, bytes) || !apply(bytes)) return false;
+    if (!files::readBounded(file, bytes, kMaxFile) || !apply(bytes)) return false;
     // A file in the user folder is listed under its name; one from
     // elsewhere (a host's browser) is current by name only.
     std::error_code ec;
