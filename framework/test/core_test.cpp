@@ -337,6 +337,33 @@ TEST(plain_host_value_keeps_the_knob_on_its_taper) {
 
 // --- DSP building blocks ------------------------------------------------------------
 
+TEST(normalized_host_value_reaches_hosts_as_a_position) {
+    // A linear parameter whose host value is its 0..1 position, as hosts
+    // that keep normalized values expect; the plain value is unchanged.
+    const ParamDef plain = decibels(0, "Gain", -24.0, 12.0, 0.0);
+    const ParamDef normal = plain.normalizedHostValue();
+    CHECK(normal.hostTapered() && !plain.hostTapered());
+    CHECK(normal.hostMin() == 0.0 && normal.hostMax() == 1.0);
+    CHECK(toHost(normal, -24.0) == 0.0 && toHost(normal, 12.0) == 1.0);
+    CHECK_NEAR(hostDefault(normal), 24.0 / 36.0, 1e-15);
+    for (int k = 0; k <= 36; ++k) {
+        const double db = -24.0 + k;
+        CHECK_NEAR(toPlain(normal, toHost(normal, db)), db, 1e-12);
+        CHECK(toNormalized(normal, toHost(normal, db)) == toNormalized(plain, toHost(plain, db)));
+    }
+    CHECK(text(normal, toHost(normal, -6.0)) == text(plain, -6.0));
+    // A tapered parameter is a position already; the flag changes nothing.
+    const ParamDef f = frequency(1, "F", 20.0, 20000.0, 1000.0);
+    CHECK(toHost(f.normalizedHostValue(), 440.0) == toHost(f, 440.0));
+    // Not for stepped parameters, nor with plainHostValue().
+    ParamTable::Builder b;
+    b.add(integer(2, "Steps", 1, 8, 4).normalizedHostValue());
+    b.add(f.plainHostValue().normalizedHostValue());
+    const Definition bad(productDefinition()->info(), b.build());
+    CHECK(bad.problems().find("'Steps': normalizedHostValue()") != std::string::npos);
+    CHECK(bad.problems().find("'F': normalizedHostValue()") != std::string::npos);
+}
+
 TEST(smoother_settles_exactly) {
     dsp::Smoother s;
     s.setTime(10.0, 48000.0);

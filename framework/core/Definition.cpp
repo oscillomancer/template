@@ -116,6 +116,8 @@ std::string ParamTable::problems() const {
         if (p.smoothing < 0.0 || (p.smoothing > 0.0 && p.kind != ParamKind::Continuous))
             add(which + ": only a continuous parameter is smoothed, for a time of 0 or more");
         if (p.unit == Unit::Note && p.kind == ParamKind::Choice) add(which + ": a note is an integer, not a choice");
+        if (p.is(pflag::kNormalHost) && (p.kind != ParamKind::Continuous || p.is(pflag::kPlainHost)))
+            add(which + ": normalizedHostValue() is for a continuous parameter without plainHostValue()");
     }
     if (bypasses > 1) add("more than one bypass parameter");
     return out;
