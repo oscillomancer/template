@@ -517,6 +517,43 @@ TEST(a_text_field_edits_its_property_as_utf8) {
     CHECK(host.clean() && host.begins == 0);  // no parameter gesture anywhere
 }
 
+TEST(unavailable_controls_discard_their_owned_overlays) {
+    Bench b;
+    if (b.knob < 0) return;
+    for (bool pageChange : {false, true}) {
+        for (bool property : {false, true}) {
+            if (property && properties::kCount == 0) continue;
+            MockHost host;
+            Ui ui(host, 800, 600);
+            ui.tabs({20, 20, 300, 30}, {"One", "Two"});
+            ui.onPage(0);
+            bool allowed = true;
+            if (property) ui.textField(properties::at(0).id, {20, 80, 300, 26});
+            else ui.knob(b.knobParam, {20, 80, 100, 120});
+            ui.control(1).enabledWhen([&] { return allowed; });
+            const double before = host.value(b.knobParam);
+            const std::string textBefore = property ? std::string(host.property(properties::at(0).id)) : "";
+            ui.openTextEdit(1);
+            CHECK(ui.textEdit().open);
+            ui.text('7');
+            if (pageChange) ui.setPage(0, 1);
+            else { allowed = false; ui.applyRules(); }
+            CHECK(!ui.textEdit().open);
+            ui.key(key::kEnter, 0);
+            CHECK(host.value(b.knobParam) == before && host.propertySets == 0);
+            if (property) CHECK(host.property(properties::at(0).id) == textBefore);
+            allowed = true;
+            ui.setPage(0, 0);
+            ui.applyRules();
+            ui.popup({20, 80, 100, 20}, {MenuItem::item("Action")}, [](int) {}, 160, 1);
+            CHECK(ui.menu().open);
+            if (pageChange) ui.setPage(0, 1);
+            else { allowed = false; ui.applyRules(); }
+            CHECK(!ui.menu().open && host.clean());
+        }
+    }
+}
+
 TEST(a_popup_skips_what_cannot_be_chosen_and_scrolls) {
     MockHost host;
     Ui ui{host, 400.0f, 300.0f};

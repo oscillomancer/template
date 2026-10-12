@@ -455,6 +455,7 @@ class Ui {
     void syncPresets(bool force);
     void commitText();
     void cancelText();
+    void cancelInactiveOverlays();
     bool textKey(uint32_t code, uint32_t mods);
     bool menuKey(uint32_t code);
     void moveFocus(int direction);

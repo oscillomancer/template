@@ -235,6 +235,7 @@ void Ui::setPage(int control, int page) {
     endGesture();
     release();
     c.selected = page;
+    cancelInactiveOverlays();
     if (focus_ >= 0 && focus_ != control && !shown(focus_)) focus_ = -1;
     hideTooltip();
     dirty_ = true;
@@ -1865,6 +1866,11 @@ void Ui::focusLost() {
 
 // --- time ----------------------------------------------------------------------------
 
+void Ui::cancelInactiveOverlays() {
+    if (menu_.open && menu_.control >= 0 && !interactive(menu_.control)) closeMenu();
+    if (text_.open && text_.control >= 0 && !interactive(text_.control)) cancelText();
+}
+
 void Ui::applyRules() {
     for (Control& c : controls_) {
         if (!c.rule) continue;
@@ -1874,6 +1880,7 @@ void Ui::applyRules() {
             dirty_ = true;
         }
     }
+    cancelInactiveOverlays();
     // A control that just turned off lets go of what it held.
     if (drag_.control >= 0 && !interactive(drag_.control)) pointerUp(0.0f, 0.0f, 0, 0);
     if (focus_ >= 0 && !interactive(focus_)) {
