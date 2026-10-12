@@ -4,7 +4,9 @@
 // A small radix-2 FFT: complex, in place, any power-of-two size, tables built
 // once. resize() allocates; forward() and inverse() do not, so it serves the
 // audio thread too (dsp/Stft.h, dsp/Convolution.h). Plain and deterministic
-// rather than fast: the same input gives the same bits on every platform.
+// rather than fast: repeated transforms with the same build and floating-point
+// environment are reproducible. Different compilers and math libraries may
+// differ in their last bits.
 #pragma once
 
 #include <cmath>
