@@ -26,6 +26,7 @@
 # ISCC (Inno Setup's compiler, Windows), TEST (ON: the archive only, no
 # identity, for the package test).
 cmake_minimum_required(VERSION 3.27)
+include("${CMAKE_CURRENT_LIST_DIR}/Xml.cmake")
 
 foreach(var NAME VERSION VENDOR ID PLATFORM OUT LICENSE NOTICES)
     if (NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
@@ -189,12 +190,13 @@ if (INSTALLER AND PLATFORM MATCHES "^macos")
     # The architectures the installer may run on are the binary's own;
     # without them, an Apple silicon Mac is asked to install Rosetta first.
     list(GET signed 0 first)
-    get_filename_component(stem "${first}" NAME_WE)
+    get_filename_component(stem "${first}" NAME_WLE)
     execute_process(COMMAND /usr/bin/lipo -archs "${first}/Contents/MacOS/${stem}"
         OUTPUT_VARIABLE archs OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
     string(REPLACE " " "," archs "${archs}")
     set(outline "")
     set(choices "")
+    supple_xml_escape(name_xml "${NAME}")
     foreach(entry ${formats})
         string(REPLACE "|" ";" parts "${entry}")
         list(GET parts 0 format)
@@ -216,7 +218,7 @@ if (INSTALLER AND PLATFORM MATCHES "^macos")
             set(title "${format}")
         endif()
         string(APPEND outline "        <line choice=\"${key}\"/>\n")
-        string(APPEND choices "    <choice id=\"${key}\" title=\"${title}\" description=\"${NAME} as ${title}, in /Library/Audio/Plug-Ins/${folder}\">
+        string(APPEND choices "    <choice id=\"${key}\" title=\"${title}\" description=\"${name_xml} as ${title}, in /Library/Audio/Plug-Ins/${folder}\">
         <pkg-ref id=\"${ID}.${key}\"/>
     </choice>
     <pkg-ref id=\"${ID}.${key}\" version=\"${VERSION}\">${key}.pkg</pkg-ref>
@@ -224,7 +226,7 @@ if (INSTALLER AND PLATFORM MATCHES "^macos")
     endforeach()
     file(WRITE "${work}/distribution.xml" "<?xml version=\"1.0\" encoding=\"utf-8\"?>
 <installer-gui-script minSpecVersion=\"2\">
-    <title>${NAME} ${VERSION}</title>
+    <title>${name_xml} ${VERSION}</title>
     <license file=\"LICENSE.txt\"/>
     <options customize=\"allow\" require-scripts=\"false\" hostArchitectures=\"${archs}\"/>
     <domains enable_localSystem=\"true\"/>
