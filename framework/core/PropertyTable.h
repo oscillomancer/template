@@ -102,3 +102,12 @@ inline constexpr int indexOf(uint32_t id) {
 inline bool accepts(size_t index, std::string_view value) { return value.size() <= at(index).limit; }
 
 }  // namespace supple::properties
+
+namespace supple {
+// The product table, also usable by stores instantiated with a synthetic table.
+struct PropertyTable {
+    static constexpr size_t kCount = properties::kCount;
+    static constexpr size_t kSlots = properties::kSlots;
+    static constexpr const PropertyDef& at(size_t i) { return properties::at(i); }
+};
+}  // namespace supple

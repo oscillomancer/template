@@ -1941,6 +1941,49 @@ struct FileScratch {
 
 }  // namespace
 
+namespace {
+struct FileTableProbe {
+    static constexpr size_t kCount = 1, kSlots = 1;
+    static inline PropertyDef entry = property(1, "File").file();
+    static const PropertyDef& at(size_t) { return entry; }
+};
+struct SlowFileProbe {
+    using FileContents = int;
+    static inline std::atomic<bool> started{false}, finish{true};
+    static std::unique_ptr<int> loadFile(const FileRequest&, std::string&) {
+        started.store(true);
+        while (!finish.load()) std::this_thread::yield();
+        return std::make_unique<int>(42);
+    }
+};
+}
+
+TEST(file_defaults_load_and_same_session_activation_waits) {
+    FileScratch scratch;
+    const std::string path = scratch.touch("default.file");
+    FileTableProbe::entry.def = path.c_str();
+    FileSlots<SlowFileProbe, FileTableProbe> slots;
+    FileTableProbe::entry.def = "";
+    const FileSlots<SlowFileProbe, FileTableProbe>::Session session{48000, 64, 2};
+    slots.prepare(session);
+    bool loaded = false;
+    slots.deliverAll([&](size_t, const int* p) { loaded = p && *p == 42; });
+    CHECK(loaded);
+    SlowFileProbe::started = false;
+    SlowFileProbe::finish = false;
+    slots.request(0, path, false);
+    while (!SlowFileProbe::started.load()) std::this_thread::yield();
+    std::atomic<bool> returned{false};
+    std::thread activation([&] { slots.prepare(session); returned = true; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(!returned.load());
+    SlowFileProbe::finish = true;
+    activation.join();
+    CHECK(returned.load());
+    slots.deliverAll([&](size_t, const int* p) { loaded = p && *p == 42; });
+    CHECK(loaded);
+}
+
 TEST(file_extensions_and_names_whichever_system_saved_them) {
     CHECK(files::hasExtension("/a/b/Kick.WAV", "wav flac"));
     CHECK(files::hasExtension("C:\\x\\y.flac", "wav flac"));
