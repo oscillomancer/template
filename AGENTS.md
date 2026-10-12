@@ -43,7 +43,8 @@ and `test_examples` puts back), with its own name, ID and codes, which
   bend and mod wheel, `PRODUCT_NOTE_EXPRESSIONS tuning volume`, a
   `polyModulatable()` Level, microtuning (`PRODUCT_TUNING`: MTS-ESP and CLAP
   tuning through `retuning()`), and `kOfflineMode`: bounces get a
-  band-limited triangle, measured against the live, naive one. Built on the
+  band-limited triangle at 20 Hz and above, measured against the live, naive
+  one (below 20 Hz both use the naive shape to bound work). Built on the
   DSP library: `dsp::Voices` (stealing, the sustain pedal, Mono and Legato
   with Glide, bend) keeping the note-end books, a `dsp::Adsr` per voice, a
   polyBLEP saw, an `Lfo` for the mod wheel. An ADSR dragged on an
