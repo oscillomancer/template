@@ -1179,6 +1179,9 @@ bool CLAP_ABI paramsInfo(const clap_plugin_t* plugin, uint32_t index, clap_param
     out->flags = 0;
     if (p.is(pflag::kAutomatable)) out->flags |= CLAP_PARAM_IS_AUTOMATABLE;
     if (p.is(pflag::kModulatable)) out->flags |= CLAP_PARAM_IS_MODULATABLE;
+    if (p.is(pflag::kPolyMod))
+        out->flags |= CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID | CLAP_PARAM_IS_MODULATABLE_PER_KEY |
+                      CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL | CLAP_PARAM_IS_MODULATABLE_PER_PORT;
     if (p.is(pflag::kHidden)) out->flags |= CLAP_PARAM_IS_HIDDEN;
     if (p.is(pflag::kBypass)) out->flags |= CLAP_PARAM_IS_BYPASS;
     if (p.isOutput()) out->flags |= CLAP_PARAM_IS_READONLY;

@@ -1259,6 +1259,19 @@ struct MixedEvents {
 
 }  // namespace
 
+TEST(polyphonic_modulation_is_advertised_to_the_host) {
+    Instance i;
+    const auto* extension = static_cast<const clap_plugin_params_t*>(i.plugin->get_extension(i.plugin, CLAP_EXT_PARAMS));
+    constexpr uint32_t poly = CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID | CLAP_PARAM_IS_MODULATABLE_PER_KEY |
+                              CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL | CLAP_PARAM_IS_MODULATABLE_PER_PORT;
+    for (size_t k = 0; k < params::kCount; ++k) {
+        clap_param_info_t info{};
+        CHECK(extension->get_info(i.plugin, static_cast<uint32_t>(k), &info));
+        CHECK_MSG((info.flags & poly) == (params::at(k).is(pflag::kPolyMod) ? poly : 0u), "%s", params::at(k).name);
+    }
+    if (!params::kAnyPolyMod) std::puts("      (no polyphonic modulation in this product)");
+}
+
 TEST(midi_expressions_and_note_modulation_are_taken_in_any_mix) {
     if (!product::info::kNoteInput) {
         std::printf("      (no note input in this product)\n");
