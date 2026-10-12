@@ -82,6 +82,26 @@ TEST(a_release_mid_strum_sends_no_more) {
     CHECK(only(sent, Kind::Note, NoteEvent::Type::Off).size() == 2);
 }
 
+TEST(a_note_beyond_the_chord_capacity_is_retired_immediately) {
+    std::vector<test::EventAt> events;
+    for (int id = 0; id <= Processor::kChords; ++id) {
+        events.push_back(test::noteOn(id, 60, 1.0, id));
+        events.push_back(test::noteOff(1000 + id, 60, id));
+    }
+    const auto sent = play(events, {{kShape, 2.0}}, {64}, 2000);
+    const auto ends = only(sent, Kind::End);
+    CHECK(ends.size() == Processor::kChords + 1);
+    int rejected = 0;
+    for (const auto& end : ends) {
+        if (end.note.noteId != Processor::kChords) continue;
+        ++rejected;
+        CHECK(end.frame == Processor::kChords);
+    }
+    CHECK(rejected == 1);
+    CHECK(only(sent, Kind::Note).size() == 3 * Processor::kChords);
+    CHECK(only(sent, Kind::Note, NoteEvent::Type::Off).size() == 3 * Processor::kChords);
+}
+
 TEST(other_midi_passes_through_on_its_frame) {
     const auto sent = play({test::midi(10, MidiMessage::cc(3, 1, 64)), test::midi(700, MidiMessage::bend(0, 0.5))});
     const auto midi = only(sent, Kind::Midi);

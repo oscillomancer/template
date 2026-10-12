@@ -65,7 +65,17 @@ class Voices {
         sampleRate_ = sampleRate;
         setGlide(glideMs_);
     }
-    void setMode(Mode m) { mode_ = m; }
+    // A mode transition releases sounding keys and forgets the mono stack.
+    // Their note ends still arrive through finished(), after the tails die.
+    template <class H>
+    void setMode(Mode m, H& h) {
+        if (m == mode_) return;
+        forgetHeld(h);
+        for (int v = 0; v < N; ++v)
+            if (voices_[v].active && voices_[v].held) release(v, h);
+        lastKey_ = -1.0;
+        mode_ = m;
+    }
     Mode mode() const { return mode_; }
     // Portamento: each new note slides from the last one's pitch over this
     // long (0: none). In poly mode too.
@@ -113,6 +123,9 @@ class Voices {
         }
     }
 
+    // Sustain and CC120/123 are omni: they affect voices on all channels.
+    // MPE accepts sustain from the master only, then applies it to the whole
+    // zone. Outside MPE, sustain from any channel controls that same pedal.
     template <class H>
     void midi(const MidiMessage& m, H& h) {
         const int channel = m.channel();

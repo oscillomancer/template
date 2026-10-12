@@ -322,6 +322,47 @@ TEST(a_tuning_moves_every_note_and_an_unmapped_key_stays_silent) {
     CHECK(test::peak(test::render(test::silence(2, 9600), o)) == 0.0);
 }
 
+TEST(the_offline_triangle_keeps_its_level_at_sub_hertz_pitches) {
+    test::RenderOptions o;
+    o.offline = true;
+    o.initial = {{kWaveform, 1.0}, {kAttack, 1.0}, {kLevel, 0.0}};
+    o.events = {test::noteOn(0, 0), test::expression(0, NoteExpression::Type::Tuning, -60.0)};
+    // Below 20 Hz the bounded offline path uses the naive shape. Phase 0
+    // is the triangle's -1 corner, through a 48-sample attack and gain 1/2.
+    const test::Signal out = test::render(test::silence(2, 1), o);
+    CHECK_NEAR(out[0][0] * 96.0, -1.0, 1e-5);
+}
+
+TEST(mode_changes_retire_stacked_keys_at_the_automation_frame) {
+    test::RenderOptions o;
+    o.initial = {{kMode, 1.0}, {kRelease, 5.0}};
+    o.blocks = {64};
+    o.events = {test::noteOn(0, 60, 1.0, 1), test::noteOn(1, 64, 1.0, 2)};
+    o.automation = {{100, kMode, 0.0}};
+    std::vector<test::Sent> sent;
+    o.sent = &sent;
+    test::render(test::silence(2, 1024), o);
+    int ended = 0;
+    for (const auto& event : sent) {
+        if (event.kind != NoteOutput::Kind::End) continue;
+        ++ended;
+        if (event.note.noteId == 1) CHECK(event.frame == 100);
+        else CHECK(event.frame >= 100 && event.frame <= 340);
+    }
+    CHECK(ended == 2);
+}
+
+TEST(extreme_negative_tuning_finishes_offline_with_finite_audio) {
+    test::RenderOptions o;
+    o.offline = true;
+    o.initial = {{kWaveform, 1.0}, {kAttack, 1.0}, {kLevel, 0.0}};
+    o.events = {test::noteOn(0, 60), test::expression(0, NoteExpression::Type::Tuning, -1e9)};
+    const auto out = test::render(test::silence(2, 512), o);
+    for (const auto& channel : out)
+        for (double x : channel) CHECK(std::isfinite(x));
+    CHECK(test::peak(out) > 0.1);
+}
+
 // --- the voice manager's modes --------------------------------------------------------------
 
 TEST(the_sustain_pedal_holds_a_released_note) {

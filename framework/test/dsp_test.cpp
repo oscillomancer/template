@@ -20,6 +20,7 @@
 
 #include "Check.h"
 #include "core/Fft.h"
+#include "core/Realtime.h"
 #include "dsp/AudioFile.h"
 #include "dsp/Convolution.h"
 #include "dsp/Dynamics.h"
@@ -33,6 +34,8 @@
 #include "dsp/Stft.h"
 #include "dsp/Voices.h"
 #include "dsp/Worker.h"
+#include "tools/wav.h"
+#include "tools/Timing.h"
 
 using namespace supple;
 using namespace supple::dsp;
@@ -86,6 +89,75 @@ std::filesystem::path scratchFolder(const char* name) {
 }  // namespace
 
 // --- filters ----------------------------------------------------------------------
+
+namespace {
+template <class F>
+void runPrepared(F&& run) SUPPLE_REALTIME {
+    run();
+}
+}
+
+TEST(prepared_primitives_run_inside_a_realtime_context) {
+    Fft fft(64);
+    std::complex<double> bins[64] = {};
+    Stft stft;
+    stft.prepare(1, 64);
+    Convolution convolution;
+    const double impulse[65] = {1.0};
+    const double* ir[] = {impulse};
+    convolution.prepare(ir, 1, 65, 1, 16);
+    FractionalDelay delay;
+    delay.prepare(32);
+    AllpassDelay allpass;
+    allpass.prepare(32);
+    Loudness loudness;
+    loudness.prepare(kRate, 1);
+    TruePeak peak;
+    TruePeak::State peakState;
+    Adsr envelope;
+    envelope.setTimes(1, 10, 0.5, 10, kRate);
+    Biquad filter = Biquad::lowpass(1000, 0.707, kRate);
+    Biquad::State filterState;
+    Adaa<TanhShape>::State shaper;
+    Handoff<int> handoff;
+    handoff.publish(std::make_unique<int>(7));
+    double checksum = 0.0;
+    for (auto phase : {Oversampler::Phase::Linear, Oversampler::Phase::Minimum}) {
+        Oversampler over;
+        over.prepare(1, 64, 4, phase);
+        runPrepared([&] {
+            envelope.gate(true);
+            handoff.update();
+            for (int block = 0; block < 16; ++block) {
+                double audio[64];
+                for (double& x : audio) {
+                    x = filter.tick(filterState, envelope.tick());
+                    x = delay.process(x, 4.5);
+                    x = allpass.process(x, 4.5);
+                    loudness.tick(&x);
+                    checksum += peak.tick(peakState, x);
+                }
+                double* high = over.up(0, audio, 64);
+                for (int n = 0; n < 256; ++n) high[n] = Adaa<TanhShape>::tick(shaper, high[n]);
+                over.down(0, audio, 64);
+                convolution.process(0, audio, 64);
+                stft.process(0, audio, 64, [](std::complex<double>*, int) {});
+                bins[0] = audio[0];
+                fft.forward(bins);
+                fft.inverse(bins);
+                checksum += bins[0].real();
+            }
+            over.reset();
+            convolution.reset();
+            stft.reset();
+            delay.clear();
+            allpass.clear();
+            loudness.reset();
+        });
+    }
+    CHECK(std::isfinite(checksum) && checksum > 0.0);
+    CHECK(handoff.get() && *handoff.get() == 7);
+}
 
 TEST(biquads_do_what_their_responses_say) {
     const Biquad designs[] = {
@@ -274,6 +346,48 @@ TEST(true_peak_finds_the_peak_between_samples) {
     double p = 0.0;
     for (double v : sine(997.0, 9600, 0.5)) p = std::max(p, meter.tick(t, v));
     CHECK_NEAR(db(p), db(0.5), 0.1);
+}
+
+TEST(true_peak_keeps_sample_peaks_and_measures_the_high_band_at_every_phase) {
+    TruePeak meter;
+    double worst = 0.0;
+    for (int f = 1; f <= 91; ++f) {
+        const double frequency = 0.005 * f;
+        for (int phase = 0; phase < 32; ++phase) {
+            TruePeak::State state;
+            double peak = 0.0;
+            for (int n = 0; n < 1080; ++n) {
+                const double x = std::sin(2.0 * kPi * (frequency * n + phase / 32.0));
+                const double p = meter.tick(state, x);
+                CHECK(p >= std::fabs(x));
+                if (n >= 80) peak = std::max(peak, p);
+            }
+            worst = std::min(worst, db(peak));
+            CHECK_MSG(db(peak) >= -0.5, "f/fs %.3f phase %d: %.3f dB", frequency, phase, db(peak));
+        }
+    }
+    std::printf("      worst true peak under-read %.3f dB through 0.455 fs\n", worst);
+}
+
+namespace {
+struct TestClock {
+    using duration = std::chrono::duration<double>;
+    using time_point = std::chrono::time_point<TestClock>;
+    static inline double seconds = 0.0;
+    static time_point now() { return time_point(duration(seconds)); }
+};
+}
+
+TEST(benchmark_timing_excludes_every_trials_preparation) {
+    int trials = 0;
+    const double elapsed = tools::fastestPrepared<TestClock>(5, [&] {
+        TestClock::seconds += 100.0;
+        ++trials;
+    }, [&] {
+        TestClock::seconds += 2.0 + trials;
+    });
+    CHECK(trials == 5);
+    CHECK_NEAR(elapsed, 3.0, 1e-12);
 }
 
 // --- oversampling ---------------------------------------------------------------------
@@ -470,6 +584,27 @@ TEST(lfo_shapes_phases_and_sync) {
     CHECK(changes == 9 || changes == 10);
 }
 
+TEST(random_lfo_changes_at_the_start_of_the_next_cycle) {
+    Random random(7);
+    double previous = 0.0, current = random.bipolar();
+    Lfo held, smooth;
+    held.setShape(Lfo::Shape::SampleAndHold);
+    smooth.setShape(Lfo::Shape::SmoothRandom);
+    // An exactly representable increment puts the boundary on sample 8.
+    held.setRate(1.0, 8.0);
+    smooth.setRate(1.0, 8.0);
+    for (int n = 0; n < 32; ++n) {
+        if (n > 0 && n % 8 == 0) {
+            previous = current;
+            current = random.bipolar();
+        }
+        const double phase = (n % 8) / 8.0;
+        const double ease = 0.5 - 0.5 * std::cos(kPi * phase);
+        CHECK(held.tick() == current);
+        CHECK_NEAR(smooth.tick(), previous + (current - previous) * ease, 1e-12);
+    }
+}
+
 TEST(noise_colours_have_their_slopes) {
     Noise n(9);
     const size_t size = 1 << 16;
@@ -614,6 +749,62 @@ TEST(voices_steal_the_oldest_and_end_each_note_once) {
     CHECK(log.ended.size() == 4);
 }
 
+TEST(voice_controllers_are_omni_and_mpe_sustain_comes_from_the_master) {
+    Voices<4> v;
+    VoiceLog log;
+    v.note(on(60, 0), log);
+    v.note(on(64, 1), log);
+    v.midi(cc(64, 127, 3), log);
+    v.note(off(60, 0), log);
+    v.note(off(64, 1), log);
+    CHECK(v[0].pedal && v[1].pedal);
+    v.midi(cc(64, 0, 4), log);
+    CHECK(log.released.size() == 2);
+    v.midi(cc(120, 0, 5), log);
+    CHECK(log.ended.size() == 2);
+    v.note(on(60, 0), log);
+    v.note(on(64, 1), log);
+    v.midi(cc(123, 0, 5), log);
+    CHECK(!v[0].held && !v[1].held);
+    v.reset(log);
+    v.setMpe(Voices<4>::Mpe::Lower);
+    v.midi(cc(64, 127, 1), log);
+    CHECK(!v.sustainPedal());
+    v.midi(cc(64, 127, 0), log);
+    CHECK(v.sustainPedal());
+}
+
+TEST(changing_voice_mode_releases_tails_and_forgets_held_keys) {
+    using Mode = Voices<4>::Mode;
+    for (Mode from : {Mode::Poly, Mode::Mono, Mode::Legato}) {
+        for (Mode to : {Mode::Poly, Mode::Mono, Mode::Legato}) {
+            if (from == to) continue;
+            Voices<4> v;
+            VoiceLog log;
+            v.setMode(from, log);
+            v.note(on(60), log);
+            v.note(on(64), log);
+            v.midi(cc(64, 127), log);
+            v.setMode(to, log);
+            CHECK(log.stopped.empty());
+            for (int k = 0; k < 4; ++k) {
+                if (!v[k].active) continue;
+                CHECK(!v[k].held && !v[k].pedal);
+                CHECK(log.endedKey(v[k].note.key) == 0);
+                v.finished(k, log);
+            }
+            CHECK(log.endedKey(60) == 1 && log.endedKey(64) == 1);
+            v.midi(cc(64, 0), log);
+            v.note(off(60), log);
+            v.note(off(64), log);
+            v.note(on(67), log);
+            v.note(off(67), log);
+            v.reset(log);
+            CHECK(log.ended.size() == 3);
+        }
+    }
+}
+
 TEST(sustain_pedal_holds_released_notes_until_it_lifts) {
     Voices<4> v;
     v.prepare(kRate);
@@ -630,9 +821,9 @@ TEST(mono_plays_the_newest_key_and_returns_to_the_last) {
     for (auto mode : {Voices<4>::Mode::Mono, Voices<4>::Mode::Legato}) {
         Voices<4> v;
         v.prepare(kRate);
-        v.setMode(mode);
-        CHECK(v.voiceCount() == 1);
         VoiceLog log;
+        v.setMode(mode, log);
+        CHECK(v.voiceCount() == 1);
         v.note(on(60), log);
         v.note(on(64), log);
         CHECK(v[0].note.key == 64);
@@ -700,8 +891,8 @@ TEST(every_note_ends_exactly_once_whatever_happens) {
     for (auto mode : {Voices<3>::Mode::Poly, Voices<3>::Mode::Mono, Voices<3>::Mode::Legato}) {
         Voices<3> v;
         v.prepare(kRate);
-        v.setMode(mode);
         VoiceLog log;
+        v.setMode(mode, log);
         Random r(static_cast<uint64_t>(mode) + 1);
         std::vector<int32_t> started;
         int32_t id = 0;
@@ -851,6 +1042,30 @@ TEST(loudness_reads_ebu_test_signals) {
     CHECK_NEAR(l.shortTerm(), -36.0, 0.1);
 }
 
+TEST(loudness_gates_quiet_content_below_loud_and_overflow_groups) {
+    // Steady blocks at +37 and +137 LUFS both used to read as silence once
+    // their relative gate exceeded the old histogram ceiling of +10.
+    for (double loud : {100.0, 1e7}) {
+        Loudness meter;
+        meter.prepare(kRate, 1);
+        for (int n = 0; n < 5 * static_cast<int>(kRate); ++n) {
+            double x = loud * std::sin(2.0 * kPi * 1000.0 * n / kRate);
+            meter.tick(&x);
+        }
+        const double onlyLoud = meter.integrated();
+        CHECK_NEAR(onlyLoud, 20.0 * std::log10(loud) - 3.0036, 0.02);
+        for (int n = 0; n < 5 * static_cast<int>(kRate); ++n) {
+            double x = 0.001 * std::sin(2.0 * kPi * 1000.0 * n / kRate);
+            meter.tick(&x);
+        }
+        // Only the three 400 ms transition windows alter the integrated
+        // mean; five seconds of the quiet tone must be gated away.
+        CHECK_NEAR(meter.integrated(), onlyLoud, 0.16);
+        meter.reset();
+        CHECK(meter.integrated() == Loudness::kFloor);
+    }
+}
+
 TEST(correlation_tells_mono_from_inverted_from_unrelated) {
     Correlation c;
     c.prepare(kRate);
@@ -972,6 +1187,41 @@ const unsigned char kRampFlac[] = {
 };
 }  // namespace
 
+TEST(float_file_non_finite_samples_become_zero_in_loads_and_streams) {
+    const auto path = scratchFolder("nonfinite-file") / "float.wav";
+    AudioData input;
+    input.sampleRate = kRate;
+    input.channel = {{0.25f, std::numeric_limits<float>::infinity(),
+                      -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN(), -0.5f}};
+    CHECK(saveWavFile(path.string(), input));
+    AudioData output;
+    CHECK(loadAudioFile(path.string(), output));
+    CHECK(output.channel[0] == std::vector<float>({0.25f, 0.0f, 0.0f, 0.0f, -0.5f}));
+    DiskStream stream;
+    CHECK(stream.open(path.string()));
+    double samples[5] = {};
+    double* channels[] = {samples};
+    CHECK(stream.read(channels, 1, 5) == 5);
+    for (size_t n = 0; n < 5; ++n) CHECK(samples[n] == output.channel[0][n]);
+}
+
+TEST(unknown_length_flac_loads_whole_but_is_refused_for_streaming) {
+    const auto path = scratchFolder("unknown-length") / "unknown.flac";
+    std::vector<unsigned char> bytes(std::begin(kRampFlac), std::end(kRampFlac));
+    bytes[21] &= 0xf0;
+    std::fill(bytes.begin() + 22, bytes.begin() + 26, 0);
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    AudioData audio;
+    std::string error;
+    CHECK(loadAudioFile(path.string(), audio, &error));
+    CHECK(audio.frames() == 100);
+    DiskStream stream;
+    CHECK(!stream.open(path.string(), 1.0, &error));
+    CHECK(!stream.isOpen());
+    CHECK(error.find("length") != std::string::npos);
+    CHECK(stream.frames() == 0 && stream.channels() == 0);
+}
+
 TEST(wav_aiff_and_flac_decode_and_wav_round_trips) {
     const std::filesystem::path dir = scratchFolder("files");
     AudioData a;
@@ -1039,6 +1289,41 @@ TEST(wav_aiff_and_flac_decode_and_wav_round_trips) {
     CHECK(!loadAudioFile((dir / "text.wav").string(), none, &error));
     std::filesystem::remove_all(dir.parent_path());
 }
+
+TEST(wav_writer_rejects_invalid_audio_before_opening_the_file) {
+    const std::filesystem::path dir = scratchFolder("invalid-wav");
+    const std::string path = (dir / "keep.wav").string();
+    std::ofstream(path) << "keep";
+    AudioData a;
+    a.channel = {{0.25f, 0.5f}, {0.25f, 0.5f}};
+    std::string error;
+    for (double rate : {0.0, -1.0, 0.1, std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::quiet_NaN(), 4294967296.0}) {
+        a.sampleRate = rate;
+        CHECK(!saveWavFile(path, a, &error));
+        CHECK(!error.empty());
+    }
+    a.sampleRate = 48000.0;
+    a.channel[1].resize(1);
+    CHECK(!saveWavFile(path, a, &error));
+    a.channel[1].resize(3);
+    CHECK(!saveWavFile(path, a, &error));
+    std::string contents;
+    std::ifstream(path) >> contents;
+    CHECK(contents == "keep");
+    std::filesystem::remove_all(dir.parent_path());
+}
+
+#ifdef __linux__
+TEST(tool_wav_writer_reports_a_full_disk) {
+    wavio::Audio audio;
+    audio.channels = 1;
+    audio.ch = {{0.25}};
+    std::string error;
+    CHECK(!wavio::write("/dev/full", audio, 32, error));
+    CHECK(!error.empty());
+}
+#endif
 
 TEST(resampling_keeps_the_band_and_drops_what_cannot_fit) {
     AudioData in;

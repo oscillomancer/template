@@ -56,6 +56,18 @@ if (NOT after STREQUAL before)
     message(FATAL_ERROR "a refused update changed the product")
 endif()
 
+# The source must not live in a directory the updater clears for staging.
+foreach(scratch .framework-update .framework-previous)
+    file(COPY "${template}/" DESTINATION "${product}/${scratch}")
+    snapshot("${product}" before)
+    run_update("${product}/${scratch}" FALSE)
+    snapshot("${product}" after)
+    if (NOT after STREQUAL before)
+        message(FATAL_ERROR "an update from ${scratch} destroyed its source")
+    endif()
+    file(REMOVE_RECURSE "${product}/${scratch}")
+endforeach()
+
 # The update: framework/ becomes the template's, and nothing else changes.
 snapshot("${product}/product" product_before)
 file(READ "${product}/CMakePresets.json" presets_before)

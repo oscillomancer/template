@@ -52,7 +52,8 @@ bool saveWavFile(const std::string& path, const AudioData& audio, std::string* e
 // rate and 100 dB down past its Nyquist. Returns a copy when the rates match.
 AudioData resample(const AudioData& in, double sampleRate);
 
-// A decoder read a little at a time.
+// A decoder read a little at a time. Non-finite float samples become zero,
+// in both whole-file loading and streaming.
 class AudioReader {
   public:
     AudioReader();
@@ -96,6 +97,7 @@ class DiskStream {
     DiskStream& operator=(const DiskStream&) = delete;
 
     // Main thread, while neither read() nor service() runs. Allocates.
+    // Refuses unknown/empty lengths; loadAudioFile can decode to EOF.
     bool open(const std::string& path, double headSeconds = 1.0, std::string* error = nullptr);
     void close();
     bool isOpen() const { return open_; }

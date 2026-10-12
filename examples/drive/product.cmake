@@ -38,4 +38,4 @@ set(PRODUCT_EDITOR_SOURCES  "")
 set(PRODUCT_TEST_SOURCES    product/test/processor_test.cpp)
 
 set(PRODUCT_SMOKE_PLAIN_PARAM   "Drive")
-set(PRODUCT_SMOKE_LATENCY_PARAM "")
+set(PRODUCT_SMOKE_LATENCY_PARAM "Quality")

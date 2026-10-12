@@ -78,13 +78,14 @@ class Processor : public supple::ProcessorBase<Processor> {
     }
 
     void update(const supple::ParamValues& v) {
+        frame_ = 0;  // mode changes retire stacked notes at this update
         level_.set(supple::dsp::dbToGain(v[kLevel]), v.initial());
         levelDb_ = v[kLevel];
         waveform_ = v.choice(kWaveform);
         for (Voice& voice : sound_) voice.envelope.setTimes(v[kAttack], v[kDecay], v[kSustain], v[kRelease], sampleRate_);
         releaseSeconds_ = v[kRelease] * 0.001;
         voices_.setBendRange(v[kBendRange]);
-        voices_.setMode(static_cast<Voices::Mode>(v.choice(kMode)));
+        voices_.setMode(static_cast<Voices::Mode>(v.choice(kMode)), *this);
         voices_.setGlide(v[kGlide]);
         // A voice's modulated level follows the parameter under it.
         for (Voice& voice : sound_) voice.levelTarget = levelOffset(voice.levelMod);
@@ -194,14 +195,17 @@ class Processor : public supple::ProcessorBase<Processor> {
     // The triangle above as its Fourier series, -8/pi^2 * sum cos(2 pi k phase)
     // / k^2 over odd k, stopping below Nyquist: nothing to alias. The cosines
     // come from a recurrence, one multiply-add per harmonic, but a low note
-    // still has hundreds of them; that is what offline is for.
+    // still has hundreds of them. Below 20 Hz use the naive shape: this caps
+    // work at the harmonic count needed by 20 Hz, even if tuning underflows
+    // the frequency to zero.
     double bandLimitedTriangle(double phase, double hz) const {
+        if (hz < 20.0) return 1.0 - 4.0 * std::fabs(phase - 0.5);
         const double theta = 2.0 * supple::dsp::kPi * phase;
         const double c2 = 2.0 * std::cos(2.0 * theta);
         double previous = std::cos(theta), current = previous;  // cos(-theta), cos(theta)
         double sum = 0.0;
         for (int k = 1; k * hz < 0.5 * sampleRate_; k += 2) {
-            sum += current / (k * k);
+            sum += current / (static_cast<double>(k) * k);
             const double next = c2 * current - previous;
             previous = current;
             current = next;

@@ -112,7 +112,10 @@ class Processor : public supple::ProcessorBase<Processor> {
         using Type = supple::NoteEvent::Type;
         if (e.type == Type::On) {
             Chord* chord = free();
-            if (!chord) return;  // more held notes than anyone has fingers
+            if (!chord) {
+                noteEnded(e);  // a rejected note still belongs to the host
+                return;
+            }
             *chord = Chord{};
             chord->held = true;
             chord->input = e;

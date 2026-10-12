@@ -27,6 +27,8 @@
 // fails: a real regression, not noise -- a filter rebuilt per sample,
 // denormals, an allocation, an O(n^2) loop.
 // After a change that costs more on purpose, --update and commit the file.
+#include "tools/Timing.h"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -160,16 +162,18 @@ double measure(const Scenario& scenario) {
                 o.automation.push_back({frame, p.id, toPlain(p, fromNormalized(p, unit(rng)))});
             }
     }
-    return fastest([&] {
-        Engine engine;
-        test::RenderOptions warm = o;  // activation and a first block, untimed
-        warm.frames = 512;
-        warm.automation.clear();
-        warm.events.clear();
-        test::render(channels ? test::silence(channels, 512) : test::Signal{}, warm, &engine);
-        o.activate = false;
-        test::render(input, o, &engine);
-        o.activate = true;
+    std::unique_ptr<Engine> engine;
+    test::RenderOptions warm = o;
+    warm.frames = 512;
+    warm.automation.clear();
+    warm.events.clear();
+    const auto warmInput = channels ? test::silence(channels, 512) : test::Signal{};
+    o.activate = false;
+    return tools::fastestPrepared(kRuns, [&] {
+        engine = std::make_unique<Engine>();
+        test::render(warmInput, warm, engine.get());  // activation and first block, untimed
+    }, [&] {
+        test::render(input, o, engine.get());
     });
 }
 

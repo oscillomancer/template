@@ -1,7 +1,7 @@
 # Third-party components
 
 Fetched at configure time and pinned to exact commits in
-`framework/cmake/Dependencies.cmake`. The full text of every license is in
+`framework/cmake/Pins.cmake`. The full text of every license is in
 [NOTICES.txt](NOTICES.txt), which the build stages inside every plugin bundle
 (naming a license is not the same as including it). Regenerate NOTICES.txt
 whenever a pinned dependency moves.
@@ -9,7 +9,7 @@ whenever a pinned dependency moves.
 | Component | License | Notes |
 | --- | --- | --- |
 | CLAP SDK | MIT | via clap-wrapper |
-| clap-wrapper | MIT | v0.16.0, three local patches in `cmake/patches` |
+| clap-wrapper | MIT | v0.16.0, five local patches in `cmake/patches` |
 | VST3 SDK | MIT | v3.8.0 as pinned by clap-wrapper (earlier releases were GPLv3/proprietary; vstgui is not used) |
 | Apple AudioUnit SDK | Apache-2.0 | macOS only, via clap-wrapper |
 | gulrak/filesystem | MIT | via clap-wrapper |

@@ -22,7 +22,8 @@ math(EXPR byteCount "${hexLen} / 2")
 string(REGEX REPLACE "(..)" "0x\\1," bytes "${hex}")
 # Wrap at 16 bytes per line so the generated file stays diffable and no
 # compiler hits a line-length limit.
-string(REGEX REPLACE "(([^,]+,){16})" "\\1\n" bytes "${bytes}")
+string(REPEAT "[^,]+," 16 line_pattern)
+string(REGEX REPLACE "(${line_pattern})" "\\1\n" bytes "${bytes}")
 
 get_filename_component(inputName "${INPUT}" NAME)
 
