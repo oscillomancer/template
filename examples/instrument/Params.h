@@ -39,7 +39,7 @@ inline constexpr supple::ParamDef kParams[] = {
     supple::integer(kBendRange, "Bend Range", 0, 24, 2).unitText("st")
         .help("How far a full MIDI pitch bend moves the notes on its channel, in semitones."),
     supple::milliseconds(kDecay, "Decay", 1.0, 5000.0, 200.0).modulatable()
-        .help("How long a note takes to fall from full level to the sustain level."),
+        .help("Decay time over the full level range; a higher sustain level is reached sooner."),
     supple::percent(kSustain, "Sustain", 100.0).modulatable().help("The level a held note settles at."),
     supple::choice(kMode, "Mode", kModeLabels, 0)
         .help("Poly plays chords. Mono plays one note, the newest held; Legato too, without restarting the "

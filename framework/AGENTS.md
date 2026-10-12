@@ -313,7 +313,8 @@ contract is at the top of `core/ProcessorBase.h`. In short:
   `block.offline` (and `setup.offline` in `prepare()`). Hosts say so through
   CLAP render, and VST3's offline process mode; AU hosts never do. Without
   the declaration hosts are not offered the choice. Measure both paths. The
-  instrument example's offline triangle is band-limited.
+  instrument example's offline triangle is band-limited at 20 Hz and above;
+  below that it uses the naive shape to bound work under extreme tuning.
 - `PRODUCT_TUNING`: `retuning(key, channel, frame)` is how far a key sits
   from equal temperament at A4 = 440 Hz, in semitones, at that frame of the
   block; add it to the pitch. Ask while a note sounds, once a block, not only
@@ -355,11 +356,14 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 - `core/Dsp.h` has `Smoother`, `Ramp`, `DelayLine`, `DryWet`, `Svf` and gain
   helpers. The rest of the library is in `framework/dsp/`, header-only but
   for file decoding, depending on nothing of the product's, allocation-free
-  in `process` and deterministic (the same samples on every platform):
+  in prepared processing. Results are reproducible within the same build and
+  floating-point environment; platform math libraries can differ in the last bits:
   - `Filters.h`: the cookbook biquads (`Biquad::lowpass`, `peak`,
     `lowShelf`...), Butterworth and Linkwitz-Riley cascades to order 16, a
     `Crossover`, `OnePole` (low, high, all-pass; modulation-safe) and a
-    `DcBlocker`. Each answers `response(hz, rate)` for drawing curves.
+    `DcBlocker`. Biquads and cascades answer `response(hz, rate)`;
+    `OnePole` exposes `lowpassResponse`, `highpassResponse` and
+    `allpassResponse`, and a crossover exposes its `low()` and `high()` cascades.
   - `Dynamics.h`: `EnvelopeFollower`, `RmsFollower`, `GainComputer`
     (threshold, ratio, knee), `SlidingMax`, `Lookahead` (a limiter's gain,
     never late) and `TruePeak`.
@@ -374,13 +378,17 @@ contract is at the top of `core/ProcessorBase.h`. In short:
     Hermite and Lagrange, `FractionalDelay`, `AllpassDelay`.
   - `Voices.h`: which voice plays which note -- allocation, stealing, the
     sustain pedal, mono and legato, glide, bend, MPE -- keeping the note-end
-    books; the sound stays the product's. The instrument example.
+    books; the sound stays the product's. `setMode(mode, handler)` releases
+    sounding keys and clears the mono stack on a change. Sustain and CC120/123
+    are omni; MPE accepts sustain only from its master. The instrument example.
   - `Loudness.h`: K-weighted momentary, short-term and gated integrated
     LUFS (BS.1770), and `Correlation`.
   - `Worker.h`: a thread for what the audio thread may not do, and
     `Handoff<T>` to pass the result over without a lock. `AudioFile.h`:
     WAV, AIFF and FLAC in (dr_wav, dr_flac), WAV out, `resample`, and
-    `DiskStream` for files too long to hold.
+    `DiskStream` for files too long to hold (a known nonzero length is
+    required; unknown-length files still load whole). Non-finite decoded
+    float samples become zero.
   Products copy no DSP from other plugins; papers and measurements are fine,
   with provenance noted.
 - A product moving onto this framework with sessions in the wild implements
