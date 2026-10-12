@@ -47,7 +47,7 @@
 // 1.25x and 1.56x, where GL draws the same grid lines. The shaders ship
 // precompiled, so fixing them means owning a Metal compile step; dropping
 // the flag costs only the double-blended joins of translucent multi-segment
-// strokes, which the framework's widgets do not draw.
+// strokes, including translucent plots and waveform traces.
 //
 // NVG_TRIPLE_BUFFER matters. Without a buffering flag nanovg_mtl allocates one
 // buffer set and a semaphore of one, so renderViewport blocks until the GPU has
