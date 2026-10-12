@@ -941,6 +941,49 @@ TEST(a_button_runs_its_action_and_a_momentary_control_is_on_while_held) {
     CHECK(host.values[i] == params::at(i).hostMin() && host.openCount == 0 && host.clean());
 }
 
+TEST(a_momentary_control_releases_when_its_drag_is_cancelled) {
+    const int t = findParam(isToggle);
+    if (t < 0) return;
+    const ParamDef& p = params::at(static_cast<size_t>(t));
+    for (int reason = 0; reason < 4; ++reason) {
+        MockHost host;
+        host.values[static_cast<size_t>(t)] = p.hostMin();
+        {
+            Ui ui(host, 800.0f, 600.0f);
+            ui.tabs({20, 100, 300, 30}, {"One", "Two"});
+            ui.onPage(0);
+            bool allowed = true;
+            ui.momentary(p.id, {20, 20, 100, 30}).enabledWhen([&] { return allowed; });
+            ui.pointerDown(50, 30, 0, 0, false);
+            CHECK(host.value(p.id) == p.hostMax());
+            if (reason == 0) ui.focusLost();
+            if (reason == 1) { allowed = false; ui.idle(0.016); }
+            if (reason == 2) ui.setPage(0, 1);
+            if (reason != 3) {
+                CHECK(host.value(p.id) == p.hostMin());
+                CHECK(!ui.dragging());
+            }
+        }  // destruction is also a release, even without a Window
+        CHECK(host.value(p.id) == p.hostMin());
+        CHECK(host.begins == 1 && host.ends == 1 && host.openCount == 0 && host.clean());
+    }
+}
+
+TEST(destroying_ui_closes_an_open_parameter_gesture) {
+    MockHost host;
+    const int i = findParam(isContinuous);
+    if (i < 0) return;
+    {
+        Ui ui(host, 800.0f, 600.0f);
+        ui.knob(params::at(static_cast<size_t>(i)).id, {20, 20, 100, 120});
+        ui.setFocus(0);
+        ui.key(key::kHome, 0);
+        ui.key(key::kEnd, 0);
+        CHECK(host.openCount == 1);
+    }
+    CHECK(host.openCount == 0 && host.begins == host.ends && host.clean());
+}
+
 TEST(tabs_show_one_page_and_what_is_hidden_takes_no_input) {
     Bench none;
     if (none.knob < 0) return;

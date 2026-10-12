@@ -113,7 +113,7 @@ std::vector<PresetRow> presetRows(const PresetLibrary& library) {
 Ui::Ui(EditorHost& host, float designWidth, float designHeight)
     : host_(host), designW_(designWidth), designH_(designHeight) {}
 
-Ui::~Ui() { release(); }
+Ui::~Ui() { focusLost(); }
 
 // --- building ------------------------------------------------------------------
 
@@ -231,9 +231,9 @@ void Ui::setPage(int control, int page) {
     page = std::clamp(page, 0, static_cast<int>(c.pages.size()) - 1);
     if (page == c.selected) return;
     // Whatever was held on the page leaving the screen is let go.
+    pointerUp(0.0f, 0.0f, 0, 0);
     endGesture();
     release();
-    drag_.control = -1;
     c.selected = page;
     if (focus_ >= 0 && focus_ != control && !shown(focus_)) focus_ = -1;
     hideTooltip();
@@ -1847,6 +1847,7 @@ void Ui::openPresetMenu(int i) {
 }
 
 void Ui::focusLost() {
+    pointerUp(0.0f, 0.0f, 0, 0);
     endGesture();
     release();
     drag_ = Drag{};
@@ -1872,15 +1873,10 @@ void Ui::applyRules() {
         }
     }
     // A control that just turned off lets go of what it held.
+    if (drag_.control >= 0 && !interactive(drag_.control)) pointerUp(0.0f, 0.0f, 0, 0);
     if (focus_ >= 0 && !interactive(focus_)) {
         if (gesture_.involves(focus_)) endGesture();
         focus_ = -1;
-        dirty_ = true;
-    }
-    if (drag_.control >= 0 && !interactive(drag_.control)) {
-        endGesture();
-        release();
-        drag_ = Drag{};
         dirty_ = true;
     }
 }
