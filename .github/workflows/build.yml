@@ -40,7 +40,7 @@ permissions:
 
 env:
   # Fetched dependencies live outside the build tree so they can be cached
-  # between runs; the pins in Dependencies.cmake key the cache.
+  # between runs; Pins.cmake, Dependencies.cmake and patches key the cache.
   CPM_SOURCE_CACHE: ${{ github.workspace }}/.deps/cpm
   FETCH_DIR: ${{ github.workspace }}/.deps/fetch
   CTEST_OUTPUT_ON_FAILURE: "1"
@@ -92,6 +92,7 @@ jobs:
         run: |
           .github/scripts/step.sh product-info bash -c '.github/scripts/product-info.sh > "$RUNNER_TEMP/product.env"'
           cat "$RUNNER_TEMP/product.env" >> "$GITHUB_OUTPUT"
+          sed 's/^/CI_PRODUCT_/' "$RUNNER_TEMP/product.env" >> "$GITHUB_ENV"
 
       - name: Tools
         run: |
@@ -136,7 +137,7 @@ jobs:
       - name: Bundle signatures and architecture
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
-          name='${{ steps.product.outputs.name }}'
+          name="$CI_PRODUCT_name"
           for b in "$name.clap" "$name.vst3" "$name.component"; do
             bin="build/release/plugins/$b/Contents/MacOS/$name"
             echo "== $b"
@@ -154,8 +155,8 @@ jobs:
       - name: auval
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
-          auval -a | grep -i '${{ steps.product.outputs.au_manufacturer }}' || true
-          .github/scripts/step.sh auval auval -strict -v ${{ steps.product.outputs.au_type }} '${{ steps.product.outputs.au_subtype }}' '${{ steps.product.outputs.au_manufacturer }}'
+          auval -a | grep -i -- "$CI_PRODUCT_au_manufacturer" || true
+          .github/scripts/step.sh auval auval -strict -v "$CI_PRODUCT_au_type" "$CI_PRODUCT_au_subtype" "$CI_PRODUCT_au_manufacturer"
 
       - name: pluginval (VST3 and AU)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
@@ -163,7 +164,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PLUGINVAL="$(.github/scripts/get-pluginval.sh macos)"
-          name='${{ steps.product.outputs.name }}'
+          name="$CI_PRODUCT_name"
           .github/scripts/step.sh pluginval-vst3 "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
             --validate "$HOME/Library/Audio/Plug-Ins/VST3/$name.vst3"
           .github/scripts/step.sh pluginval-au "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
@@ -175,7 +176,7 @@ jobs:
       # editor still has to be opened on real hardware.
       - name: clap-probe (editor in a Cocoa host window)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
-        run: .github/scripts/clap-probe-mac.sh '${{ steps.product.outputs.name }}'
+        run: .github/scripts/clap-probe-mac.sh "$CI_PRODUCT_name"
 
       - name: gui-preview (OpenGL, every named scenario, and 2x)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
@@ -234,6 +235,7 @@ jobs:
         run: |
           .github/scripts/step.sh product-info bash -c '.github/scripts/product-info.sh > "$RUNNER_TEMP/product.env"'
           cat "$RUNNER_TEMP/product.env" >> "$GITHUB_OUTPUT"
+          sed 's/^/CI_PRODUCT_/' "$RUNNER_TEMP/product.env" >> "$GITHUB_ENV"
 
       - name: Packages
         run: |
@@ -274,7 +276,7 @@ jobs:
           PLUGINVAL="$(.github/scripts/get-pluginval.sh linux)"
           .github/scripts/step.sh pluginval xvfb-run -a -s "-screen 0 1920x1080x24" "$PLUGINVAL" --strictness-level 8 \
             --validate-in-process --timeout-ms 300000 \
-            --validate "build/release/plugins/${{ steps.product.outputs.name }}.vst3"
+            --validate "build/release/plugins/$CI_PRODUCT_name.vst3"
 
       - name: gui-preview (every named scenario, and 2x)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
@@ -334,6 +336,7 @@ jobs:
         run: |
           .github/scripts/step.sh product-info bash -c '.github/scripts/product-info.sh > "$RUNNER_TEMP/product.env"'
           cat "$RUNNER_TEMP/product.env" >> "$GITHUB_OUTPUT"
+          sed 's/^/CI_PRODUCT_/' "$RUNNER_TEMP/product.env" >> "$GITHUB_ENV"
 
       # Puts cl.exe, link.exe and the Windows SDK on PATH for Ninja.
       - uses: ilammy/msvc-dev-cmd@v1
@@ -395,7 +398,7 @@ jobs:
           PLUGINVAL="$(.github/scripts/get-pluginval.sh windows)"
           .github/scripts/get-mesa-windows.sh "$(dirname "$PLUGINVAL")"
           .github/scripts/step.sh pluginval "$PLUGINVAL" --strictness-level 8 --validate-in-process --timeout-ms 300000 \
-            --validate "build/release/plugins/VST3/${{ steps.product.outputs.name }}.vst3"
+            --validate "build/release/plugins/VST3/$CI_PRODUCT_name.vst3"
 
       - name: gui-preview (every named scenario, and 2x)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
