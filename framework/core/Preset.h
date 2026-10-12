@@ -43,11 +43,33 @@ struct PresetText {
     const char* value;
 };
 
+// A preset's values or texts, copied in from the braces that list them. Not
+// a std::initializer_list kept in the table: MSVC compiles such a member of
+// a constexpr array to point at storage that is gone when the program runs.
+template <class T, size_t N>
+class PresetList {
+  public:
+    constexpr PresetList() = default;
+    constexpr PresetList(std::initializer_list<T> items) {
+        for (const T& item : items) {
+            if (size_ == N) throw "a factory preset lists more values or texts than the product has";
+            items_[size_++] = item;
+        }
+    }
+    constexpr const T* begin() const { return items_; }
+    constexpr const T* end() const { return items_ + size_; }
+    constexpr size_t size() const { return size_; }
+
+  private:
+    T items_[N > 0 ? N : 1]{};
+    size_t size_ = 0;
+};
+
 struct Preset {
     const char* name;
     const char* category;
-    std::initializer_list<PresetValue> values;
-    std::initializer_list<PresetText> texts = std::initializer_list<PresetText>();  // not {}: MSVC refuses it
+    PresetList<PresetValue, params::kCount> values;
+    PresetList<PresetText, properties::kCount> texts = PresetList<PresetText, properties::kCount>();
 };
 
 }  // namespace supple
