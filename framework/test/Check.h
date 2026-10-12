@@ -15,7 +15,9 @@
 #pragma once
 
 #include <cmath>
+#include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -49,17 +51,33 @@ inline void fail(const char* file, int line, const std::string& what) {
     std::printf("      FAIL %s:%d: %s\n", file, line, what.c_str());
 }
 
+inline const char*& running() {
+    static const char* name = nullptr;
+    return name;
+}
+
 inline int run(int argc, char** argv) {
     const char* filter = argc > 1 ? argv[1] : nullptr;
+#ifdef _WIN32
+    // Windows says only that the process faulted: name the test. (Elsewhere
+    // the sanitizers' own handlers say more.)
+    std::signal(SIGSEGV, [](int) {
+        std::fprintf(stderr, "\n  %s crashed\n", running() ? running() : "(no test)");
+        std::fflush(stderr);
+        std::_Exit(3);
+    });
+#endif
     int ran = 0, failed = 0;
     for (const Case& c : cases()) {
         if (filter && !std::strstr(c.name, filter)) continue;
         const int before = failures();
+        running() = c.name;
         c.run();
         ++ran;
         const bool ok = failures() == before;
         failed += ok ? 0 : 1;
         std::printf("  %-64s %s\n", c.name, ok ? "ok" : "FAIL");
+        std::fflush(stdout);  // a crash in the next test keeps this one's line
     }
     std::printf("\n%d tests, %d failed\n", ran, failed);
     return failed ? 1 : 0;

@@ -475,8 +475,8 @@ TEST(stft_bins_filter_what_they_say) {
     std::vector<double> x(48000);
     for (size_t n = 0; n < x.size(); ++n)
         x[n] = std::sin(2.0 * kPi * 1000.0 * static_cast<double>(n) / kRate) + std::sin(2.0 * kPi * 9000.0 * static_cast<double>(n) / kRate);
-    const int cut = static_cast<int>(5000.0 / (kRate / 1024.0));
-    stft.process(0, x.data(), static_cast<int>(x.size()), [cut](std::complex<double>* bins, int count) {
+    constexpr int cut = static_cast<int>(5000.0 / (kRate / 1024.0));
+    stft.process(0, x.data(), static_cast<int>(x.size()), [](std::complex<double>* bins, int count) {
         for (int k = cut; k < count; ++k) bins[k] = 0.0;
     });
     CHECK_NEAR(amplitudeAt(x, 1000.0, 24000), 1.0, 1e-3);

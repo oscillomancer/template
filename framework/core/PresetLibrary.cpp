@@ -40,14 +40,9 @@ bool ours(const fs::path& file) {
 
 // --- names and folders ------------------------------------------------------------------------
 
-fs::path PresetLibrary::fromUtf8(std::string_view text) {
-    return fs::path(std::u8string(text.begin(), text.end()));
-}
+fs::path PresetLibrary::fromUtf8(std::string_view text) { return files::fromUtf8(text); }
 
-std::string PresetLibrary::toUtf8(const fs::path& path) {
-    const std::u8string u = path.u8string();
-    return std::string(u.begin(), u.end());
-}
+std::string PresetLibrary::toUtf8(const fs::path& path) { return files::toUtf8(path); }
 
 fs::path PresetLibrary::defaultUserFolder() {
     if (const char* forced = std::getenv("SUPPLE_PRESETS_DIR"); forced && *forced) return fromUtf8(forced);

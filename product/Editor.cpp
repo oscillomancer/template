@@ -252,10 +252,10 @@ void Editor::paintResponse(NVGcontext* vg) {
 
     // Draggable cutoff handles: filled when that filter is switched on.
     for (int i = 0; i < 2; ++i) {
-        const double hz = plain(kHandleParams[i]);
+        const double cutoff = plain(kHandleParams[i]);
         const bool on = plain(kHandleToggles[i]) > 0.5;
         const bool hot = i == hovering_ || i == dragging_;
-        const float x = xOf(hz), y = yOf(filter.db(hz));
+        const float x = xOf(cutoff), y = yOf(filter.db(cutoff));
         w::hairline(vg, std::floor(x) + 0.5f, graph_.y, std::floor(x) + 0.5f, graph_.bottom(),
                     rgba(on ? t.accent : t.textFaint, hot ? 0.45f : 0.18f));
         nvgBeginPath(vg);

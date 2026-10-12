@@ -116,8 +116,10 @@ function(supple_defaults target)
         # C4324: a struct padded to honour alignas -- the cache-line spacing
         # in Ring is that padding on purpose. C4127: a condition on a
         # compile-time constant (a product's kInstrument, kAnyRestart), which
-        # is how the framework writes product-dependent code.
-        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /wd4324 /wd4127)
+        # is how the framework writes product-dependent code. C4702:
+        # unreachable code, which is what the rest of a function is after an
+        # `if constexpr (...) return;` for the products that take it.
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /wd4324 /wd4127 /wd4702)
         if (SUPPLE_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
         endif()

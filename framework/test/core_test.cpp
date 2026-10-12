@@ -2092,13 +2092,13 @@ struct FileScratch {
         std::filesystem::remove_all(root, ec);
     }
     std::string touch(const std::filesystem::path& relative) const {
-        const std::filesystem::path p = root / relative;
+        const std::filesystem::path p = (root / relative).make_preferred();  // as relocate() spells it
         std::filesystem::create_directories(p.parent_path());
         std::ofstream(p) << "x";
         return files::toUtf8(p);
     }
     std::string wav(const std::filesystem::path& relative, double rate = 44100.0) const {
-        const std::filesystem::path p = root / relative;
+        const std::filesystem::path p = (root / relative).make_preferred();  // as relocate() spells it
         std::filesystem::create_directories(p.parent_path());
         dsp::AudioData a;
         a.sampleRate = rate;
@@ -2196,6 +2196,17 @@ TEST(file_extensions_and_names_whichever_system_saved_them) {
     CHECK(files::hasExtension("/a/b/anything.xyz", ""));
     CHECK(files::fileName("C:\\Users\\ana\\kick.wav") == "kick.wav");
     CHECK(files::fileName("/home/ana/kick.wav") == "kick.wav");
+}
+
+TEST(paths_that_are_not_utf8_are_missing_rather_than_thrown) {
+    // A damaged session can hold any bytes; Windows cannot make a path of these.
+    FileScratch s;
+    const std::string bad = "/samples/\xff\xfe\xc0.wav";
+    CHECK(!files::exists(bad));
+    CHECK(files::relocate(bad).empty());
+    CHECK(files::fileName(bad) == "\xff\xfe\xc0.wav");
+    (void)files::folderOf(bad);
+    (void)PresetLibrary::fromUtf8(bad);
 }
 
 TEST(a_moved_file_is_found_by_its_tail_under_remembered_folders) {

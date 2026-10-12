@@ -162,6 +162,7 @@ void setParamEvent(clap_id id, double value) {
 #endif
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // a crash keeps every line before it
     if (argc < 2) {
         std::fprintf(stderr, "usage: host-smoke <Product.clap or its binary> [--layout 2|1|5.1|7.1|7.1.4|ambi1..3|N|none]\n");
         return 2;
@@ -569,15 +570,15 @@ int main(int argc, char** argv) {
     // --- what the host says about the session ---
     if (auto* render = (const clap_plugin_render_t*)plug->get_extension(plug, CLAP_EXT_RENDER)) {
         const bool offline = render->set(plug, CLAP_RENDER_OFFLINE);
-        bool finite = true;
+        bool rendered = true;
         for (int b = 0; b < 4; ++b) {
             quiet();
-            finite = finite && served(plug->process(plug, &proc)) != CLAP_PROCESS_ERROR;
+            rendered = rendered && served(plug->process(plug, &proc)) != CLAP_PROCESS_ERROR;
             buses.forEachOutput([&](float* c) {
-                for (uint32_t k = 0; k < block; ++k) finite = finite && std::isfinite(c[k]);
+                for (uint32_t k = 0; k < block; ++k) rendered = rendered && std::isfinite(c[k]);
             });
         }
-        check(offline && finite && render->set(plug, CLAP_RENDER_REALTIME), "render: offline, then real time");
+        check(offline && rendered && render->set(plug, CLAP_RENDER_REALTIME), "render: offline, then real time");
     }
     if (auto* menu = (const clap_plugin_context_menu_t*)plug->get_extension(plug, CLAP_EXT_CONTEXT_MENU)) {
         int items = 0;

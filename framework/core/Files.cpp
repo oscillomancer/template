@@ -90,11 +90,23 @@ fs::path remembered() { return settingsFolder() / "file-folders.txt"; }
 
 }  // namespace
 
-fs::path fromUtf8(std::string_view text) { return fs::path(std::u8string(text.begin(), text.end())); }
+// Windows converts to and from UTF-16 here, and throws on text that is not
+// UTF-8 or a name that is not UTF-16; a saved path or a host's is either.
+fs::path fromUtf8(std::string_view text) {
+    try {
+        return fs::path(std::u8string(text.begin(), text.end()));
+    } catch (...) {
+        return {};
+    }
+}
 
 std::string toUtf8(const fs::path& path) {
-    const std::u8string u = path.u8string();
-    return std::string(u.begin(), u.end());
+    try {
+        const std::u8string u = path.u8string();
+        return std::string(u.begin(), u.end());
+    } catch (...) {
+        return {};
+    }
 }
 
 bool exists(std::string_view path) { return !path.empty() && isFile(fromUtf8(path)); }
@@ -121,7 +133,15 @@ bool writeAtomic(const fs::path& path, const uint8_t* bytes, size_t size) {
     bool replaced = false;
     if (written && closed) {
 #ifdef _WIN32
-        replaced = MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+        // Windows refuses a replace while another is under way on the same
+        // file, or a reader has it open without FILE_SHARE_DELETE: wait for
+        // it, briefly, as a POSIX rename never has to.
+        for (int attempt = 0; attempt < 100 && !replaced; ++attempt) {
+            replaced = MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+            const DWORD error = replaced ? 0 : GetLastError();
+            if (!replaced && error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION) break;
+            if (!replaced) Sleep(1);
+        }
 #else
         fs::rename(temp, path, ec);
         replaced = !ec;

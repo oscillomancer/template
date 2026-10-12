@@ -57,6 +57,8 @@ struct FileRequest {
 
 namespace files {
 
+// A path from UTF-8 text and back, the same on every system. Neither throws:
+// what cannot be converted (bytes that are not UTF-8, on Windows) is empty.
 std::filesystem::path fromUtf8(std::string_view text);
 std::string toUtf8(const std::filesystem::path& path);
 
