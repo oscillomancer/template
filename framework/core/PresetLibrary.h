@@ -81,6 +81,9 @@ class PresetLibrary {
     bool step(int delta);  // the next or previous entry, wrapping
     bool loadFactory(size_t index);
     bool loadFile(const std::filesystem::path& file);
+    // The state, as a preset file anywhere (an export); the library's own
+    // folder is not involved.
+    bool exportFile(const std::filesystem::path& file);
     bool loadDefaults();
 
     // --- the user's presets ----------------------------------------------------

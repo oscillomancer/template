@@ -16,10 +16,12 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string_view>
 
 #include <nanovg.h>
 
+#include "gui/NativeFiles.h"
 #include "gui/Ui.h"
 
 struct PuglViewImpl;
@@ -29,7 +31,9 @@ namespace supple::gui {
 
 class EditorBase;
 
-// Also the editor's clipboard, through pugl's: plain text only.
+// Also the editor's clipboard, through pugl's: plain text only. It gives
+// the editor the system's file dialogs (NativeFiles), and files dropped on
+// it (pugl's text/uri-list, every platform).
 class Window : public Clipboard {
   public:
     // standalone selects pugl's world type. Inside a host this must stay
@@ -110,6 +114,7 @@ class Window : public Clipboard {
     int lastPressButton_ = -1;
     int cursor_ = 0;
     std::function<void(std::string_view)> paste_;  // waiting for the clipboard's text
+    std::unique_ptr<NativeFiles> files_;
 };
 
 }  // namespace supple::gui

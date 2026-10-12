@@ -13,6 +13,8 @@
 //   gui-preview text.png --property "Label=Strings" --text "Label"
 //   gui-preview context.png --context "Depth"
 //   gui-preview track.png --track "Drum Bus" --track-colour E5484D
+//   gui-preview tip.png --tooltip "Low Cut"
+//   gui-preview page.png --page 1 --play 60 --drop
 //
 // This proves drawing only. It cannot validate embedding, host timers,
 // resizing in a host or teardown; clap-probe and x11-probe do that.
@@ -106,6 +108,13 @@ class PreviewHost : public EditorHost, public StateAccess {
     void setValue(uint32_t id, double v) override { values_[slot(id)] = sanitizeHost(*params::find(id), v); }
     void endEdit(uint32_t) override {}
     bool popTelemetry(TelemetryFrame& f) override { return ring_.pop(f); }
+    size_t readAudio(FeedFrame* out, size_t max) override {
+        AudioFeed* feed = engine_ ? engine_->feed() : nullptr;
+        return feed ? feed->read(out, max) : 0;
+    }
+    void playNote(int key, double velocity, bool on) override {
+        if (engine_) engine_->playNote(key, velocity, on);
+    }
     int latencySamples() const override { return engine_ ? engine_->latency() : 0; }
     double sampleRate() const override { return kRate; }
 
@@ -289,7 +298,8 @@ void usage() {
     std::printf(
         "gui-preview <out.png> [--scale N] [--set \"Name=value\"]... [--property \"Name=text\"]...\n"
         "            [--preset NAME] [--hover NAME] [--focus NAME] [--menu NAME|Presets] [--text NAME]\n"
-        "            [--context NAME] [--track NAME] [--track-colour RRGGBB] [--seconds S]\n");
+        "            [--context NAME] [--track NAME] [--track-colour RRGGBB] [--tooltip NAME]\n"
+        "            [--page N] [--play KEY] [--drop] [--seconds S]\n");
 }
 
 }  // namespace
@@ -298,10 +308,17 @@ int main(int argc, char** argv) {
     if (argc < 2 || argv[1][0] == '-') return usage(), 2;
     const char* output = argv[1];
     double scale = 1.0, seconds = 3.0;
-    const char *hover = nullptr, *focus = nullptr, *menu = nullptr, *text = nullptr, *context = nullptr;
+    const char *hover = nullptr, *focus = nullptr, *menu = nullptr, *text = nullptr, *context = nullptr,
+               *tooltip = nullptr;
+    int page = -1, play = -1;
+    bool drop = false;
     PreviewHost host;
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
+        if (arg == "--drop") {  // the one option without a value
+            drop = true;
+            continue;
+        }
         const char* next = i + 1 < argc ? argv[i + 1] : nullptr;
         if (!next) return usage(), 2;
         ++i;
@@ -312,6 +329,9 @@ int main(int argc, char** argv) {
         else if (arg == "--menu") menu = next;
         else if (arg == "--text") text = next;
         else if (arg == "--context") context = next;
+        else if (arg == "--tooltip") tooltip = next;
+        else if (arg == "--page") page = std::atoi(next);
+        else if (arg == "--play") play = std::atoi(next);
         else if (arg == "--track") host.trackInfo.name = next;
         else if (arg == "--track-colour") {
             const unsigned long rgb = std::strtoul(next, nullptr, 16);
@@ -394,6 +414,9 @@ int main(int argc, char** argv) {
                 c = i;
         const int p = paramByName(name);
         if (c < 0 && p >= 0) c = ui.find(params::at(static_cast<size_t>(p)).id);
+        // A button, or anything else, by the label it was given.
+        for (int i = 0; c < 0 && i < ui.count(); ++i)
+            if (ui.control(i).label && !std::strcmp(ui.control(i).label, name)) c = i;
         if (c < 0) {
             std::fprintf(stderr, "no control for \"%s\"\n", name);
             return false;
@@ -404,6 +427,15 @@ int main(int argc, char** argv) {
         return true;
     };
     float x = 0, y = 0;
+    // The first tab bar's page, as a click on that tab would choose it.
+    for (int k = 0; page >= 0 && k < editor.layout().count(); ++k) {
+        const Control& c = editor.layout().control(k);
+        if (c.widget != Widget::Tabs) continue;
+        const Rect r = Ui::tab(c.bounds, page, static_cast<int>(c.pages.size()));
+        editor.pointerDown(r.cx(), r.cy(), 0, 0, false);
+        editor.pointerUp(r.cx(), r.cy(), 0, 0);
+        break;
+    }
     if (focus && centre(focus, x, y)) {
         editor.pointerDown(x, y, 0, 0, false);
         editor.pointerUp(x, y, 0, 0);
@@ -415,6 +447,20 @@ int main(int argc, char** argv) {
         if (propertyByName(text) >= 0) editor.key(key::kEnd, 0);  // the caret, not a selection
     }
     if (hover && centre(hover, x, y)) editor.pointerMove(x, y, 0);
+    // A key held down on the first keyboard, as the pointer would.
+    for (int k = 0; play >= 0 && k < editor.layout().count(); ++k) {
+        const Control& c = editor.layout().control(k);
+        if (c.widget != Widget::Keyboard) continue;
+        const Rect r = Ui::keyRect(c, play);
+        editor.pointerDown(r.cx(), r.bottom() - 10.0f, 0, 0, false);
+        break;
+    }
+    if (drop) editor.dropOver(editor.width() * 0.5f, editor.height() * 0.5f);
+    // Held still, long enough for the tooltip.
+    if (tooltip && centre(tooltip, x, y)) {
+        editor.pointerMove(x, y, 0);
+        editor.idle(Ui::kTooltipSeconds + 0.1);
+    }
 
     // Some window managers (KWin, for an XWayland window) put a newly mapped
     // top-level window back to the size it was created at, a little while

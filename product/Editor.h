@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Supple Audio
 //
-// The product's editor: layout, the response graph, and nothing generic.
-// Controls, gestures, keyboard, menus, text entry, meters and repaint
-// decisions come from supple::gui::EditorBase.
+// The product's editor: layout, the response graph over the output's
+// spectrum, and nothing generic. Controls, gestures, keyboard, menus, text
+// entry, tooltips, meters, the audio and repaint decisions come from
+// supple::gui::EditorBase.
 #pragma once
 
 #include "gui/EditorBase.h"
@@ -23,6 +24,8 @@ class Editor : public supple::gui::EditorBase {
     bool onPointerMove(float x, float y, uint32_t mods) override;
     bool onPointerUp(float x, float y, int button, uint32_t mods) override;
     void onCancel() override;
+    void onAudio(size_t frames) override;
+    void animate(double seconds) override;
 
     supple::gui::Cursor cursor() const override;
 
@@ -39,6 +42,9 @@ class Editor : public supple::gui::EditorBase {
     int handleAt(float x, float y) const;
 
     supple::gui::Rect graph_;
+    supple::gui::Spectrum spectrum_;
+    double sinceAnalysis_ = 0.0;
+    bool fresh_ = false;  // audio arrived since the last analysis
     int dragging_ = -1;
     int hovering_ = -1;
 };

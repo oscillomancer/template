@@ -33,6 +33,8 @@ class Processor : public supple::ProcessorBase<Processor> {
         float gain = 1.0f;  // the lowest gain since the last frame
     };
     static constexpr double kTelemetryHz = 60.0;
+    // The editor draws the input and output as they scroll by.
+    static constexpr bool kAudioFeed = true;
 
     void prepare(const supple::ProcessSetup& setup, const supple::ParamValues&) {
         sampleRate_ = setup.sampleRate;

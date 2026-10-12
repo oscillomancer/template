@@ -14,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/AudioFeed.h"
 #include "core/Telemetry.h"
 #include "gui/Menu.h"
 
@@ -101,6 +102,17 @@ class EditorHost {
     // A line in the host's log (CLAP log), or on stderr in a debug build of
     // a host that has none. Never from the audio thread.
     virtual void log(LogLevel level, std::string_view message) { (void)level, (void)message; }
+
+    // Plays a note through the processor's note(), as if the host had sent
+    // it: on with a velocity (0..1), or off. Port 0, channel 0, no note ID.
+    // The editor's keyboard. Ignored without note input.
+    virtual void playNote(int key, double velocity, bool on) { (void)key, (void)velocity, (void)on; }
+    // Audio for a product that declared kAudioFeed: up to max frames, oldest
+    // first, since the last call. EditorBase drains it.
+    virtual size_t readAudio(FeedFrame* out, size_t max) {
+        (void)out, (void)max;
+        return 0;
+    }
 
     virtual bool popTelemetry(TelemetryFrame& frame) = 0;
     virtual int latencySamples() const = 0;

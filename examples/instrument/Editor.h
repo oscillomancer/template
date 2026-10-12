@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Supple Audio
 //
-// The product's editor: layout and the voice display. Controls, gestures,
-// keyboard, text entry, meters and repaint decisions come from EditorBase.
+// The product's editor: layout and the voice display. The envelope editor,
+// the on-screen keyboard, gestures, text entry, meters and repaint
+// decisions come from EditorBase.
 #pragma once
 
 #include "gui/EditorBase.h"
@@ -11,7 +12,7 @@
 namespace product {
 
 inline constexpr float kEditorWidth = 720.0f;
-inline constexpr float kEditorHeight = 380.0f;
+inline constexpr float kEditorHeight = 510.0f;
 
 class Editor : public supple::gui::EditorBase {
   public:

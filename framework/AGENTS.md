@@ -18,8 +18,9 @@ Read this file, then `docs/CONVENTIONS.md` for the reasons behind the rules.
 | State that is not a parameter: text, a label, a curve (optional) | `product/Properties.h` |
 | Factory presets (optional, with `PRODUCT_PRESETS ON`) | `product/Presets.h` |
 | What the plugin does to sound | `product/Processor.h` (and any `.cpp` listed in product.cmake) |
-| Layout, the product's own drawing, its custom interaction | `product/Editor.h`, `product/Editor.cpp` |
+| Layout, the product's own drawing, its custom interaction (optional: without them, the automatic editor) | `product/Editor.h`, `product/Editor.cpp` |
 | Colours | `product/Theme.h` |
+| Pictures, icons, fonts the editor draws (optional) | `product/assets/`, listed in `PRODUCT_ASSETS` |
 | Claims about the DSP, measured | `product/test/` |
 | Notices for a dependency the product adds | `product/NOTICES.txt` |
 | The product's own tools and measurement programs (optional) | `product/targets.cmake` |
@@ -40,6 +41,7 @@ cmake --preset asan   && cmake --build --preset asan   && ctest --preset asan   
 cmake --preset tsan   && cmake --build --preset tsan   && ctest --preset tsan    # ThreadSanitizer, no GUI
 cmake --preset rtsan  && cmake --build --preset rtsan  && ctest --preset rtsan   # RealtimeSanitizer (clang 20+)
 ./build/release/gui-preview panel.png [--scale 2] [--set "Name=value"] [--hover NAME] [--menu NAME] [--text NAME]
+                                     [--tooltip NAME] [--page N] [--play KEY] [--drop]
 ./build/release/render-cli --list
 ./build/release/render-cli in.wav out.wav --set "Name=value" --at 48000 "Name=value" --block 257 [--sidechain key.wav]
 cmake --build build/release --target product-install    # every format into the user's plugin folders
@@ -53,7 +55,7 @@ editor change. It proves drawing only, not embedding in a host.
 
 ```sh
 cmake -DNAME="Name" -DID=com.suppleaudio.name -DCODE=NmXx -DDEST=../name \
-      [-DEXAMPLE=instrument|pulse|duck|chord] [-DDESCRIPTION="..."] -P framework/tools/new_product.cmake
+      [-DEXAMPLE=instrument|pulse|duck|chord|drive] [-DDESCRIPTION="..."] -P framework/tools/new_product.cmake
 ```
 
 Run it in the template. `ID` and `CODE` (the AU subtype, also the state tag)
@@ -147,6 +149,8 @@ Further modifiers:
 - `.polyModulatable()`: a host may modulate it per note (CLAP polyphonic
   modulation); each voice's amount arrives through `noteModulation()`. Needs
   note input. The instrument example.
+- `.help("...")`: what it does, in a sentence: its control's tooltip in the
+  editor (hosts have nowhere to show it). Write one for every parameter.
 - `.formatted(format, parse)`: the parameter's own text both ways, for what
   no `Unit` describes. ASCII; the parser reads back everything the formatter
   writes. Prefer a new `Unit` (in the template) when more than one product
@@ -305,7 +309,10 @@ contract is at the top of `core/ProcessorBase.h`. In short:
   a chord from text there).
 - Editor data: declare `struct Telemetry` and `captureTelemetry`, and only
   accumulate it while `block.metering` is true. Input and output peak meters
-  are measured by the framework already.
+  are measured by the framework already, and the keys held. For the audio
+  itself (a scope, a spectrum analyser), declare
+  `static constexpr bool kAudioFeed = true;` and the framework copies the
+  main input and output to an open editor; nothing to write in `process()`.
 - `core/Dsp.h` has `Smoother`, `Ramp`, `DelayLine`, `DryWet`, `Svf` and gain
   helpers. Products copy no DSP from other plugins; papers and measurements
   are fine, with provenance noted.
@@ -315,14 +322,38 @@ contract is at the top of `core/ProcessorBase.h`. In short:
 ## Editor
 
 `product::Editor` derives from `supple::gui::EditorBase` (see
-`gui/EditorBase.h`):
+`gui/EditorBase.h`). A product with no editor code -- `PRODUCT_EDITOR_SOURCES
+""` and no `Editor.*` -- gets the automatic one: every parameter by group, a
+panel each, with the bypass, presets and meters (`gui/AutoEditor.cpp`; the
+drive example). Write your own once the product is past its sketch.
 
-- In the constructor, add controls in Tab order:
-  `ui().knob(kCutoff, {x, y, w, h})`, `hslider`, `vslider`, `toggle`,
-  `segmented`, `dropdown`, and `readout` (label, value and bar; display
-  only); `textField(propertyId, rect)` for a property (its label is the
-  placeholder) and `presetBar(rect)` for presets. Rects are in design units
-  (`kEditorWidth` × `kEditorHeight`); the window scales the whole panel.
+- In the constructor, add controls in Tab order. Rects are in design units
+  (`kEditorWidth` x `kEditorHeight`); the window scales the whole panel.
+  Lay them out with `gui/Layout.h` rather than arithmetic: `Rect::cutTop(h,
+  gap)` (and Bottom, Left, Right) takes a strip off and leaves the rest,
+  `Grid(area, columns, rows, gap).cell(c, r)` and `.span(...)`,
+  `panelBody(panel)` is what goes under a panel's title.
+  - Values: `knob`, `hslider`, `vslider`, `toggle`, `segmented`,
+    `dropdown`, `readout` (display only), `list(param, rect)` (a choice's
+    options, scrolling).
+  - Two or four at once: `xyPad(across, up, rect)`;
+    `envelope(rect, attack, decay, sustain, release)`, a handle per stage
+    (`supple::gui::kNoParam` leaves one out). A drag that moves two is one
+    gesture.
+  - Without a parameter: `button(rect, label, action)`; `momentary(param,
+    rect)`, on while held; `textField(propertyId, rect)` for a property (its
+    label is the placeholder); `presetBar(rect)` and `presetList(rect)`;
+    `list(rect, rows)` over a `ListSource` of the product's (a file
+    browser); `keyboard(rect, low, high)`, which plays the processor's
+    `note()` and lights every key held, from anywhere (needs note input).
+  - Pages: `tabs(rect, labels)`, then `onPage(k)` before the controls of
+    page k and `onAllPages()` after; `ui().page(tabsIndex)` says which is
+    showing, for what `paint()` draws.
+- A control that does not apply right now (a free rate while synced):
+  `.enabledWhen([this] { return plain(kSync) < 0.5; })`. It dims, takes no
+  input and lets go of whatever it held.
+- Tooltips come from each parameter's `.help()`; `.withTooltip("...")` for a
+  button or to override.
 - A menu or a text field of the product's own: `ui().popup(anchor, items,
   chosen)` (`MenuItem::item`, `header`, `separator`; long menus scroll) and
   `ui().prompt(box, text, limit, commit)`, where `commit` returning false
@@ -334,22 +365,45 @@ contract is at the top of `core/ProcessorBase.h`. In short:
   its own (CLAP context-menu popup), it does, with the plugin's "Reset to
   Default" in it; otherwise the editor's, with reset and Enter Value first
   and the host's items (automation, MIDI learn: CLAP context-menu, VST3's
-  IComponentHandler3 through the wrapper) after them. Nothing to write.
+  IComponentHandler3 through the wrapper) after them. A control with several
+  parameters gets the editor's, a section each. Nothing to write.
 - The track the plugin is on: `track()` (name, colour, return/bus/master),
   as far as the host says (CLAP track-info, VST3 channel context); the
   editor repaints when it changes. The duck example shows it.
 - `host().log(level, text)` writes a line to the host's log (CLAP log), from
   the main thread only; a debug build with no host log prints it.
-- A control that does not apply right now (a free rate while synced) is
-  `enabled = false`: dimmed and left alone. Set it from `animate`.
 - `paint(vg)`: background, `widgets::panel(...)`, the product's centrepiece,
-  then `drawControls(vg)`. Menus and text fields are drawn above it all
-  automatically.
-- Colour only from `theme()`. Typography from `widgets::label` (Inter),
-  `widgets::number` (Plex Mono, true minus sign) and `widgets::caption`.
+  then `drawControls(vg)`. Menus, text fields and tooltips are drawn above it
+  all automatically.
+- Colour only from `theme()`. A second palette (light and dark) is
+  `setTheme(kLightTheme)` from a button; the pulse example. Typography from
+  `widgets::label` (Inter), `widgets::number` (Plex Mono, true minus sign)
+  and `widgets::caption`.
+- Graphs: `gui/Plot.h` maps values with an `Axis` (linear or logarithmic);
+  `widgets::frequencyGrid`, `levelGrid`, `plot(f)` (a response, a transfer
+  curve), `trace` of a `ValueHistory` (gain reduction over time),
+  `reductionMeter`, and `meter` with RMS.
+- The audio (`kAudioFeed`): `audio()` is the last 2.7 s of input and output
+  (`Signal::input()`, `Signal::output(channel)`), `inputRms()` and
+  `outputRms()` their levels; `gui/Spectrum.h` analyses it and
+  `widgets::spectrum`, `waveform` and `oscilloscope` draw it. `onAudio()`
+  hears when more arrived; analyse in `animate()`, at most 30 times a
+  second. The starter's spectrum, the duck's history.
+- Pictures: files in `PRODUCT_ASSETS` are compiled in and found by name.
+  `drawSvg(vg, "logo.svg", rect)` draws an SVG as vectors, with a tint for a
+  one-colour icon; `drawImage(vg, "skin.png", rect)` an image. A `.ttf` is a
+  face named by its stem (`nvgFontFace(vg, "Orbitron")`). Convert an SVG's
+  text to paths; gradients draw with their first and last stops.
+- Files: `fileDialogs()->open(options, done)` and `save(...)` show the
+  system's dialog without blocking the host; `done` runs later with the
+  paths, or none. Files dragged onto the editor: `acceptsDrop(x, y)` says
+  where they are welcome (`dropping()` lights it) and `onDrop(x, y, paths)`
+  takes them. A `.preset` file dropped on an editor with presets loads;
+  the preset bar's menu imports and exports them.
 - Custom interactive drawing (a graph handle, an EQ node): override
   `onPointerDown/Move/Up` and edit through `ui().dragEdit(control, value)`
-  and `ui().endDragEdit()`, never `host().beginEdit` directly. `Ui` owns the
+  (or `dragEdit(controlX, x, controlY, y)` for two at once) and
+  `ui().endDragEdit()`, never `host().beginEdit` directly. `Ui` owns the
   one-gesture-at-a-time rule. Override `onCancel()` to drop the drag: focus
   loss and teardown call it, and the release may never arrive.
 - Draw what is heard from `effective(id)` (the value plus host
@@ -360,9 +414,10 @@ contract is at the top of `core/ProcessorBase.h`. In short:
   changed. An idle editor must draw nothing. An editor that does not draw
   the framework's peak meters calls `usePeakMeters(false)`.
 
-`ui-tests` fuzzes the real editor with random input and fails on a nested or
-unclosed gesture, and lints the layout: controls must stay inside the panel
-and must not overlap.
+`ui-tests` fuzzes the real editor with random input and fails on a nested
+or unclosed gesture, more than two parameters in one, or a note left
+sounding, and lints the layout: controls must stay inside the panel and
+must not overlap, except on different pages of one tab bar.
 
 ## Rules that are not negotiable
 

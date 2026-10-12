@@ -23,6 +23,8 @@ namespace {
 constexpr Rect kKeyPanel{24, 76, 200, 280};
 constexpr Rect kDuckPanel{240, 76, 264, 280};
 constexpr Rect kOutputPanel{520, 76, 176, 280};
+constexpr Rect kHistoryPanel{24, 372, 672, 112};
+constexpr double kHistorySeconds = 2.5;
 constexpr float kFloorDb = -60.0f;
 }  // namespace
 
@@ -38,6 +40,7 @@ Editor::Editor(EditorHost& host) : EditorBase(host, kTheme, kEditorWidth, kEdito
 std::unique_ptr<EditorBase> createEditor(EditorHost& host) { return std::make_unique<Editor>(host); }
 
 void Editor::onTelemetry(const supple::TelemetryFrame& frame) {
+    reduction_.push(static_cast<float>(plain(kReduction)));
     const float db = static_cast<float>(supple::dsp::gainToDb(frame.product.key, -120.0));
     if (std::fabs(db - keyDb_) > 0.25f && (db > kFloorDb || keyDb_ > kFloorDb)) {
         keyDb_ = db;
@@ -113,9 +116,22 @@ void Editor::paint(NVGcontext* vg) {
     drawKey(vg, {kKeyPanel.right() - 60, kKeyPanel.y + 52, 28, 196});
     w::panel(vg, t, kDuckPanel, "Duck");
     w::panel(vg, t, kOutputPanel, "Output");
-    w::meter(vg, t, {kOutputPanel.x + 24, kOutputPanel.y + 48, 30, 160}, outputMeters(), meterChannels());
-    w::caption(vg, kOutputPanel.x + 104, kOutputPanel.y + 64, "MAIN + DUCKED", rgb(t.textFaint), w::Align::Center, 8.5f);
-    w::caption(vg, kOutputPanel.x + 104, kOutputPanel.y + 80, "= INPUT", rgb(t.textFaint), w::Align::Center, 8.5f);
+    w::meter(vg, t, {kOutputPanel.x + 24, kOutputPanel.y + 48, 30, 160}, outputMeters(), meterChannels(),
+             outputRms());
+    w::reductionMeter(vg, t, {kOutputPanel.x + 62, kOutputPanel.y + 57, 10, 151}, static_cast<float>(plain(kReduction)));
+
+    // The last seconds: what came in (faint), what went out, and the
+    // reduction between them, from the audio feed and the output parameter.
+    w::panel(vg, t, kHistoryPanel, "History");
+    const Rect graph = panelBody(kHistoryPanel, true, 16.0f);
+    w::well(vg, t, graph.inset(-2.0f), 4.0f);
+    const double rate = host().sampleRate() > 0.0 ? host().sampleRate() : 48000.0;
+    w::waveform(vg, graph, audio(), Signal::input(), kHistorySeconds, rate, rgba(t.textMuted, 0.35f));
+    w::waveform(vg, graph, audio(), Signal::output(), kHistorySeconds, rate, rgba(t.accent2, 0.8f));
+    w::trace(vg, graph, reduction_, Axis::linear(-24.0, 0.0, graph.bottom(), graph.y), rgb(t.accent), 1.5f);
+    w::caption(vg, graph.right(), kHistoryPanel.y + 18, "IN   OUT   REDUCTION", rgb(t.textFaint), w::Align::Right, 8.5f);
+    w::caption(vg, kOutputPanel.x + 124, kOutputPanel.y + 64, "MAIN + DUCKED", rgb(t.textFaint), w::Align::Center, 8.5f);
+    w::caption(vg, kOutputPanel.x + 124, kOutputPanel.y + 80, "= INPUT", rgb(t.textFaint), w::Align::Center, 8.5f);
     drawControls(vg);
 }
 

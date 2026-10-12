@@ -15,7 +15,8 @@
 //   - toggles and the slope crossfade instead of switching, so nothing clicks;
 //   - the filters keep running while switched off, so switching them on
 //     starts from a settled state;
-//   - nothing allocates outside prepare().
+//   - nothing allocates outside prepare();
+//   - kAudioFeed hands the editor the audio for its spectrum analyser.
 #pragma once
 
 #include <cmath>
@@ -34,6 +35,8 @@ class Processor : public supple::ProcessorBase<Processor> {
     static constexpr double kQ2 = 0.70710678118654752;         // 2nd order
     static constexpr double kQ4a = 0.54119610014619698;        // 4th order, first pair
     static constexpr double kQ4b = 1.30656296487637652;        // 4th order, second pair
+    // The editor draws the output's spectrum behind the response curve.
+    static constexpr bool kAudioFeed = true;
 
     void prepare(const supple::ProcessSetup& setup, const supple::ParamValues&) {
         sampleRate_ = setup.sampleRate;

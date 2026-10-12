@@ -1116,6 +1116,29 @@ TEST(a_product_with_note_input_ends_every_note_it_was_given) {
     CHECK(saw77 && saw78);
 }
 
+TEST(the_editors_keyboard_plays_through_the_plugin_and_ends_its_notes) {
+    Instance i;
+    gui::EditorHost* editor = supple_test_editor_host(i.plugin);
+    if (!editor || !product::info::kNoteInput) {
+        std::printf("      (no editor, or no note input)\n");
+        return;
+    }
+    i.activate(48000.0, 480);
+    Audio a(i.channels(), 480);
+    OutEvents out;
+    supple_test_set_metering(i.plugin, true);
+    editor->playNote(62, 0.8, true);
+    for (int b = 0; b < 10; ++b) a.run(i.plugin, noEvents(), &out);
+    TelemetryFrame f{}, next{};
+    CHECK(editor->popTelemetry(f));
+    while (editor->popTelemetry(next)) f = next;
+    CHECK(f.keys[0] == uint64_t{1} << 62);  // held, as the keyboard will draw it
+    editor->playNote(62, 0.0, false);
+    for (int k = 0; k < 2000 && out.noteEnds.empty(); ++k) a.run(i.plugin, noEvents(), &out);
+    // The processor ended the note it was played, as it ends a host's.
+    CHECK(!out.noteEnds.empty() && out.noteEnds[0].key == 62 && out.noteEnds[0].port_index == 0);
+}
+
 // --- notes ------------------------------------------------------------------------------------
 
 TEST(note_ports_are_as_declared) {

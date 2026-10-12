@@ -15,7 +15,8 @@
 //     one voice's level, each kept from its event until the voice ends;
 //   - kVoices and kOverlappingNotes tell the host about the voices;
 //   - voices are fixed storage sized in the class, so nothing allocates;
-//   - the envelope is per sample, so output does not depend on block splits;
+//   - the envelope (attack, decay, sustain, release, each linear) is per
+//     sample, so output does not depend on block splits;
 //   - tailSamples() tells the host how long sound continues after input stops;
 //   - Telemetry carries what the editor shows (the sounding voices);
 //   - microtuning (PRODUCT_TUNING): each voice asks retuning() at every block,
@@ -75,6 +76,8 @@ class Processor : public supple::ProcessorBase<Processor> {
         levelDb_ = v[kLevel];
         triangle_ = v.choice(kWaveform) == 1;
         attackStep_ = 1.0 / std::max(1.0, v[kAttack] * 0.001 * sampleRate_);
+        decayStep_ = 1.0 / std::max(1.0, v[kDecay] * 0.001 * sampleRate_);
+        sustain_ = v[kSustain];
         releaseSeconds_ = v[kRelease] * 0.001;
         releaseStep_ = 1.0 / std::max(1.0, releaseSeconds_ * sampleRate_);
         bendRange_ = v[kBendRange];
@@ -144,7 +147,12 @@ class Processor : public supple::ProcessorBase<Processor> {
                 if (v.stage == Stage::Off) continue;
                 if (v.stage == Stage::Attack && (v.envelope += attackStep_) >= 1.0) {
                     v.envelope = 1.0;
+                    v.stage = Stage::Decay;
+                } else if (v.stage == Stage::Decay && (v.envelope -= decayStep_) <= sustain_) {
+                    v.envelope = sustain_;
                     v.stage = Stage::Sustain;
+                } else if (v.stage == Stage::Sustain) {
+                    v.envelope = sustain_;  // a sustain level moved while held moves the note
                 } else if (v.stage == Stage::Release && (v.envelope -= releaseStep_) <= 0.0) {
                     v.envelope = 0.0;
                     v.stage = Stage::Off;
@@ -195,7 +203,7 @@ class Processor : public supple::ProcessorBase<Processor> {
         return -8.0 / (supple::dsp::kPi * supple::dsp::kPi) * sum;
     }
 
-    enum class Stage : uint8_t { Off, Attack, Sustain, Release };
+    enum class Stage : uint8_t { Off, Attack, Decay, Sustain, Release };
     struct Voice {
         Stage stage = Stage::Off;
         supple::NoteEvent address{};  // as the note arrived
@@ -230,7 +238,7 @@ class Processor : public supple::ProcessorBase<Processor> {
     double levelDb_ = -6.0;
     Voice voices_[kVoices];
     bool triangle_ = false;
-    double attackStep_ = 1.0, releaseStep_ = 1.0, releaseSeconds_ = 0.25;
+    double attackStep_ = 1.0, decayStep_ = 1.0, sustain_ = 1.0, releaseStep_ = 1.0, releaseSeconds_ = 0.25;
     double bendRange_ = 2.0;
     double bend_[16] = {};  // per MIDI channel, -1..+1
     double wheel_ = 0.0;

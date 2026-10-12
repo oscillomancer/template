@@ -16,6 +16,7 @@ whenever a pinned dependency moves.
 | Pugl | ISC | One local Windows module/class ownership patch; `gui/pugl_metal.{h,m}` derive in part from it and keep its notice |
 | NanoVG | zlib | |
 | nanovg_metal (wjakob fork) | MIT | macOS only |
+| nanosvg | zlib | the editor's SVGs (`gui/Images.h`); parsed only, never rasterized |
 | IBM Plex Mono, Plex Sans Condensed | SIL OFL 1.1 | subsets in `gui/fonts`, compiled in |
 | Inter | SIL OFL 1.1 | subsets in `gui/fonts`, compiled in |
 | MTS-ESP client | 0BSD | only with `PRODUCT_TUNING ON`; its notice is added to the product's NOTICES.txt then |

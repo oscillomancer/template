@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace supple::gui::widgets {
 namespace {
@@ -212,10 +213,20 @@ void well(NVGcontext* vg, const Theme& t, Rect r, float radius) {
 
 void control(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
     if (!c.visible) return;
-    if (c.widget == Widget::TextField) return textField(vg, t, c, s);
-    if (c.widget == Widget::PresetBar) return presetBar(vg, t, c, s);
+    switch (c.widget) {
+        case Widget::TextField: return textField(vg, t, c, s);
+        case Widget::PresetBar: return presetBar(vg, t, c, s);
+        case Widget::Button: return button(vg, t, c, s);
+        case Widget::Tabs: return tabs(vg, t, c, s);
+        case Widget::List: return list(vg, t, c, s);
+        case Widget::Keyboard: return keyboard(vg, t, c, s);
+        case Widget::Envelope: return envelope(vg, t, c, s);
+        default: break;
+    }
     if (!s.def) return;
     switch (c.widget) {
+        case Widget::Momentary: button(vg, t, c, s); break;
+        case Widget::XYPad: xyPad(vg, t, c, s); break;
         case Widget::Knob: knob(vg, t, c, s); break;
         case Widget::HSlider: hslider(vg, t, c, s); break;
         case Widget::VSlider: vslider(vg, t, c, s); break;
@@ -739,6 +750,53 @@ void overlays(NVGcontext* vg, const Theme& t, const Ui& ui) {
         nvgResetScissor(vg);
         nvgRestore(vg);
     }
+
+    const Ui::Tooltip& tip = ui.tooltip();
+    if (tip.open && !m.open && !e.open) {
+        nvgSave(vg);
+        const float wrap = 220.0f, pad = 8.0f, size = 11.0f;
+        nvgFontSize(vg, size);
+        nvgTextLineHeight(vg, 1.3f);
+        nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+        float bounds[4] = {};
+        nvgFontFace(vg, font::kUi);
+        nvgTextBoxBounds(vg, 0, 0, wrap, tip.text.c_str(), nullptr, bounds);
+        float width = bounds[2] - bounds[0], height = bounds[3] - bounds[1];
+        const float titleHeight = tip.title.empty() ? 0.0f : 16.0f;
+        if (!tip.title.empty()) width = std::max(width, textWidth(vg, tip.title.c_str(), size, font::kUiBold));
+        const Rect a = tip.anchor;
+        Rect box{0, 0, width + pad * 2.0f, height + titleHeight + pad * 2.0f};
+        box.x = std::clamp(a.cx() - box.w * 0.5f, 4.0f, std::max(4.0f, ui.designWidth() - box.w - 4.0f));
+        box.y = a.bottom() + 6.0f;
+        if (box.bottom() > ui.designHeight() - 4.0f) box.y = std::max(4.0f, a.y - 6.0f - box.h);
+        shadow(vg, box, 5.0f, 12.0f, 0.5f);
+        roundedRect(vg, box, 5.0f);
+        nvgFillColor(vg, rgb(t.raised));
+        nvgFill(vg);
+        roundedRect(vg, box.inset(0.5f), 5.0f);
+        nvgStrokeColor(vg, rgb(t.lineLit));
+        nvgStrokeWidth(vg, 1.0f);
+        nvgStroke(vg);
+        if (!tip.title.empty()) label(vg, box.x + pad, box.y + pad + 6.0f, tip.title.c_str(), size, rgb(t.text), Align::Left, true);
+        nvgFontFace(vg, font::kUi);
+        nvgFontSize(vg, size);
+        nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+        nvgFillColor(vg, rgb(tip.title.empty() ? t.text : t.textMuted));
+        nvgTextBox(vg, box.x + pad, box.y + pad + titleHeight, wrap, tip.text.c_str(), nullptr);
+        nvgRestore(vg);
+    }
+}
+
+void dropTarget(NVGcontext* vg, const Theme& t, Rect r) {
+    nvgSave(vg);
+    roundedRect(vg, r.inset(3.0f), t.radius);
+    nvgStrokeColor(vg, rgba(t.accent, 0.25f));
+    nvgStrokeWidth(vg, 6.0f);
+    nvgStroke(vg);
+    nvgStrokeColor(vg, rgba(t.accent, 0.9f));
+    nvgStrokeWidth(vg, 1.5f);
+    nvgStroke(vg);
+    nvgRestore(vg);
 }
 
 // --- meters ------------------------------------------------------------------------
@@ -748,7 +806,7 @@ float meterPosition(float db) {
     return std::pow(lin, 1.6f);  // more of the travel near the top, where it matters
 }
 
-void meter(NVGcontext* vg, const Theme& t, Rect r, const PeakMeter* channels, int count) {
+void meter(NVGcontext* vg, const Theme& t, Rect r, const PeakMeter* channels, int count, const RmsMeter* rms) {
     if (count <= 0) return;
     nvgSave(vg);
     const float lamp = 6.0f, gap = 2.0f;
@@ -767,9 +825,17 @@ void meter(NVGcontext* vg, const Theme& t, Rect r, const PeakMeter* channels, in
             const float zero = inner.bottom() - inner.h * meterPosition(0.0f);
             nvgBeginPath(vg);
             nvgRect(vg, inner.x, top, inner.w, inner.bottom() - top);
-            nvgFillPaint(vg, nvgLinearGradient(vg, 0, inner.bottom(), 0, inner.y, rgba(t.accent2, 0.75f),
-                                               lerp(rgb(t.accent2), rgb(t.text), 0.3f)));
+            nvgFillPaint(vg, nvgLinearGradient(vg, 0, inner.bottom(), 0, inner.y, rgba(t.accent2, rms ? 0.3f : 0.75f),
+                                               withAlpha(lerp(rgb(t.accent2), rgb(t.text), 0.3f), rms ? 0.4f : 1.0f)));
             nvgFill(vg);
+            if (rms) {
+                const float body = inner.bottom() - inner.h * meterPosition(rms[c].levelDb());
+                nvgBeginPath(vg);
+                nvgRect(vg, inner.x, body, inner.w, inner.bottom() - body);
+                nvgFillPaint(vg, nvgLinearGradient(vg, 0, inner.bottom(), 0, inner.y, rgba(t.accent2, 0.8f),
+                                                   lerp(rgb(t.accent2), rgb(t.text), 0.3f)));
+                nvgFill(vg);
+            }
             if (top < zero) {  // over full scale
                 nvgBeginPath(vg);
                 nvgRect(vg, inner.x, top, inner.w, zero - top);
@@ -788,6 +854,456 @@ void meter(NVGcontext* vg, const Theme& t, Rect r, const PeakMeter* channels, in
     roundedRect(vg, {r.x, r.y, r.w, lamp}, 2.0f);
     nvgFillColor(vg, clipped ? rgb(t.alert) : rgb(t.recess));
     nvgFill(vg);
+    nvgRestore(vg);
+}
+
+}  // namespace supple::gui::widgets
+
+namespace supple::gui::widgets {
+
+// --- more controls ----------------------------------------------------------------
+
+void button(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
+    if (c.widget == Widget::Momentary) return toggle(vg, t, c, s);
+    const Rect b = c.bounds;
+    const bool hot = s.hover || s.active;
+    const float radius = std::min(6.0f, b.h * 0.5f);
+    nvgSave(vg);
+    if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
+    shadow(vg, b, radius, 6.0f, 0.4f);
+    roundedRect(vg, b, radius);
+    nvgFillPaint(vg, nvgLinearGradient(vg, b.x, b.y, b.x, b.bottom(),
+                                       hot ? lerp(rgb(t.raised), rgb(t.text), 0.06f) : rgb(t.raised),
+                                       lerp(rgb(t.raised), rgb(t.ground), 0.5f)));
+    nvgFill(vg);
+    roundedRect(vg, b.inset(0.5f), radius);
+    nvgStrokeColor(vg, hot ? rgb(t.lineLit) : rgb(t.line));
+    nvgStrokeWidth(vg, 1.0f);
+    nvgStroke(vg);
+    const char* text = s.label(c);
+    const float size = fitSize(vg, text, 11.5f, 9.0f, b.w - 14.0f, font::kUiBold);
+    label(vg, b.cx(), b.cy() + 0.5f, text, size, hot ? rgb(t.text) : lerp(rgb(t.textMuted), rgb(t.text), 0.4f),
+          Align::Center, true);
+    if (s.focused) focusOutline(vg, t, b, radius);
+    nvgRestore(vg);
+}
+
+void xyPad(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
+    const Rect b = c.bounds;
+    const Rect area = b.inset(8.0f);
+    const bool hot = s.hover || s.active;
+    nvgSave(vg);
+    if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
+    well(vg, t, b, 5.0f);
+    for (int k = 1; k < 4; ++k) {
+        const float fx = area.x + area.w * static_cast<float>(k) / 4.0f;
+        const float fy = area.y + area.h * static_cast<float>(k) / 4.0f;
+        hairline(vg, std::floor(fx) + 0.5f, area.y, std::floor(fx) + 0.5f, area.bottom(), rgba(t.line, k == 2 ? 0.9f : 0.5f));
+        hairline(vg, area.x, std::floor(fy) + 0.5f, area.right(), std::floor(fy) + 0.5f, rgba(t.line, k == 2 ? 0.9f : 0.5f));
+    }
+    const ControlState::Slot& sx = s.slots[0];
+    const ControlState::Slot& sy = s.slots[1];
+    const float px = area.x + area.w * static_cast<float>(sx.normalized);
+    const float py = area.bottom() - area.h * static_cast<float>(sy.def ? sy.normalized : 0.5);
+    hairline(vg, px, area.y, px, area.bottom(), rgba(t.accent, hot ? 0.45f : 0.25f));
+    hairline(vg, area.x, py, area.right(), py, rgba(t.accent, hot ? 0.45f : 0.25f));
+    // Where host modulation takes it, if anywhere.
+    if (sx.modulated != sx.normalized || (sy.def && sy.modulated != sy.normalized)) {
+        const float mx = area.x + area.w * static_cast<float>(sx.modulated);
+        const float my = area.bottom() - area.h * static_cast<float>(sy.def ? sy.modulated : 0.5);
+        hairline(vg, px, py, mx, my, rgba(t.modulation, 0.8f), 1.5f);
+        nvgBeginPath(vg);
+        nvgCircle(vg, mx, my, 3.5f);
+        nvgFillColor(vg, rgb(t.modulation));
+        nvgFill(vg);
+    }
+    nvgBeginPath(vg);
+    nvgCircle(vg, px, py, hot ? 13.0f : 11.0f);
+    nvgFillPaint(vg, nvgRadialGradient(vg, px, py, 2.0f, hot ? 13.0f : 11.0f, rgba(t.accent, 0.45f), rgba(t.accent, 0.0f)));
+    nvgFill(vg);
+    nvgBeginPath(vg);
+    nvgCircle(vg, px, py, 6.0f);
+    nvgFillColor(vg, rgb(t.accent));
+    nvgFill(vg);
+    nvgStrokeColor(vg, rgb(t.ground));
+    nvgStrokeWidth(vg, 1.5f);
+    nvgStroke(vg);
+    // Each axis's name and value, in the corners they belong to.
+    char text[64];
+    if (sx.def) {
+        ControlState one = s;
+        joined(valueText(one), text, sizeof(text));
+        label(vg, area.right(), area.bottom() - 7.0f, sx.def->displayLabel(), 10.0f, rgb(t.textMuted), Align::Right, true);
+        number(vg, area.right(), area.bottom() - 20.0f, text, 10.0f, rgb(t.text), Align::Right);
+    }
+    if (sy.def) {
+        ControlState other;
+        other.def = sy.def;
+        other.value = sy.value;
+        joined(valueText(other), text, sizeof(text));
+        label(vg, area.x, area.y + 6.0f, sy.def->displayLabel(), 10.0f, rgb(t.textMuted), Align::Left, true);
+        number(vg, area.x, area.y + 19.0f, text, 10.0f, rgb(t.text), Align::Left);
+    }
+    if (s.focused) focusOutline(vg, t, b, 5.0f);
+    nvgRestore(vg);
+}
+
+void tabs(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
+    const Rect b = c.bounds;
+    const int n = static_cast<int>(c.pages.size());
+    nvgSave(vg);
+    if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
+    hairline(vg, b.x, b.bottom() - 0.5f, b.right(), b.bottom() - 0.5f, rgb(t.line));
+    for (int k = 0; k < n; ++k) {
+        const Rect r = Ui::tab(b, k, n);
+        const bool on = k == c.selected, hot = k == s.hoverIndex;
+        if (hot && !on) {
+            roundedRect(vg, r.inset(2.0f, 3.0f), 4.0f);
+            nvgFillColor(vg, rgba(t.text, 0.05f));
+            nvgFill(vg);
+        }
+        const char* text = c.pages[static_cast<size_t>(k)].c_str();
+        const float size = fitSize(vg, text, 11.5f, 9.0f, r.w - 12.0f, font::kUiBold);
+        label(vg, r.cx(), r.cy(), text, size, on ? rgb(t.text) : hot ? lerp(rgb(t.textMuted), rgb(t.text), 0.5f) : rgb(t.textMuted),
+              Align::Center, true);
+        if (on) {
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, r.x + 10.0f, b.bottom() - 2.5f, r.w - 20.0f, 2.5f, 1.25f);
+            nvgFillColor(vg, rgb(t.accent));
+            nvgFill(vg);
+        }
+    }
+    if (s.focused) focusOutline(vg, t, b, 4.0f);
+    nvgRestore(vg);
+}
+
+void list(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
+    const Rect b = c.bounds;
+    nvgSave(vg);
+    if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
+    well(vg, t, b, 5.0f);
+    if (!c.source) {
+        nvgRestore(vg);
+        return;
+    }
+    const int n = c.source->size(), rows = Ui::listRows(c), selected = c.source->selected();
+    nvgScissor(vg, b.x + 2.0f, b.y + 2.0f, b.w - 4.0f, b.h - 4.0f);
+    const bool scrolls = n > rows;
+    for (int r = c.scroll; r < std::min(n, c.scroll + rows + 1); ++r) {
+        Rect row = Ui::listRow(c, r);
+        if (scrolls) row.w -= 8.0f;
+        const std::string text = c.source->item(r);
+        if (c.source->header(r)) {
+            caption(vg, row.x + 6.0f, row.cy() + 1.0f, text.c_str(), rgb(t.textFaint), Align::Left, 9.0f);
+            continue;
+        }
+        const bool on = r == selected, hot = r == s.hoverIndex;
+        if (on || hot) {
+            roundedRect(vg, row.inset(0.0f, 1.0f), 4.0f);
+            nvgFillColor(vg, on ? rgba(t.accent, 0.22f) : rgba(t.text, 0.05f));
+            nvgFill(vg);
+        }
+        const float size = fitSize(vg, text.c_str(), 11.5f, 9.0f, row.w - 16.0f, font::kUi);
+        label(vg, row.x + 8.0f, row.cy() + 0.5f, text.c_str(), size, on ? rgb(t.text) : rgb(t.textMuted), Align::Left, on);
+    }
+    nvgResetScissor(vg);
+    if (scrolls) {
+        const Rect track{b.right() - 8.0f, b.y + 5.0f, 3.0f, b.h - 10.0f};
+        const float thumb = std::max(16.0f, track.h * static_cast<float>(rows) / static_cast<float>(n));
+        const float at = track.y + (track.h - thumb) * static_cast<float>(c.scroll) / static_cast<float>(std::max(1, n - rows));
+        roundedRect(vg, {track.x, at, track.w, thumb}, 1.5f);
+        nvgFillColor(vg, rgba(t.textMuted, 0.6f));
+        nvgFill(vg);
+    }
+    if (s.focused) focusOutline(vg, t, b, 5.0f);
+    nvgRestore(vg);
+}
+
+void keyboard(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
+    nvgSave(vg);
+    if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
+    well(vg, t, c.bounds.inset(-3.0f), 5.0f);
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int k = c.lowKey; k <= c.highKey; ++k) {
+            const bool black = Ui::blackKey(k);
+            if (black != (pass == 1)) continue;
+            const Rect r = Ui::keyRect(c, k);
+            const bool held = s.keyHeld(k), hot = k == s.hoverIndex;
+            const Rect face = black ? r : r.inset(0.75f, 0.0f);
+            nvgBeginPath(vg);
+            nvgRoundedRectVarying(vg, face.x, face.y, face.w, face.h, 0.0f, 0.0f, 3.0f, 3.0f);
+            if (held) {
+                nvgFillPaint(vg, nvgLinearGradient(vg, 0, face.y, 0, face.bottom(), rgba(t.accent, 0.7f), rgb(t.accent)));
+            } else if (black) {
+                nvgFillPaint(vg, nvgLinearGradient(vg, 0, face.y, 0, face.bottom(), rgb(t.recess),
+                                                   hot ? lerp(rgb(t.recess), rgb(t.text), 0.15f) : lerp(rgb(t.recess), rgb(t.raised), 0.6f)));
+            } else {
+                const NVGcolor top = lerp(rgb(t.text), rgb(t.raised), 0.25f);
+                nvgFillPaint(vg, nvgLinearGradient(vg, 0, face.y, 0, face.bottom(), hot ? rgb(t.text) : top,
+                                                   lerp(top, rgb(t.textMuted), 0.35f)));
+            }
+            nvgFill(vg);
+            if (!black && k % 12 == 0 && face.w >= 10.0f) {
+                char name[16];
+                std::snprintf(name, sizeof(name), "C%d", k / 12 - 1);
+                label(vg, face.cx(), face.bottom() - 8.0f, name, std::min(9.0f, face.w * 0.6f),
+                      held ? rgb(t.ground) : rgba(t.ground, 0.7f), Align::Center, true);
+            }
+        }
+    }
+    nvgRestore(vg);
+}
+
+void envelope(NVGcontext* vg, const Theme& t, const Control& c, const ControlState& s) {
+    const Rect b = c.bounds;
+    const Ui::EnvelopeShape e = Ui::envelopeShape(c, s);
+    nvgSave(vg);
+    if (!c.enabled) nvgGlobalAlpha(vg, 0.4f);
+    well(vg, t, b, 5.0f);
+    auto trace = [&] {
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, e.x[0], e.y[0]);
+        for (int k = 1; k < 5; ++k) nvgLineTo(vg, e.x[k], e.y[k]);
+    };
+    trace();
+    nvgLineTo(vg, e.x[0], e.y[0]);
+    nvgClosePath(vg);
+    nvgFillPaint(vg, nvgLinearGradient(vg, 0, b.y, 0, b.bottom(), rgba(t.accent, 0.22f), rgba(t.accent, 0.04f)));
+    nvgFill(vg);
+    trace();
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStrokeColor(vg, rgb(t.accent));
+    nvgStrokeWidth(vg, 2.0f);
+    nvgStroke(vg);
+    // A handle per stage; the one under the pointer or in hand is lit.
+    const int lit = s.activeIndex >= 0 ? s.activeIndex : s.hoverIndex;
+    for (int h = 0; h < 3; ++h) {
+        if (!e.has[h]) continue;
+        const int point = h == 2 ? 4 : h + 1;
+        nvgBeginPath(vg);
+        nvgCircle(vg, e.x[point], e.y[point], h == lit ? 6.5f : 5.0f);
+        nvgFillColor(vg, h == lit ? rgb(t.accent) : rgb(t.recess));
+        nvgFill(vg);
+        nvgStrokeColor(vg, h == lit ? rgb(t.ground) : rgb(t.accent));
+        nvgStrokeWidth(vg, 1.5f);
+        nvgStroke(vg);
+    }
+    if (lit >= 0) {
+        // Its parameters' names and values, top right.
+        std::string text;
+        for (int slot : {lit == 0 ? 0 : lit == 1 ? 1 : 3, lit == 1 ? 2 : -1}) {
+            if (slot < 0 || !s.slots[slot].def) continue;
+            ControlState one;
+            one.def = s.slots[slot].def;
+            one.value = s.slots[slot].value;
+            char value[64];
+            joined(valueText(one), value, sizeof(value));
+            if (!text.empty()) text += "   ";
+            text += std::string(one.def->displayLabel()) + " " + value;
+        }
+        label(vg, b.right() - 10.0f, b.y + 12.0f, text.c_str(), 10.5f, rgb(t.text), Align::Right, true);
+    }
+    if (s.focused) focusOutline(vg, t, b, 5.0f);
+    nvgRestore(vg);
+}
+
+// --- graphs ------------------------------------------------------------------------------
+
+void frequencyGrid(NVGcontext* vg, const Theme& t, Rect r, const Axis& hz, bool labels) {
+    const double lo = std::min(hz.lo, hz.hi), hi = std::max(hz.lo, hz.hi);
+    for (double decade = 1.0; decade <= hi; decade *= 10.0) {
+        for (double m : {1.0, 2.0, 5.0}) {
+            const double f = decade * m;
+            if (f < lo || f > hi) continue;
+            const float x = std::floor(hz.at(f)) + 0.5f;
+            const bool major = m == 1.0;
+            hairline(vg, x, r.y, x, r.bottom(), rgba(major ? t.lineLit : t.line, major ? 0.8f : 0.6f));
+            if (!labels) continue;
+            char text[16];
+            if (f >= 1000.0) std::snprintf(text, sizeof(text), "%gk", f / 1000.0);
+            else std::snprintf(text, sizeof(text), "%g", f);
+            number(vg, x, r.bottom() + 14.0f, text, 9.5f, rgb(t.textFaint), Align::Center, false);
+        }
+    }
+}
+
+void levelGrid(NVGcontext* vg, const Theme& t, Rect r, const Axis& db, double step, bool labels) {
+    if (step <= 0.0) return;
+    const double lo = std::min(db.lo, db.hi), hi = std::max(db.lo, db.hi);
+    for (double v = std::ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
+        const float y = std::floor(db.at(v)) + 0.5f;
+        hairline(vg, r.x, y, r.right(), y, std::fabs(v) < 1e-9 ? rgba(t.lineLit, 1.0f) : rgba(t.line, 0.7f));
+        if (!labels) continue;
+        char text[16];
+        if (std::fabs(v) < 1e-9) std::snprintf(text, sizeof(text), "0");
+        else std::snprintf(text, sizeof(text), "%+g", v);
+        number(vg, r.x - 10.0f, y, text, 9.5f, rgb(t.textFaint), Align::Right, false);
+    }
+}
+
+void plot(NVGcontext* vg, Rect r, const Axis& x, const Axis& y, const std::function<double(double)>& f,
+          NVGcolor colour, float width, const double* fillTo) {
+    nvgSave(vg);
+    nvgScissor(vg, r.x, r.y, r.w, r.h);
+    const int points = std::max(2, static_cast<int>(r.w / 2.0f) + 1);
+    auto trace = [&] {
+        nvgBeginPath(vg);
+        for (int i = 0; i < points; ++i) {
+            const float px = r.x + r.w * static_cast<float>(i) / static_cast<float>(points - 1);
+            const double v = f(x.value(px));
+            const float py = std::isfinite(v) ? y.at(v) : y.from;
+            if (i == 0) nvgMoveTo(vg, px, py);
+            else nvgLineTo(vg, px, py);
+        }
+    };
+    if (fillTo) {
+        trace();
+        nvgLineTo(vg, r.right(), y.at(*fillTo));
+        nvgLineTo(vg, r.x, y.at(*fillTo));
+        nvgClosePath(vg);
+        nvgFillColor(vg, withAlpha(colour, colour.a * 0.13f));
+        nvgFill(vg);
+    }
+    trace();
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStrokeColor(vg, withAlpha(colour, colour.a * 0.18f));
+    nvgStrokeWidth(vg, width * 3.5f);
+    nvgStroke(vg);
+    nvgStrokeColor(vg, colour);
+    nvgStrokeWidth(vg, width);
+    nvgStroke(vg);
+    nvgRestore(vg);
+}
+
+void trace(NVGcontext* vg, Rect r, const ValueHistory& values, const Axis& y, NVGcolor colour, float width) {
+    const size_t n = values.size();
+    nvgSave(vg);
+    nvgScissor(vg, r.x, r.y, r.w, r.h);
+    nvgBeginPath(vg);
+    for (size_t k = 0; k < n; ++k) {
+        const float px = r.x + r.w * static_cast<float>(k) / static_cast<float>(n - 1);
+        const float py = y.clamped(values.at(n - 1 - k));
+        if (k == 0) nvgMoveTo(vg, px, py);
+        else nvgLineTo(vg, px, py);
+    }
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStrokeColor(vg, colour);
+    nvgStrokeWidth(vg, width);
+    nvgStroke(vg);
+    nvgRestore(vg);
+}
+
+void spectrum(NVGcontext* vg, Rect r, const Spectrum& s, const Axis& hz, const Axis& db, NVGcolor colour) {
+    nvgSave(vg);
+    nvgScissor(vg, r.x, r.y, r.w, r.h);
+    const float step = 2.0f;
+    auto shape = [&] {
+        nvgBeginPath(vg);
+        bool first = true;
+        for (float px = r.x; px <= r.right() + 0.01f; px += step) {
+            const double lo = hz.value(px - step * 0.5f), hi = hz.value(px + step * 0.5f);
+            const float py = db.clamped(s.peak(std::min(lo, hi), std::max(lo, hi)));
+            if (first) nvgMoveTo(vg, px, py);
+            else nvgLineTo(vg, px, py);
+            first = false;
+        }
+    };
+    shape();
+    nvgLineTo(vg, r.right(), r.bottom());
+    nvgLineTo(vg, r.x, r.bottom());
+    nvgClosePath(vg);
+    nvgFillPaint(vg, nvgLinearGradient(vg, 0, r.y, 0, r.bottom(), withAlpha(colour, colour.a * 0.28f),
+                                       withAlpha(colour, colour.a * 0.04f)));
+    nvgFill(vg);
+    shape();
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStrokeColor(vg, withAlpha(colour, colour.a * 0.8f));
+    nvgStrokeWidth(vg, 1.2f);
+    nvgStroke(vg);
+    nvgRestore(vg);
+}
+
+void waveform(NVGcontext* vg, Rect r, const AudioHistory& audio, Signal signal, double seconds, double sampleRate,
+              NVGcolor colour) {
+    const int columns = std::max(2, static_cast<int>(r.w));
+    const double total = std::clamp(seconds * sampleRate, 2.0, static_cast<double>(AudioHistory::kFrames - 1));
+    const double perColumn = total / columns;
+    std::vector<float> high(static_cast<size_t>(columns)), low(static_cast<size_t>(columns));
+    for (int col = 0; col < columns; ++col) {
+        // Column 0 is the oldest; the newest sample is at the right edge.
+        const size_t newest = static_cast<size_t>(std::lround((columns - 1 - col) * perColumn));
+        const size_t oldest = static_cast<size_t>(std::lround((columns - col) * perColumn));
+        float lo = 1.0f, hi = -1.0f;
+        for (size_t age = newest; age < std::max(oldest, newest + 1); ++age) {
+            const float v = audio.at(signal, age);
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+        }
+        high[static_cast<size_t>(col)] = std::clamp(hi, -1.0f, 1.0f);
+        low[static_cast<size_t>(col)] = std::clamp(lo, -1.0f, 1.0f);
+    }
+    const float mid = r.cy(), half = r.h * 0.5f;
+    nvgSave(vg);
+    nvgScissor(vg, r.x, r.y, r.w, r.h);
+    nvgBeginPath(vg);
+    for (int col = 0; col < columns; ++col) {
+        const float px = r.x + r.w * static_cast<float>(col) / static_cast<float>(columns - 1);
+        const float py = mid - half * high[static_cast<size_t>(col)];
+        if (col == 0) nvgMoveTo(vg, px, py);
+        else nvgLineTo(vg, px, py);
+    }
+    for (int col = columns - 1; col >= 0; --col) {
+        const float px = r.x + r.w * static_cast<float>(col) / static_cast<float>(columns - 1);
+        nvgLineTo(vg, px, mid - half * low[static_cast<size_t>(col)] + 0.5f);
+    }
+    nvgClosePath(vg);
+    nvgFillColor(vg, colour);
+    nvgFill(vg);
+    nvgRestore(vg);
+}
+
+void oscilloscope(NVGcontext* vg, Rect r, const AudioHistory& audio, Signal signal, double seconds,
+                  double sampleRate, NVGcolor colour, float width) {
+    const size_t window = static_cast<size_t>(std::clamp(seconds * sampleRate, 2.0, AudioHistory::kFrames / 2.0));
+    // The newest rising zero crossing with a whole window after it, searched
+    // back by up to another window (a period of anything above 1 / seconds).
+    size_t start = window - 1;  // age of the first sample drawn
+    for (size_t age = window - 1; age + 1 < std::min(AudioHistory::kFrames, 2 * window); ++age)
+        if (audio.at(signal, age + 1) <= 0.0f && audio.at(signal, age) > 0.0f) {
+            start = age;
+            break;
+        }
+    const float mid = r.cy(), half = r.h * 0.5f;
+    const int points = std::max(2, static_cast<int>(std::min<double>(static_cast<double>(window), r.w * 2.0)));
+    nvgSave(vg);
+    nvgScissor(vg, r.x, r.y, r.w, r.h);
+    nvgBeginPath(vg);
+    for (int i = 0; i < points; ++i) {
+        const double along = static_cast<double>(i) / (points - 1) * static_cast<double>(window - 1);
+        const size_t age = start - std::min(start, static_cast<size_t>(along));
+        const float px = r.x + r.w * static_cast<float>(i) / static_cast<float>(points - 1);
+        const float py = mid - half * std::clamp(audio.at(signal, age), -1.0f, 1.0f);
+        if (i == 0) nvgMoveTo(vg, px, py);
+        else nvgLineTo(vg, px, py);
+    }
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStrokeColor(vg, colour);
+    nvgStrokeWidth(vg, width);
+    nvgStroke(vg);
+    nvgRestore(vg);
+}
+
+void reductionMeter(NVGcontext* vg, const Theme& t, Rect r, float db, float range) {
+    nvgSave(vg);
+    well(vg, t, r, 2.0f);
+    const Rect inner = r.inset(1.5f);
+    const float depth = std::clamp(std::fabs(db) / std::max(1.0f, range), 0.0f, 1.0f);
+    if (depth > 0.0f) {
+        nvgBeginPath(vg);
+        nvgRect(vg, inner.x, inner.y, inner.w, inner.h * depth);
+        nvgFillPaint(vg, nvgLinearGradient(vg, 0, inner.y, 0, inner.bottom(), rgb(t.accent), rgba(t.accent, 0.55f)));
+        nvgFill(vg);
+    }
     nvgRestore(vg);
 }
 

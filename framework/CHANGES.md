@@ -4,6 +4,70 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.10.0
+
+The editor toolkit. Nothing for a product to do unless its editor switches
+over `Widget` without a default (new kinds were added) or calls
+`ui().find(0)` to find a preset bar (it is now `kNoParam`). Every addition
+is used by declaring it.
+
+- **Layout** (`gui/Layout.h`, where `Rect` now lives): cut a strip off any
+  side of a rectangle (`cutTop(h, gap)`, ...), `Grid` cells and spans,
+  `row`/`column`, `centred`, and `panelBody(panel)` for what goes under a
+  panel's title. Constexpr, so layouts can be constants.
+- **Help and tooltips**: `.help("...")` on a parameter is its control's
+  tooltip, shown after the pointer rests for 0.6 s; `withTooltip()` gives
+  any control one.
+- **enabledWhen(rule)**: a control dims and takes no input while the rule
+  is false, checked every tick, letting go of whatever it held. Replaces
+  setting `enabled` from `animate()`.
+- **Controls**: `button(rect, label, action)`; `momentary(param, rect)`, on
+  while held; `xyPad(across, up, rect)`; `tabs(rect, labels)` with
+  `onPage(k)` / `onAllPages()` for what each page shows; `list(param,
+  rect)`, `list(rect, ListSource&)` and `presetList(rect)`; `keyboard(rect,
+  low, high)`, which plays notes through the processor (`EditorHost::
+  playNote`) and lights the keys held anywhere (`TelemetryFrame::keys`);
+  `envelope(rect, attack, decay, sustain, release)`, a handle per stage.
+- **Gestures over two parameters**: an XY pad's drag, an envelope's corner
+  and `ui().dragEdit(controlX, x, controlY, y)` (an EQ node) are one gesture
+  touching two parameters, each begun with its own first change, so an
+  axis that does not move never touches its automation. `ui-tests` now
+  allows two open at once, never two gestures.
+- **The audio, in the editor**: `static constexpr bool kAudioFeed = true;`
+  in the Processor copies the main input and output, as the host gives and
+  receives them, to an open editor (`core/AudioFeed.h`, lock-free); the
+  editor keeps 2.7 s of it (`audio()`, `gui/AudioHistory.h`) and its RMS
+  (`inputRms()`, `outputRms()`). `gui/Spectrum.h` analyses it (a small
+  radix-2 FFT, `core/Fft.h`; a full-scale sine reads 0 dB).
+- **Graphs** (`gui/Plot.h`, `widgets::`): `Axis` (linear, logarithmic),
+  `frequencyGrid`, `levelGrid`, `plot(f)` for responses and transfer
+  curves, `trace` of a `ValueHistory`, `spectrum`, `waveform` (scrolling),
+  `oscilloscope` (triggered), `reductionMeter`, and `meter` with RMS.
+- **Assets** (`PRODUCT_ASSETS` in product.cmake, `core/Assets.h`): files
+  compiled in and found by name. `drawSvg(vg, "logo.svg", rect, &tint)`
+  draws an SVG as vectors (nanosvg, zlib licence, fetched and pinned;
+  gradients with their first and last stops, no text or filters);
+  `drawImage` a PNG or JPEG (NanoVG's stb_image); a `.ttf` or `.otf` is a
+  font face named by its stem.
+- **Themes**: `setTheme(theme)` swaps the palette from the next frame.
+- **Files**: `fileDialogs()->open/save(options, done)`, never blocking the
+  host: zenity or kdialog on Linux, the common item dialog on a thread of
+  its own on Windows, NSOpenPanel/NSSavePanel on macOS. Files dropped on
+  the editor reach `acceptsDrop()` / `onDrop()`; a `.preset` dropped on an
+  editor with presets loads. The preset bar's menu imports and exports
+  preset files (`PresetLibrary::exportFile`).
+- **The automatic editor**: a product with `PRODUCT_EDITOR_SOURCES ""` gets
+  every parameter laid out by group, with the bypass, presets and meters
+  (`gui/AutoEditor.cpp`). The new `drive` example has no editor code.
+- **Tools**: `gui-preview --tooltip NAME`, `--page N`, `--play KEY`,
+  `--drop`; a control can be named by its label (`--focus Light`). It now
+  passes the audio feed and played notes through.
+- Not done: loudness (LUFS) metering, which needs the DSP library's
+  filters; following the system's light or dark setting; keyboard access
+  to an envelope's stages (Backspace resets them) and to a momentary
+  control. File dialogs and drops are verified on Linux only; the macOS
+  and Windows code builds in CI and has not been used by hand.
+
 ## 1.9.0
 
 Host integration. Nothing for a product to do: every addition is offered

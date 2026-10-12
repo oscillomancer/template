@@ -10,7 +10,9 @@ A new product is one command away and builds, passes every test and opens in
 a host as created. You then write three things: a parameter table, a
 processor and an editor layout. Host plumbing, sample-accurate automation,
 state, bypass, latency, telemetry, metering, gestures, keyboard access, text
-entry, menus, HiDPI and resizing are the framework's.
+entry, menus, tooltips, file dialogs and drops, HiDPI and resizing are the
+framework's. Skip the editor layout and the framework lays every parameter
+out for you.
 
 ## Start a product
 
@@ -32,16 +34,18 @@ product/
   Properties.h    state that is not a parameter (optional)
   Presets.h       factory presets (optional, with PRODUCT_PRESETS ON)
   Processor.h     the DSP
-  Editor.cpp      layout and the product's own drawing
+  Editor.cpp      layout and the product's own drawing (optional: the automatic editor)
   Theme.h         the palette
+  assets/         SVGs, images and fonts compiled in (optional, PRODUCT_ASSETS)
   test/           measured claims about the DSP
 framework/        shared, identical in every product -- change it in the template
 ```
 
 The starter product here is a utility filter (input gain, 12/24 dB/oct
 Butterworth low and high cuts, mix, output gain), bit-transparent at its
-defaults, with a live response graph whose handles drag. It shows every kind of
-control and every pattern the framework expects; replace it.
+defaults, with a live response graph whose handles drag over the output's
+spectrum, and a tooltip on every control. It shows the patterns the
+framework expects; replace it.
 
 `examples/` holds small products for what the starter does not use, each a
 starting point of its own (`-DEXAMPLE=<name>`) and each built and tested on
@@ -50,10 +54,11 @@ beside `framework/`, not in it, so products do not carry them.
 
 | Example | What it shows |
 | --- | --- |
-| `instrument` (Tone) | Notes at their exact sample, voices and voice info, note ends for the host, pitch bend and the mod wheel, tuning and volume note expressions, per-note modulation of a parameter, microtuning (MTS-ESP, CLAP tuning), a better oscillator for offline bounces |
-| `pulse` (Pulse) | A tempo-synced rate, framework-smoothed parameters, a level off at its minimum (-inf dB), an output parameter the host displays, factory presets in categories and the preset bar |
-| `duck` (Duck) | A sidechain input, a named aux output, surround (5.1, 7.1.4) and ambisonic layouts, the track's name and colour |
+| `instrument` (Tone) | Notes at their exact sample, voices and voice info, note ends for the host, pitch bend and the mod wheel, tuning and volume note expressions, per-note modulation of a parameter, microtuning (MTS-ESP, CLAP tuning), a better oscillator for offline bounces; an envelope editor and an on-screen keyboard |
+| `pulse` (Pulse) | A tempo-synced rate, framework-smoothed parameters, a level off at its minimum (-inf dB), an output parameter the host displays, factory presets in categories and the preset bar; tab pages, a preset browser, an XY pad, controls enabled by a rule, an SVG logo and a light and dark look |
+| `duck` (Duck) | A sidechain input, a named aux output, surround (5.1, 7.1.4) and ambisonic layouts, the track's name and colour; the audio scrolling by, gain reduction over time, RMS metering |
 | `chord` (Chord) | A note effect: notes and MIDI in and out, no audio, notes sent at exact frames; properties (a chord typed as text, a per-project label) and presets that set them; keys named by the chord they play |
+| `drive` (Drive) | A saturator with no editor code: the automatic editor, from groups and help text |
 
 Bigger capabilities are switched on in `product.cmake` (`PRODUCT_SIDECHAIN ON`,
 `PRODUCT_AUX_OUTPUTS "Kick" "Snare"`, `PRODUCT_NOTE_OUTPUT ON`, `PRODUCT_PRESETS ON`, `PRODUCT_TUNING ON`, ...); a product

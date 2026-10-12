@@ -9,6 +9,8 @@
 // adds its own payload by declaring Processor::Telemetry.
 #pragma once
 
+#include <cstdint>
+
 #include "core/Ring.h"
 #include "Processor.h"
 
@@ -21,6 +23,9 @@ struct TelemetryFrame {
     float inputPeak[kMeterChannels]{};   // linear sample peak since the previous frame
     float outputPeak[kMeterChannels]{};
     int channels = 0;
+    // Keys held down right now, from any source (the host, MIDI, the
+    // editor's keyboard): bit k of keys[k / 64]. A product with note input.
+    uint64_t keys[2]{};
     product::Processor::Telemetry product{};
 };
 

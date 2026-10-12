@@ -340,6 +340,12 @@ class ProcessorBase {
     // mode), which setup.offline and block.offline report. Others never ask.
     static constexpr bool kOfflineMode = false;
 
+    // An editor that draws the audio itself -- a scope, a spectrum -- says
+    // so here, and while it is open the framework copies the main input and
+    // output to it (core/AudioFeed.h, EditorBase::audio()). Others pay
+    // nothing.
+    static constexpr bool kAudioFeed = false;
+
     // Reported to the host at activation. If it changes while active the
     // framework asks the host to restart; until then the old value stands.
     int latencySamples() const { return 0; }

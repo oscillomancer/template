@@ -107,7 +107,13 @@ if (SUPPLE_BUILD_GUI)
         GIT_REPOSITORY https://github.com/memononen/nanovg.git
         GIT_TAG ce3bf745eb2d2dbc14a50bf2446783f691ac4353
         GIT_SHALLOW OFF)
-    FetchContent_MakeAvailable(pugl nanovg)
+    # SVG for the editor's pictures (gui/Images.h): parsed, never rasterized.
+    FetchContent_Declare(nanosvg
+        GIT_REPOSITORY https://github.com/memononen/nanosvg.git
+        GIT_TAG 239e102ec2c691f2902e20ace2ed36ee4a35cfe6
+        GIT_SHALLOW OFF
+        SOURCE_SUBDIR none)  # header-only here; its own CMake builds nothing we use
+    FetchContent_MakeAvailable(pugl nanovg nanosvg)
     # Classes with the same product name may live in both CLAP and VST3
     # modules. NULL selects another module's class; keep creation and cleanup
     # tied to the DLL that registered it, so unloading one cannot strand a
@@ -236,6 +242,11 @@ if (SUPPLE_BUILD_GUI)
         set_source_files_properties(${nanovg_metal_SOURCE_DIR}/src/nanovg_mtl.m
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     endif()
+
+    add_library(supple-nanosvg STATIC ${SUPPLE_FRAMEWORK}/gui/nanosvg.c)
+    target_include_directories(supple-nanosvg SYSTEM PUBLIC ${nanosvg_SOURCE_DIR}/src)
+    set_target_properties(supple-nanosvg PROPERTIES C_STANDARD 99)
+    supple_vendored(supple-nanosvg)
 
     # Fonts, compiled in: a plugin has nowhere reliable to load a file from.
     # One library, so no generated source belongs to two targets (which races

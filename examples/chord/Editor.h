@@ -21,12 +21,10 @@ class Editor : public supple::gui::EditorBase {
     explicit Editor(supple::gui::EditorHost& host);
     void paint(NVGcontext* vg) override;
     void onTelemetry(const supple::TelemetryFrame& frame) override;
-    void animate(double seconds) override;
 
   private:
     void drawKeys(NVGcontext* vg, supple::gui::Rect r);
 
-    int intervals_ = -1;  // the Intervals field, usable only for the Custom shape
     int16_t last_[Processor::kMaxNotes] = {-1, -1, -1, -1, -1, -1};
 };
 

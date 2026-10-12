@@ -41,6 +41,7 @@ PuglCursor puglCursorOf(Cursor c) {
         case Cursor::Caret: return PUGL_CURSOR_CARET;
         case Cursor::LeftRight: return PUGL_CURSOR_LEFT_RIGHT;
         case Cursor::UpDown: return PUGL_CURSOR_UP_DOWN;
+        case Cursor::Move: return PUGL_CURSOR_ALL_SCROLL;
         case Cursor::Arrow: break;
     }
     return PUGL_CURSOR_ARROW;
@@ -104,6 +105,9 @@ bool Window::create() {
     // Repeat is wanted: holding an arrow key is one gesture, which Ui closes
     // a quarter second after the last repeat.
     puglSetViewHint(view_, PUGL_IGNORE_KEY_REPEAT, PUGL_FALSE);
+    // Files dropped on the editor arrive as a URI list on every platform.
+    puglSetViewHint(view_, PUGL_ACCEPT_DROP, PUGL_TRUE);
+    puglRegisterDropType(view_, "text/uri-list");
     puglSetSizeHint(view_, PUGL_DEFAULT_SIZE, static_cast<PuglSpan>(width_), static_cast<PuglSpan>(height_));
     puglSetSizeHint(view_, PUGL_CURRENT_SIZE, static_cast<PuglSpan>(width_), static_cast<PuglSpan>(height_));
     if (minW_ && maxW_) setSizeLimits(minW_, minH_, maxW_, maxH_);
@@ -227,6 +231,7 @@ void Window::frame() {
     const double elapsed = haveIdle_ ? std::chrono::duration<double>(now - lastIdle_).count() : 1.0 / 60.0;
     lastIdle_ = now;
     haveIdle_ = true;
+    if (files_) files_->poll();  // a dialog that finished hands over its paths
     editor_.idle(std::min(elapsed, 0.25));
     if (realized_ && editor_.needsRepaint()) puglObscureView(view_);
 }
@@ -285,10 +290,14 @@ void Window::handleEvent(const void* eventPointer) {
             }
             realized_ = true;
             haveIdle_ = false;
+            files_ = std::make_unique<NativeFiles>(puglGetNativeView(view_));
+            editor_.setFileDialogs(files_.get());
             break;
 
         case PUGL_UNREALIZE:
             editor_.setClipboard(nullptr);
+            editor_.setFileDialogs(nullptr);
+            files_.reset();  // a dialog still open closes with the editor
             paste_ = nullptr;
             editor_.detach();
             if (vg_) canvasDestroy(vg_);
@@ -358,9 +367,23 @@ void Window::handleEvent(const void* eventPointer) {
         case PUGL_FOCUS_OUT: editor_.focusLost(); break;
 
         case PUGL_DATA_OFFER: {
-            // Only text, and only when the editor asked for it: a drop or a
-            // stray offer is refused.
             const PuglDataOfferEvent& offer = e->offer;
+            if (offer.clipboard == PUGL_CLIPBOARD_DRAG) {
+                // Files, where the editor takes them.
+                const uint32_t types = puglGetNumClipboardTypes(view_, offer.clipboard);
+                bool accepted = false;
+                for (uint32_t i = 0; i < types && !accepted; ++i) {
+                    const char* type = puglGetClipboardType(view_, offer.clipboard, i);
+                    if (type && !std::strcmp(type, "text/uri-list") &&
+                        editor_.dropOver(toDesignX(offer.x), toDesignY(offer.y)))
+                        accepted = puglAcceptOffer(view_, &offer, i, PUGL_DATA_ACTION_COPY, 0, 0, width_, height_) ==
+                                   PUGL_SUCCESS;
+                }
+                if (!accepted) puglRejectOffer(view_, &offer, 0, 0, width_, height_);
+                break;
+            }
+            // Only text, and only when the editor asked for it: a stray
+            // offer is refused.
             const uint32_t types = puglGetNumClipboardTypes(view_, offer.clipboard);
             bool accepted = false;
             for (uint32_t i = 0; paste_ && offer.clipboard == PUGL_CLIPBOARD_GENERAL && i < types && !accepted; ++i) {
@@ -379,6 +402,12 @@ void Window::handleEvent(const void* eventPointer) {
         case PUGL_DATA: {
             size_t length = 0;
             const void* data = puglGetClipboard(view_, e->data.clipboard, e->data.typeIndex, &length);
+            if (e->data.clipboard == PUGL_CLIPBOARD_DRAG) {
+                if (data)
+                    editor_.drop(toDesignX(e->data.x), toDesignY(e->data.y),
+                                 pathsFromUriList(std::string_view(static_cast<const char*>(data), length)));
+                break;
+            }
             auto done = std::move(paste_);
             paste_ = nullptr;
             if (done && data) {

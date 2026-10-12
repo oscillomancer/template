@@ -33,17 +33,11 @@ Editor::Editor(EditorHost& host) : EditorBase(host, kTheme, kEditorWidth, kEdito
     ui().textField(kLabel, {148, 17, 150, 26}).withLabel("Label this instance");
     ui().presetBar({kEditorWidth - 24 - 296, 16, 296, 28});
     ui().segmented(kShape, {kChordPanel.x + 16, kChordPanel.y + 48, 440, 28});
-    intervals_ = ui().count();
-    ui().textField(kIntervals, {kChordPanel.x + 16, kChordPanel.y + 88, 200, 26}).withLabel("0 4 7 11");
+    // Typed intervals only mean anything for the Custom shape.
+    ui().textField(kIntervals, {kChordPanel.x + 16, kChordPanel.y + 88, 200, 26})
+        .withLabel("0 4 7 11")
+        .enabledWhen([this] { return static_cast<int>(plain(kShape)) == kCustomShape; });
     ui().knob(kStrum, {kChordPanel.right() - 112, kChordPanel.y + 36, 96, 102});
-}
-
-void Editor::animate(double) {
-    const bool custom = static_cast<int>(plain(kShape)) == kCustomShape;
-    if (ui().control(intervals_).enabled != custom) {
-        ui().control(intervals_).enabled = custom;
-        markDirty();
-    }
 }
 
 std::unique_ptr<EditorBase> createEditor(EditorHost& host) { return std::make_unique<Editor>(host); }

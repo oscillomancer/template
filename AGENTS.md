@@ -24,9 +24,9 @@ Supple Audio product, plus a starter product in `product/` that exercises it.
   themselves skipped elsewhere.
 - **Changing the starter product?** It exists to show patterns, not to ship.
   Keep it small and bit-transparent at its defaults. It uses knobs, toggles,
-  a segmented control and a custom drag; `ui-tests` covers the other kinds
-  (sliders, dropdown) on a synthetic layout, but the preview shows only what
-  the starter uses.
+  a segmented control, a custom drag and a spectrum; `ui-tests` covers the
+  other kinds (sliders, dropdown, buttons, XY pad, tabs, lists, keyboard,
+  envelope) on a synthetic layout, and the examples show them.
 
 ## The examples
 
@@ -40,21 +40,30 @@ name, ID and codes, which `new_product` then refuses to reuse.
   bend and mod wheel, `PRODUCT_NOTE_EXPRESSIONS tuning volume`, a
   `polyModulatable()` Level, microtuning (`PRODUCT_TUNING`: MTS-ESP and CLAP
   tuning through `retuning()`), and `kOfflineMode`: bounces get a
-  band-limited triangle, measured against the live, naive one.
+  band-limited triangle, measured against the live, naive one. An ADSR
+  dragged on an `envelope()`, and an on-screen `keyboard()` that plays the
+  processor and lights whatever is held.
 - `pulse` (Pulse): a tremolo and auto-pan. Tempo sync (`noteValue`, the
   song position when playing), `smoothed()` parameters read from
   `Block::smoothed`, an `offAtMinimum()` level, degrees, an `output()`
   parameter shown in a readout and sent to the host, and `PRODUCT_PRESETS`:
-  factory presets in categories and the preset bar.
+  factory presets in categories and the preset bar. Its editor shows the
+  toolkit: two `tabs()` pages, a `presetList()`, an `xyPad()` for depth and
+  stereo phase, rates `enabledWhen()` sync says so, an SVG logo and icons
+  (`PRODUCT_ASSETS`), and a light and a dark `Theme`.
 - `duck` (Duck): a ducker keyed from `PRODUCT_SIDECHAIN`, with what it
   removes on an aux output (`PRODUCT_AUX_OUTPUTS "Ducked"`), in stereo,
   mono, 5.1, 7.1.4 and first-order ambisonics. Its header shows the track's
-  name and colour, as the host gives them.
+  name and colour, as the host gives them; `kAudioFeed` gives its editor the
+  audio, drawn scrolling by with the gain reduction over it, and RMS meters.
 - `chord` (Chord): a `note-effect`. Notes and MIDI in and out, no audio, a
   strum that sends notes at exact frames, every input note retired.
   Properties: a Custom chord typed as text and parsed in `property()`, and
   a `perProject()` label; presets that set them. Note names: each key is
   named by the chord it plays, renamed when Shape changes.
+- `drive` (Drive): a saturator with no editor code (`PRODUCT_EDITOR_SOURCES
+  ""`): the automatic editor, laid out from the parameters' groups, with
+  their help as tooltips, presets and an output readout.
 
 ## The starter product
 
@@ -63,7 +72,8 @@ each with an enable toggle that crossfades over 15 ms), Slope (12 or 24 dB/oct
 Butterworth, crossfaded), Mix (dry/wet, latency-compensated by `DryWet` though
 the latency is zero), Output Gain after the mix, and the framework's Bypass.
 No latency, no tail, no restart parameters. The editor draws the exact
-response with the processor's own filter math; the cutoff handles drag
-through `Ui::dragEdit`. `product/test/processor_test.cpp` measures the
+response with the processor's own filter math, over the output's spectrum
+(`kAudioFeed`); the cutoff handles drag through `Ui::dragEdit`; every
+parameter's `help()` is its tooltip. `product/test/processor_test.cpp` measures the
 Butterworth slopes, gains, mix, click-free switching and finiteness at every
 sample rate.

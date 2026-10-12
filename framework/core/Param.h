@@ -129,6 +129,7 @@ struct ParamDef {
     double smoothing = 0.0;          // ms the framework glides it over; 0 when it does not
     Formatter formatter = nullptr;   // custom text, with parser; null for the unit's
     Parser parser = nullptr;
+    const char* description = nullptr;  // a sentence of help: the editor's tooltip
 
     // Modifiers. Each returns an adjusted copy, so a table reads as one
     // expression per parameter: frequency(...).in("Filter").modulatable().
@@ -136,6 +137,9 @@ struct ParamDef {
     constexpr ParamDef shortLabel(const char* text) const { ParamDef p = *this; p.label = text; return p; }
     constexpr ParamDef decimals(int digits) const { ParamDef p = *this; p.precision = digits; return p; }
     constexpr ParamDef unitText(const char* text) const { ParamDef p = *this; p.suffix = text; return p; }
+    // What it does, in a sentence: the editor shows it as the control's
+    // tooltip. Hosts have nowhere to show it.
+    constexpr ParamDef help(const char* text) const { ParamDef p = *this; p.description = text; return p; }
     constexpr ParamDef modulatable() const { return with(pflag::kModulatable); }
     // Modulatable per note as well (CLAP polyphonic modulation): the host
     // may modulate each voice apart, and the processor receives it through

@@ -888,6 +888,13 @@ struct Plugin : StateAccess
         log(severity, text.c_str());
     }
 
+    void playNote(int key, double velocity, bool on) override {
+        engine.playNote(key, velocity, on);  // played at the start of the next block
+    }
+    size_t readAudio(FeedFrame* out, size_t max) override {
+        AudioFeed* feed = engine.feed();
+        return feed ? feed->read(out, max) : 0;
+    }
     bool popTelemetry(TelemetryFrame& frame) override { return engine.telemetry().pop(frame); }
     int latencySamples() const override { return engine.latency(); }
     double sampleRate() const override { return engine.sampleRate(); }

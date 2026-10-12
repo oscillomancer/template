@@ -227,6 +227,10 @@ bool PresetLibrary::loadFile(const fs::path& file) {
     return true;
 }
 
+bool PresetLibrary::exportFile(const fs::path& file) {
+    return !file.empty() && writeFile(file, state_.saveState(state::Context::Preset));
+}
+
 bool PresetLibrary::loadDefaults() {
     if (!apply(defaultsBlob())) return false;
     loaded(-1, "Default");

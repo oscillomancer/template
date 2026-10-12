@@ -1297,6 +1297,81 @@ TEST(a_processor_says_when_its_note_names_change) {
     CHECK(e->takeNoteNamesChange() && !e->takeNoteNamesChange());
 }
 
+// --- what the editor plays and sees ----------------------------------------------------------
+
+namespace {
+// Halves its input, and asks for the audio feed.
+class FeedProbe : public ProcessorBase<FeedProbe> {
+  public:
+    static constexpr bool kAudioFeed = true;
+    void prepare(const ProcessSetup&, const ParamValues&) {}
+    void update(const ParamValues&) {}
+    void process(Block& b) {
+        for (int c = 0; c < b.channels; ++c)
+            for (int i = 0; i < b.frames; ++i) b.channel(c)[i] *= 0.5;
+    }
+};
+}  // namespace
+
+TEST(the_editor_gets_the_input_and_output_only_while_it_is_open) {
+    auto e = std::make_unique<BasicEngine<FeedProbe>>();
+    e->activate(48000.0, 64, 2, 2);
+    CHECK(e->feed() != nullptr);
+    std::vector<double> l(64), r(64);
+    auto fill = [&] {
+        for (size_t i = 0; i < 64; ++i) l[i] = r[i] = 0.01 * static_cast<double>(i);
+    };
+    double* io[] = {l.data(), r.data()};
+    fill();
+    e->process<double>(io, io, 64);
+    FeedFrame frames[256];
+    CHECK(e->feed()->read(frames, 256) == 0);  // nobody is looking
+    e->setMetering(true);
+    fill();
+    e->process<double>(io, io, 64);  // in place: the input is gone by the end
+    CHECK(e->feed()->read(frames, 256) == 64);
+    bool exact = true;
+    for (size_t i = 0; i < 64; ++i) {
+        const float in = static_cast<float>(0.01 * static_cast<double>(i));
+        exact = exact && frames[i].in[0] == in && frames[i].in[1] == in;
+        exact = exact && frames[i].out[0] == static_cast<float>(0.5 * 0.01 * static_cast<double>(i));
+    }
+    CHECK(exact);
+    // A processor that did not ask has none.
+    auto plain = std::make_unique<BasicEngine<SessionProbe>>();
+    plain->activate(48000.0, 64, 2, 2);
+    CHECK(plain->feed() == nullptr);
+}
+
+TEST(the_editors_notes_play_at_the_next_block_and_held_keys_reach_telemetry) {
+    auto e = std::make_unique<BasicEngine<SessionProbe>>();
+    e->activate(48000.0, 512, 2, 2);
+    e->setMetering(true);
+    std::vector<double> l(512), r(512);
+    double* io[] = {l.data(), r.data()};
+    // Long enough for a telemetry frame at any product's rate.
+    auto run = [&] {
+        for (int b = 0; b < 8; ++b) e->process<double>(io, io, 512);
+    };
+    e->playNote(64, 0.5, true);
+    run();
+    if (!product::info::kNoteInput) {
+        CHECK(e->processor().notes == 0);  // nothing to play it on
+        std::printf("      (no note input in this product)\n");
+        return;
+    }
+    CHECK(e->processor().notes == 1 && e->processor().keys[0] == 64);
+    TelemetryFrame f{}, next{};
+    CHECK(e->telemetry().pop(f));
+    while (e->telemetry().pop(next)) f = next;
+    CHECK(f.keys[1] == uint64_t{1} << (64 - 64) && f.keys[0] == 0);
+    e->playNote(64, 0.0, false);
+    run();
+    CHECK(e->processor().notes == 2);
+    while (e->telemetry().pop(next)) f = next;
+    CHECK(f.keys[0] == 0 && f.keys[1] == 0);
+}
+
 // --- presets ---------------------------------------------------------------------------------
 
 namespace {

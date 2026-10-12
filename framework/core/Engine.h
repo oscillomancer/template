@@ -37,15 +37,20 @@
 //   - what the host says about the session: offline rendering (setOffline),
 //     a tuning (setTuning: unmapped keys never reach the processor), and
 //     when the processor's note names changed.
+//   - what the editor plays and sees: notes from its keyboard (playNote),
+//     the keys held (in telemetry), and the audio itself for a processor
+//     that declared kAudioFeed (feed()), each only while an editor is open.
 #pragma once
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <string_view>
 #include <vector>
 
+#include "core/AudioFeed.h"
 #include "core/Denormals.h"
 #include "core/Dsp.h"
 #include "core/ParamTable.h"
@@ -190,6 +195,13 @@ class BasicEngine {
             glides_[k].log = p.taper == Taper::Log;
             glidePointers_[k] = glideBuffer_.data() + k * static_cast<size_t>(maxBlock_);
         }
+        editorNotes_.clear();
+        for (auto& k : held_) k = 0;
+        if constexpr (P::kAudioFeed) {
+            if (!feed_) feed_ = std::make_unique<AudioFeed>();
+            feed_->clear();
+            feedIn_.assign(2, std::vector<float>(frames, 0.0f));
+        }
         // Outputs start from their defaults, for the host and the editor.
         for (uint16_t i : params::kOutputIndices) {
             outputs_[i] = params::at(i).def;
@@ -248,6 +260,20 @@ class BasicEngine {
     void setOffline(bool on) { offline_.store(on, std::memory_order_relaxed); }
     bool offline() const { return offline_.load(std::memory_order_relaxed); }
     TelemetryRing& telemetry() { return telemetry_; }
+    // The audio for an open editor, for a processor that declared
+    // kAudioFeed (after the first activation); null otherwise.
+    AudioFeed* feed() { return feed_.get(); }
+    // Main thread (the editor's keyboard): a note for the processor, played
+    // at the start of the next block on port 0, channel 0, with no note ID.
+    // Ignored without note input, and dropped when 64 are already waiting.
+    void playNote(int key, double velocity, bool on) {
+        if constexpr (product::info::kNoteInput) {
+            if (key < 0 || key > 127) return;
+            editorNotes_.push({static_cast<int16_t>(key), on, static_cast<float>(std::clamp(velocity, 0.0, 1.0))});
+        } else {
+            (void)key, (void)velocity, (void)on;
+        }
+    }
 
     // Latency reported to the host at the last activation. It may not change
     // until the next one; restartWanted() says when it should.
@@ -346,6 +372,18 @@ class BasicEngine {
             countdown_ = period_;
             resetPeaks();
         }
+        if constexpr (product::info::kNoteInput) {
+            EditorNote n;
+            while (editorNotes_.pop(n)) {
+                EngineEvent note;
+                note.type = EngineEvent::Type::Note;
+                note.note.type = n.on ? NoteEvent::Type::On : NoteEvent::Type::Off;
+                note.note.key = n.key;
+                note.note.velocity = n.velocity;
+                noteOutput_.setOffset(0);
+                apply(note);
+            }
+        }
 
         EngineEvent e;
         bool pending = events.next(e);
@@ -421,6 +459,7 @@ class BasicEngine {
             if (!active_) return;
             commit();  // a note sees every parameter change stamped before it
             if (e.type == Type::Note) {
+                hold(e.note);
                 // A key the tuning leaves unmapped is not played, and the
                 // host hears at once that the note is over.
                 if (tuning_ && e.note.type == NoteEvent::Type::On && !tuning_->plays(e.note.key, e.note.channel)) {
@@ -461,6 +500,20 @@ class BasicEngine {
             modulation_[i].store(mod_[i], std::memory_order_relaxed);
         }
         refresh(i);
+    }
+
+    // Which keys are down, for the editor's keyboard.
+    void hold(const NoteEvent& n) {
+        const bool any = n.key < 0 || n.key > 127;
+        if (n.type == NoteEvent::Type::On) {
+            if (!any && held_[n.key] < 255) ++held_[n.key];
+        } else if (any) {
+            for (auto& k : held_) k = 0;
+        } else if (n.type == NoteEvent::Type::Choke) {
+            held_[n.key] = 0;
+        } else if (held_[n.key] > 0) {
+            --held_[n.key];
+        }
     }
 
     void commit() {
@@ -574,6 +627,9 @@ class BasicEngine {
                 const T* src = in[c] + offset;
                 for (int i = 0; i < n; ++i) s[i] = static_cast<double>(src[i]);
                 if (metering && c < kMeterChannels) inputPeak_[c] = std::max(inputPeak_[c], peak(s, n));
+                // The input as the host gave it, before processing in place.
+                if (P::kAudioFeed && metering && c < 2)
+                    for (int i = 0; i < n; ++i) feedIn_[static_cast<size_t>(c)][static_cast<size_t>(i)] = static_cast<float>(src[i]);
             } else {
                 std::fill(s, s + n, 0.0);
             }
@@ -656,7 +712,23 @@ class BasicEngine {
         if (metering) {
             for (int c = 0; c < std::min(channelsOut_, kMeterChannels); ++c)
                 if (out[c]) outputPeak_[c] = std::max(outputPeak_[c], peakOf(out[c] + offset, n));
+            if constexpr (P::kAudioFeed) feedOut(out, offset, n, inputs);
         }
+    }
+
+    // Input and output to the editor; a mono bus fills both channels.
+    template <class T>
+    void feedOut(T* const* out, int offset, int n, int inputs) {
+        if (!feed_ || channelsOut_ == 0) return;
+        const int ins = std::min(inputs, 2);
+        const T* o0 = out[0];
+        const T* o1 = channelsOut_ > 1 ? out[1] : out[0];
+        feed_->produce(static_cast<size_t>(n), [&](FeedFrame& f, size_t k) {
+            f.in[0] = ins > 0 ? feedIn_[0][k] : 0.0f;
+            f.in[1] = ins > 1 ? feedIn_[1][k] : f.in[0];
+            f.out[0] = o0 ? static_cast<float>(o0[offset + static_cast<int>(k)]) : 0.0f;
+            f.out[1] = o1 ? static_cast<float>(o1[offset + static_cast<int>(k)]) : 0.0f;
+        });
     }
 
     // Each connected aux output channel the host gave, with its scratch.
@@ -733,6 +805,8 @@ class BasicEngine {
             f.inputPeak[c] = static_cast<float>(inputPeak_[c]);
             f.outputPeak[c] = static_cast<float>(outputPeak_[c]);
         }
+        for (int k = 0; k < 128; ++k)
+            if (held_[k]) f.keys[k >> 6] |= uint64_t{1} << (k & 63);
         processor_.captureTelemetry(f.product);
         telemetry_.push(f);  // full: the editor stalled; this frame is dropped
         resetPeaks();
@@ -795,6 +869,15 @@ class BasicEngine {
     double inputPeak_[kMeterChannels]{};
     double outputPeak_[kMeterChannels]{};
     TelemetryRing telemetry_;
+    struct EditorNote {
+        int16_t key = 60;
+        bool on = true;
+        float velocity = 1.0f;
+    };
+    Ring<EditorNote, 6> editorNotes_;
+    uint8_t held_[128]{};
+    std::unique_ptr<AudioFeed> feed_;
+    std::vector<std::vector<float>> feedIn_;  // [channel][frame]: this split's input
 };
 
 using Engine = BasicEngine<product::Processor>;

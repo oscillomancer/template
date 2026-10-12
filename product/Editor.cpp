@@ -69,6 +69,21 @@ Editor::Editor(EditorHost& host) : EditorBase(host, kTheme, kEditorWidth, kEdito
 
 std::unique_ptr<EditorBase> createEditor(EditorHost& host) { return std::make_unique<Editor>(host); }
 
+// --- the spectrum ---------------------------------------------------------------------------
+
+void Editor::onAudio(size_t) { fresh_ = true; }
+
+void Editor::animate(double seconds) {
+    // At most 30 analyses a second, and only while there is audio to see.
+    sinceAnalysis_ += seconds;
+    if (!fresh_ || sinceAnalysis_ < 1.0 / 30.0) return;
+    const double rate = host().sampleRate() > 0.0 ? host().sampleRate() : 48000.0;
+    spectrum_.analyse(audio(), Signal::output(), rate, sinceAnalysis_);
+    sinceAnalysis_ = 0.0;
+    fresh_ = false;
+    markDirty();
+}
+
 // --- graph geometry -----------------------------------------------------------------------
 
 float Editor::xOf(double hz) const {
@@ -190,6 +205,12 @@ void Editor::paintResponse(NVGcontext* vg) {
         w::number(vg, graph_.x - 10.0f, y, db == 0 ? "0" : text, 9.5f, rgb(t.textFaint), w::Align::Right, false);
     }
     w::label(vg, graph_.x - 10.0f, graph_.bottom() + 14.0f, "Hz", 9.5f, rgb(t.textFaint), w::Align::Right);
+
+    // What is playing, under the curve: the output's spectrum, its 0 dBFS
+    // at the graph's +12 line, falling 60 dB to its floor.
+    const Axis hz = Axis::logarithmic(kMinHz, kMaxHz, graph_.x, graph_.right());
+    const Axis level = Axis::linear(-60.0, 0.0, graph_.bottom(), yOf(kTopDb));
+    w::spectrum(vg, graph_, spectrum_, hz, level, rgba(t.accent2, 0.7f));
 
     // The curve, one point per two design units, clipped to the well.
     nvgSave(vg);

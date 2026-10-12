@@ -18,8 +18,9 @@ namespace w = supple::gui::widgets;
 
 namespace {
 constexpr Rect kVoicePanel{24, 76, 448, 150};
-constexpr Rect kShapePanel{24, 242, 448, 114};
-constexpr Rect kLevelPanel{488, 76, 208, 280};
+constexpr Rect kShapePanel{24, 242, 448, 150};
+constexpr Rect kLevelPanel{488, 76, 208, 316};
+constexpr Rect kKeysPanel{24, 408, 672, 86};
 
 const char* noteName(int key, char* out, size_t size) {
     static const char* names[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
@@ -30,11 +31,15 @@ const char* noteName(int key, char* out, size_t size) {
 
 Editor::Editor(EditorHost& host) : EditorBase(host, kTheme, kEditorWidth, kEditorHeight) {
     for (auto& k : keys_) k = -1;
-    ui().segmented(kWaveform, {kShapePanel.x + 16, kShapePanel.y + 48, 150, 28});
-    ui().knob(kAttack, {kShapePanel.x + 200, kShapePanel.y + 6, 96, 102});
-    ui().knob(kRelease, {kShapePanel.x + 320, kShapePanel.y + 6, 96, 102});
+    // The Sound panel: the waveform's switch on the left, the envelope's
+    // four stages dragged on its curve in the rest.
+    Rect sound = panelBody(kShapePanel);
+    ui().segmented(kWaveform, sound.cutLeft(140.0f, 16.0f).centred(140.0f, 28.0f));
+    ui().envelope(sound, kAttack, kDecay, kSustain, kRelease);
     ui().knob(kLevel, {kLevelPanel.x + 16, kLevelPanel.y + 44, 110, 120});
     ui().knob(kBendRange, {kLevelPanel.x + 24, kLevelPanel.y + 172, 94, 100});
+    // Played with the pointer; lit by whatever is held, from anywhere.
+    ui().keyboard(kKeysPanel.inset(16.0f, 12.0f), 36, 84);
 }
 
 std::unique_ptr<EditorBase> createEditor(EditorHost& host) { return std::make_unique<Editor>(host); }
@@ -97,7 +102,8 @@ void Editor::paint(NVGcontext* vg) {
 
     w::panel(vg, t, kShapePanel, "Sound");
     w::panel(vg, t, kLevelPanel, "Output");
-    w::meter(vg, t, {kLevelPanel.right() - 58, kLevelPanel.y + 48, 38, 200}, outputMeters(), meterChannels());
+    w::meter(vg, t, {kLevelPanel.right() - 58, kLevelPanel.y + 48, 38, 236}, outputMeters(), meterChannels());
+    w::panel(vg, t, kKeysPanel);
     drawControls(vg);
 }
 

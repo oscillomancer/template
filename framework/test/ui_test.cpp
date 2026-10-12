@@ -7,20 +7,30 @@
 // repaint follows changes from anywhere, and the layout is sane.
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <random>
+#include <set>
 #include <string>
 
 #include "Check.h"
 #include "HeadlessCanvas.h"
+#include "core/Assets.h"
 #include "core/Engine.h"
+#include "core/Fft.h"
 #include "core/ParamTable.h"
 #include "core/Preset.h"
 #include "core/PresetLibrary.h"
 #include "core/PropertyTable.h"
 #include "gui/EditorBase.h"
+#include "gui/Images.h"
+#include "gui/Layout.h"
+#include "gui/NativeFiles.h"
+#include "gui/Plot.h"
+#include "gui/Spectrum.h"
+#include "gui/Widgets.h"
 #include "ProductInfo.h"
 #include "gui/Ui.h"
 
@@ -123,11 +133,30 @@ struct MockHost : EditorHost, StateAccess {
         return true;
     }
 
+    // Notes the keyboard plays: every one it starts must end.
+    std::multiset<int> held;
+    int noteOns = 0, noteOffs = 0;
+    bool strayNoteOff = false;
+    double lastVelocity = 0.0;
+    void playNote(int key, double velocity, bool on) override {
+        if (on) {
+            held.insert(key);
+            ++noteOns;
+            lastVelocity = velocity;
+        } else if (const auto it = held.find(key); it != held.end()) {
+            held.erase(it);
+            ++noteOffs;
+        } else {
+            strayNoteOff = true;
+        }
+    }
+
     bool popTelemetry(TelemetryFrame& f) override { return ring.pop(f); }
     int latencySamples() const override { return 0; }
     double sampleRate() const override { return 48000.0; }
 
-    bool clean() const { return !nested && !strayEnd && !valueOutsideGesture && maxOpen <= 1; }
+    // One gesture at a time; two parameters in it at most (an XY pad).
+    bool clean() const { return !nested && !strayEnd && !valueOutsideGesture && maxOpen <= 2 && !strayNoteOff; }
 };
 
 int findParam(bool (*want)(const ParamDef&)) {
@@ -726,6 +755,401 @@ TEST(settings_copy_and_paste_through_the_clipboard) {
     CHECK(host.values[i] == changed);
 }
 
+// --- layout -------------------------------------------------------------------------------
+
+TEST(cutting_and_grids_lay_a_panel_out_without_arithmetic) {
+    Rect area{10, 20, 300, 200};
+    const Rect top = area.cutTop(40, 10);
+    CHECK(top.x == 10 && top.y == 20 && top.w == 300 && top.h == 40);
+    CHECK(area.y == 70 && area.h == 150);
+    const Rect right = area.cutRight(100, 20);
+    CHECK(right.x == 210 && right.w == 100 && area.w == 180);
+    const Rect left = area.cutLeft(1000);  // more than there is: all of it
+    CHECK(left.w == 180 && area.w == 0);
+    const Grid g({0, 0, 320, 100}, 3, 2, 10);
+    CHECK(g.cellWidth() == 100 && g.cellHeight() == 45);
+    CHECK(g.cell(2, 1).x == 220 && g.cell(2, 1).y == 55);
+    CHECK(g.span(0, 1, 3, 1).w == 320);
+    CHECK(g[4].x == g.cell(1, 1).x && g[4].y == g.cell(1, 1).y);
+    const Rect body = panelBody({0, 0, 200, 100});
+    CHECK(body.x == 16 && body.y == 44 && body.right() == 184 && body.bottom() == 84);
+    CHECK((Rect{0, 0, 100, 50}.centred(20, 10).x == 40));
+    const Axis hz = Axis::logarithmic(20.0, 20000.0, 0.0f, 300.0f);
+    CHECK_NEAR(hz.at(632.455), 150.0f, 0.01f);
+    CHECK_NEAR(hz.value(hz.at(1234.0)), 1234.0, 0.01);
+}
+
+// --- tooltips, rules, buttons, pages --------------------------------------------------------
+
+TEST(a_tooltip_shows_after_a_still_moment_and_goes_with_the_pointer) {
+    MockHost host;
+    Ui ui(host, 800.0f, 600.0f);
+    ui.button({20, 20, 100, 30}, "Load", [] {}).withTooltip("Load a file.");
+    ui.pointerMove(50, 30, 0);
+    ui.idle(0.3);
+    CHECK(!ui.tooltip().open);
+    ui.idle(0.4);
+    CHECK(ui.tooltip().open && ui.tooltip().text == "Load a file.");
+    ui.pointerMove(400, 400, 0);  // off it
+    CHECK(!ui.tooltip().open);
+    ui.pointerMove(50, 30, 0);
+    ui.idle(1.0);
+    CHECK(ui.tooltip().open);
+    ui.pointerDown(50, 30, 0, 0, false);  // using it dismisses it, until the next hover
+    CHECK(!ui.tooltip().open);
+    ui.idle(1.0);
+    CHECK(!ui.tooltip().open);
+
+    // A parameter's help() is its control's tooltip, titled with its name.
+    int helped = -1;
+    for (size_t i = 0; i < params::kCount && helped < 0; ++i)
+        if (params::at(i).description && !params::at(i).isOutput() && !params::at(i).is(pflag::kHidden))
+            helped = static_cast<int>(i);
+    if (helped < 0) {
+        std::printf("      (no help text in this product)\n");
+        return;
+    }
+    Ui other(host, 800.0f, 600.0f);
+    other.knob(params::at(static_cast<size_t>(helped)).id, {20, 20, 100, 120});
+    other.pointerMove(60, 60, 0);
+    other.idle(0.7);
+    CHECK(other.tooltip().open && other.tooltip().title == params::at(static_cast<size_t>(helped)).name);
+    CHECK(other.tooltip().text == params::at(static_cast<size_t>(helped)).description);
+}
+
+TEST(enabled_when_follows_its_rule_and_a_disabled_control_lets_go) {
+    Bench b;
+    if (b.knob < 0) return;
+    bool allowed = true;
+    b.ui.control(b.knob).enabledWhen([&] { return allowed; });
+    b.ui.pointerDown(70, 50, 0, 0, false);
+    b.ui.pointerMove(70, 20, 0);
+    CHECK(b.host.openCount == 1);
+    allowed = false;
+    b.ui.idle(0.016);
+    CHECK(!b.c(b.knob).enabled && !b.ui.interactive(b.knob));
+    CHECK(b.host.openCount == 0 && b.host.clean());  // the drag it was in is over
+    b.ui.pointerUp(70, 20, 0, 0);
+    allowed = true;
+    b.ui.idle(0.016);
+    CHECK(b.c(b.knob).enabled);
+}
+
+TEST(a_button_runs_its_action_and_a_momentary_control_is_on_while_held) {
+    MockHost host;
+    Ui ui(host, 800.0f, 600.0f);
+    int pressed = 0;
+    ui.button({20, 20, 100, 30}, "Go", [&] { ++pressed; });
+    ui.pointerDown(50, 30, 0, 0, false);
+    ui.pointerUp(50, 30, 0, 0);
+    CHECK(pressed == 1);
+    ui.key(key::kEnter, 0);  // focused by the click
+    CHECK(pressed == 2);
+    CHECK(host.begins == 0);
+    const int t = findParam(isToggle);
+    if (t < 0) return;
+    const size_t i = static_cast<size_t>(t);
+    ui.momentary(params::at(i).id, {200, 20, 100, 30});
+    host.values[i] = params::at(i).hostMin();  // off, whatever its default
+    ui.pointerDown(250, 30, 0, 0, false);
+    CHECK(host.values[i] == params::at(i).hostMax() && host.openCount == 1);
+    ui.pointerMove(600, 500, 0);  // still held, wherever the pointer goes
+    CHECK(host.values[i] == params::at(i).hostMax());
+    ui.pointerUp(600, 500, 0, 0);
+    CHECK(host.values[i] == params::at(i).hostMin() && host.openCount == 0 && host.clean());
+}
+
+TEST(tabs_show_one_page_and_what_is_hidden_takes_no_input) {
+    Bench none;
+    if (none.knob < 0) return;
+    MockHost host;
+    Ui ui(host, 800.0f, 600.0f);
+    ui.tabs({20, 20, 300, 30}, {"One", "Two"});
+    ui.onPage(0);
+    ui.knob(none.knobParam, {20, 60, 100, 120});
+    ui.onPage(1);
+    ui.button({20, 60, 100, 30}, "Two", [] {});
+    ui.onAllPages();
+    ui.button({400, 60, 100, 30}, "Both", [] {});
+    CHECK(ui.shown(1) && !ui.shown(2) && ui.shown(3));
+    ui.pointerDown(250, 35, 0, 0, false);  // the second tab
+    ui.pointerUp(250, 35, 0, 0);
+    CHECK(!ui.shown(1) && ui.shown(2));
+    CHECK(ui.page(0) == 1);
+    ui.pointerDown(30, 100, 0, 0, false);
+    CHECK(host.begins == 0);  // the knob under the button is not there
+    ui.setFocus(0);
+    ui.key(key::kLeft, 0);  // back with the keyboard
+    CHECK(ui.page(0) == 0 && ui.shown(1));
+    // Tab skips what is not on the page.
+    ui.setFocus(-1);
+    ui.key(key::kTab, 0);
+    ui.key(key::kTab, 0);
+    ui.key(key::kTab, 0);
+    CHECK(ui.focus() != 2);
+}
+
+// --- two parameters, an envelope, a list, a keyboard -------------------------------------
+
+namespace {
+// The product's continuous parameters, as many as it has (up to n).
+std::vector<uint32_t> continuousParams(size_t n) {
+    std::vector<uint32_t> ids;
+    for (size_t i = 0; i < params::kCount && ids.size() < n; ++i)
+        if (isContinuous(params::at(i)) && !params::at(i).isOutput() && !params::at(i).is(pflag::kHidden))
+            ids.push_back(params::at(i).id);
+    return ids;
+}
+}  // namespace
+
+TEST(an_xy_pad_moves_two_parameters_in_one_gesture) {
+    const std::vector<uint32_t> ids = continuousParams(2);
+    if (ids.size() < 2) {
+        std::printf("      (fewer than two continuous parameters)\n");
+        return;
+    }
+    MockHost host;
+    Ui ui(host, 800.0f, 600.0f);
+    ui.xyPad(ids[0], ids[1], {100, 100, 216, 216});  // 200 x 200 inside its edge
+    const size_t x = static_cast<size_t>(params::indexOf(ids[0])), y = static_cast<size_t>(params::indexOf(ids[1]));
+    ui.pointerDown(208, 208, 0, 0, false);  // the middle: both jump there
+    CHECK_NEAR(toNormalized(params::at(x), host.values[x]), 0.5, 1e-6);
+    CHECK_NEAR(toNormalized(params::at(y), host.values[y]), 0.5, 1e-6);
+    ui.pointerMove(258, 158, 0);
+    CHECK_NEAR(toNormalized(params::at(x), host.values[x]), 0.75, 1e-6);
+    CHECK_NEAR(toNormalized(params::at(y), host.values[y]), 0.75, 1e-6);
+    CHECK(host.openCount == 2 && host.clean());
+    ui.pointerUp(258, 158, 0, 0);
+    CHECK(host.openCount == 0 && host.begins == 2 && host.ends == 2 && host.clean());
+    // Sideways only: the vertical parameter is never touched.
+    const int before = host.begins;
+    ui.pointerDown(108, 158, 0, mod::kShift, false);  // fine: relative, no jump
+    ui.pointerMove(158, 158, mod::kShift);
+    ui.pointerUp(158, 158, 0, 0);
+    CHECK(host.begins == before + 1 && host.clean());
+    CHECK_NEAR(toNormalized(params::at(y), host.values[y]), 0.75, 1e-6);
+    // Arrows: across and up; Backspace: both to their defaults.
+    ui.key(key::kUp, 0);
+    CHECK(toNormalized(params::at(y), host.values[y]) > 0.75);
+    ui.idle(0.3);
+    ui.key(key::kBackspace, 0);
+    CHECK(host.values[x] == hostDefault(params::at(x)) && host.values[y] == hostDefault(params::at(y)));
+    CHECK(host.openCount == 0 && host.clean());
+}
+
+TEST(an_envelopes_handles_edit_their_stages_and_the_corner_moves_two) {
+    const std::vector<uint32_t> ids = continuousParams(4);
+    if (ids.size() < 4) {
+        std::printf("      (fewer than four continuous parameters)\n");
+        return;
+    }
+    MockHost host;
+    Ui ui(host, 800.0f, 600.0f);
+    ui.envelope({100, 100, 420, 120}, ids[0], ids[1], ids[2], ids[3]);
+    auto index = [&](int k) { return static_cast<size_t>(params::indexOf(ids[static_cast<size_t>(k)])); };
+    auto shape = [&] { return Ui::envelopeShape(ui.control(0), ui.state(0)); };
+    // Each drag goes whichever way leaves room, whatever the defaults are.
+    auto away = [&](int k, float d) { return ui.state(0).slots[k].normalized > 0.5 ? -d : d; };
+    // The attack's peak, dragged across: only the attack moves.
+    Ui::EnvelopeShape e = shape();
+    const double decay = host.values[index(1)];
+    float dx = away(0, 30.0f);
+    ui.pointerDown(e.x[1], e.y[1], 0, 0, false);
+    ui.pointerMove(e.x[1] + dx, e.y[1] + 40, 0);
+    ui.pointerUp(e.x[1] + dx, e.y[1] + 40, 0, 0);
+    CHECK(host.begins == 1 && host.values[index(1)] == decay);
+    CHECK_NEAR(shape().x[1], e.x[1] + dx, 0.01f);
+    // The corner, across and up or down: decay and sustain together.
+    e = shape();
+    dx = away(1, 20.0f);
+    const float dy = -away(2, 30.0f);  // up is louder
+    ui.pointerDown(e.x[2], e.y[2], 0, 0, false);
+    ui.pointerMove(e.x[2] + dx, e.y[2] + dy, 0);
+    CHECK(host.openCount == 2 && host.clean());
+    ui.pointerUp(e.x[2] + dx, e.y[2] + dy, 0, 0);
+    CHECK(host.openCount == 0 && host.begins == 3 && host.clean());
+    CHECK_NEAR(shape().x[2], e.x[2] + dx, 0.01f);
+    CHECK_NEAR(shape().y[2], e.y[2] + dy, 0.01f);
+    // The release's end.
+    e = shape();
+    dx = away(3, 10.0f);
+    ui.pointerDown(e.x[4], e.y[4], 0, 0, false);
+    ui.pointerMove(e.x[4] + dx, e.y[4], 0);
+    ui.pointerUp(e.x[4] + dx, e.y[4], 0, 0);
+    CHECK(host.begins == 4 && host.clean());
+    CHECK_NEAR(shape().x[4], e.x[4] + dx, 0.01f);
+}
+
+namespace {
+struct Rows : ListSource {
+    int chosen = -1;
+    int size() const override { return 30; }
+    std::string item(int row) const override { return "Row " + std::to_string(row); }
+    bool header(int row) const override { return row % 10 == 0; }
+    int selected() const override { return chosen; }
+    void choose(int row) override { chosen = row; }
+};
+}  // namespace
+
+TEST(a_list_scrolls_and_chooses_with_the_pointer_the_wheel_and_keys) {
+    MockHost host;
+    Ui ui(host, 800.0f, 600.0f);
+    Rows rows;
+    ui.list({20, 20, 200, 8 + Ui::kListRow * 6}, rows);
+    CHECK(Ui::listRows(ui.control(0)) == 6);
+    ui.pointerDown(100, 20 + 4 + Ui::kListRow * 2.5f, 0, 0, false);
+    CHECK(rows.chosen == 2);
+    ui.pointerDown(100, 20 + 4 + Ui::kListRow * 0.5f, 0, 0, false);
+    CHECK(rows.chosen == 2);  // a header is not chosen
+    ui.wheel(100, 60, 0, -3, 0);
+    CHECK(ui.control(0).scroll == 3);
+    ui.key(key::kEnd, 0);
+    CHECK(rows.chosen == 29 && ui.control(0).scroll == 24);  // and in view
+    ui.key(key::kHome, 0);
+    CHECK(rows.chosen == 1 && ui.control(0).scroll == 0);
+    for (int k = 0; k < 9; ++k) ui.key(key::kDown, 0);
+    CHECK(rows.chosen == 11);  // past the header at 10
+    CHECK(host.begins == 0);
+
+    // A choice parameter's options, chosen in one edit each.
+    const int c = findParam([](const ParamDef& p) { return p.kind == ParamKind::Choice; });
+    if (c < 0) return;
+    const ParamDef& p = params::at(static_cast<size_t>(c));
+    Ui other(host, 800.0f, 600.0f);
+    other.list(p.id, {20, 20, 200, 200});
+    other.setFocus(0);
+    other.key(key::kEnd, 0);
+    CHECK(host.values[static_cast<size_t>(c)] == p.hostMax());
+    CHECK(host.begins == 1 && host.ends == 1 && host.clean());
+}
+
+TEST(the_keyboard_plays_a_note_slides_to_the_next_and_always_ends_it) {
+    MockHost host;
+    Ui ui(host, 800.0f, 600.0f);
+    ui.keyboard({0, 0, 280, 100}, 60, 71);  // seven white keys, 40 wide
+    CHECK(Ui::keyAt(ui.control(0), 20, 90) == 60);
+    CHECK(Ui::keyAt(ui.control(0), 40, 20) == 61);  // the black key, on top
+    ui.pointerDown(20, 90, 0, 0, false);
+    CHECK(host.held.count(60) == 1 && host.lastVelocity > 0.9);
+    ui.pointerMove(60, 90, 0);  // to D
+    CHECK(host.held.count(60) == 0 && host.held.count(62) == 1);
+    ui.pointerMove(400, 90, 0);  // off the keys
+    CHECK(host.held.empty());
+    ui.pointerMove(100, 20, 0);  // back on, high on a white key: softer
+    CHECK(host.held.count(64) == 1 && host.lastVelocity < 0.5);
+    ui.focusLost();  // the release may never come
+    CHECK(host.held.empty() && !host.strayNoteOff);
+    ui.pointerUp(100, 20, 0, 0);
+    CHECK(host.held.empty() && !host.strayNoteOff && host.begins == 0);
+    // Keys held elsewhere light up.
+    const uint64_t keys[2] = {0, uint64_t{1} << (67 - 64)};
+    ui.setKeysHeld(keys);
+    CHECK(ui.state(0).keyHeld(67) && !ui.state(0).keyHeld(66));
+}
+
+// --- what the editor measures and draws ------------------------------------------------------
+
+TEST(the_fft_matches_a_direct_transform) {
+    dsp::Fft fft(16);
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<double> u(-1.0, 1.0);
+    std::vector<std::complex<double>> x(16), y;
+    for (auto& v : x) v = {u(rng), u(rng)};
+    y = x;
+    fft.forward(y.data());
+    for (size_t k = 0; k < 16; ++k) {
+        std::complex<double> sum = 0.0;
+        for (size_t n = 0; n < 16; ++n) sum += x[n] * std::polar(1.0, -2.0 * 3.14159265358979323846 * k * n / 16.0);
+        CHECK_NEAR(std::abs(sum - y[k]), 0.0, 1e-9);
+    }
+}
+
+TEST(the_spectrum_reads_a_full_scale_sine_at_0_dB_and_its_rms_at_minus_3) {
+    AudioHistory audio;
+    const double rate = 48000.0;
+    const double hz = 4096.0 / 4096.0 * rate / 4096.0 * 100.0;  // bin 100, exactly
+    std::vector<FeedFrame> frames(8192);
+    for (size_t n = 0; n < frames.size(); ++n) {
+        const float v = static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * hz * static_cast<double>(n) / rate));
+        frames[n] = {{v, v}, {v, v}};
+    }
+    audio.push(frames.data(), frames.size());
+    Spectrum s(4096);
+    s.analyse(audio, Signal::output(0), rate, 0.016);
+    CHECK_NEAR(s.db(hz), 0.0, 0.05);
+    CHECK(s.db(hz * 3.0) < -90.0);  // nothing where there is nothing
+    CHECK_NEAR(s.peak(hz * 0.9, hz * 1.1), 0.0, 0.05);
+    // Between bins, Hann's scalloping: never more than 1.5 dB low.
+    frames.assign(8192, {});
+    const double between = hz + 0.5 * rate / 4096.0;
+    for (size_t n = 0; n < frames.size(); ++n) {
+        const float v = static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * between * static_cast<double>(n) / rate));
+        frames[n] = {{v, v}, {v, v}};
+    }
+    audio.push(frames.data(), frames.size());
+    Spectrum t(4096);
+    t.analyse(audio, Signal::output(), rate, 0.016);
+    CHECK(t.peak(between * 0.95, between * 1.05) > -1.5);
+    // Silence falls at the stated rate, never at once.
+    const float before = t.peak(between * 0.95, between * 1.05);
+    frames.assign(8192, {});
+    audio.push(frames.data(), frames.size());
+    t.analyse(audio, Signal::output(), rate, 0.1);
+    CHECK_NEAR(t.peak(between * 0.95, between * 1.05), before - t.fallDbPerSecond * 0.1f, 1e-3);
+
+    RmsMeter rms;
+    std::vector<float> sine(144000);  // ten time constants: settled
+    for (size_t n = 0; n < sine.size(); ++n) sine[n] = static_cast<float>(std::sin(0.1 * static_cast<double>(n)));
+    rms.push(sine.data(), sine.size(), rate);
+    CHECK_NEAR(rms.levelDb(), -3.01, 0.05);
+}
+
+TEST(svgs_parse_and_draw_and_every_asset_is_found) {
+    const char* source =
+        "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='12' viewBox='0 0 24 12'>"
+        "<path d='M0 0 H24 V12 H0 Z M6 3 V9 H18 V3 Z' fill='#E8944A' fill-rule='evenodd'/>"
+        "<circle cx='12' cy='6' r='2' fill='none' stroke='#FFFFFF' stroke-width='1'/></svg>";
+    Svg svg(source);
+    CHECK(svg.valid() && svg.width() == 24.0f && svg.height() == 12.0f);
+    CHECK(!Svg("not an svg").valid());
+    NVGcontext* vg = test::createHeadlessCanvas();
+    nvgBeginFrame(vg, 100, 100, 1.0f);
+    svg.draw(vg, {0, 0, 48, 48});
+    const NVGcolor tint = nvgRGB(255, 0, 0);
+    svg.draw(vg, {0, 0, 48, 48}, &tint);
+    nvgEndFrame(vg);
+    nvgDeleteInternal(vg);
+    CHECK(!assets::find("no-such-asset.png"));
+    for (size_t i = 0; i < assets::count(); ++i) {
+        const assets::Asset a = assets::at(i);
+        CHECK(assets::find(a.name).data == a.data && a.size > 0);
+        if (assets::hasExtension(a.name, ".svg"))
+            CHECK_MSG(Svg(a.text()).valid(), "%.*s does not parse", static_cast<int>(a.name.size()), a.name.data());
+    }
+    std::printf("      %zu assets in this product\n", assets::count());
+}
+
+TEST(dropped_uri_lists_become_paths_and_dialog_commands_are_built) {
+    const std::vector<std::string> paths =
+        pathsFromUriList("# a comment\r\nfile:///home/a%20b/x.wav\r\nfile://localhost/tmp/y.preset\n"
+                         "http://example.com/z\nfile://elsewhere/w\nfile:///C:/Users/q.wav\n\n");
+    CHECK(paths.size() == 3);
+    CHECK(paths[0] == "/home/a b/x.wav");
+    CHECK(paths[1] == "/tmp/y.preset");
+    CHECK(paths[2] == "C:/Users/q.wav");
+    FileDialogs::Options o;
+    o.title = "Load";
+    o.extensions = {".wav", ".aif"};
+    const std::vector<std::string> zenity = linuxDialogCommand("zenity", o, false, 42);
+    CHECK(zenity[0] == "zenity" && zenity[1] == "--file-selection");
+    CHECK(std::find(zenity.begin(), zenity.end(), "--file-filter=*.wav *.aif") != zenity.end());
+    CHECK(std::find(zenity.begin(), zenity.end(), "--attach=42") != zenity.end());
+    o.name = "Mine.preset";
+    o.folder = "/tmp";
+    const std::vector<std::string> kdialog = linuxDialogCommand("kdialog", o, true, 0);
+    CHECK(kdialog[1] == "--getsavefilename" && kdialog[2] == "/tmp/Mine.preset");
+}
+
 // --- the product's editor -------------------------------------------------------------------
 
 namespace {
@@ -753,23 +1177,57 @@ TEST(the_layout_is_inside_the_panel_and_controls_do_not_overlap) {
     CHECK(ui.count() > 0);
     for (int i = 0; i < ui.count(); ++i) {
         const Control& a = ui.control(i);
-        if (a.widget == Widget::TextField)
+        if (a.widget == Widget::TextField) {
             CHECK_MSG(properties::indexOf(a.param) >= 0, "text field %d names property %u, which is not in the table", i,
                       a.param);
-        else if (a.widget == Widget::PresetBar)
+        } else if (a.widget == Widget::PresetBar) {
             CHECK_MSG(product::info::kPresets, "control %d is a preset bar, and presets are off", i);
-        else
-            CHECK_MSG(params::find(a.param), "control %d names parameter %u, which is not in the table", i, a.param);
+        } else if (a.widget == Widget::Keyboard) {
+            CHECK_MSG(product::info::kNoteInput, "control %d is a keyboard, and the product takes no notes", i);
+        } else if (a.widget == Widget::Tabs || a.widget == Widget::Button || (a.widget == Widget::List && a.param == kNoParam)) {
+            CHECK_MSG(a.widget != Widget::List || a.source, "list %d has nothing to list", i);
+        } else {
+            int bound = 0;
+            for (int k = 0; k < Control::kSlots; ++k) {
+                if (a.paramAt(k) == kNoParam) continue;
+                ++bound;
+                CHECK_MSG(params::find(a.paramAt(k)), "control %d names parameter %u, which is not in the table", i,
+                          a.paramAt(k));
+            }
+            CHECK_MSG(bound > 0, "control %d is bound to no parameter", i);
+        }
         CHECK_MSG(a.bounds.x >= 0 && a.bounds.y >= 0 && a.bounds.right() <= p.editor->width() &&
                       a.bounds.bottom() <= p.editor->height(),
                   "control %d lies outside the %gx%g panel", i, p.editor->width(), p.editor->height());
         for (int j = i + 1; j < ui.count(); ++j) {
             const Control& b = ui.control(j);
-            const bool overlap = a.bounds.x < b.bounds.right() && b.bounds.x < a.bounds.right() &&
-                                 a.bounds.y < b.bounds.bottom() && b.bounds.y < a.bounds.bottom();
-            CHECK_MSG(!overlap, "controls %d and %d overlap: a click could reach the wrong one", i, j);
+            // Pages of one tab bar take turns in the same place.
+            if (a.tabs >= 0 && a.tabs == b.tabs && a.page != b.page) continue;
+            CHECK_MSG(!a.bounds.overlaps(b.bounds), "controls %d and %d overlap: a click could reach the wrong one", i, j);
         }
     }
+}
+
+TEST(a_preset_file_dropped_on_the_editor_loads) {
+    if (!product::info::kPresets) {
+        std::printf("      (no presets in this product)\n");
+        return;
+    }
+    ProductEditor p;
+    size_t k = 0;
+    while (k + 1 < params::kCount && (params::at(k).isOutput() || params::at(k).is(pflag::kHidden))) ++k;
+    const double saved = fromNormalized(params::at(k), 0.8);
+    p.host.values[k] = saved;
+    const std::filesystem::path file = p.host.folder.parent_path() / ("supple-drop-" + std::to_string(std::random_device{}()) + ".preset");
+    CHECK(p.host.presets->exportFile(file));
+    p.host.values[k] = fromNormalized(params::at(k), 0.2);
+    CHECK(p.editor->dropOver(10, 10));  // an editor with presets takes them anywhere
+    p.editor->drop(10, 10, {PresetLibrary::toUtf8(file)});
+    CHECK(p.host.values[k] == saved);
+    p.editor->drop(10, 10, {"/nowhere/at/all.wav"});  // not a preset, and nobody asked for it
+    CHECK(p.host.values[k] == saved);
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
 }
 
 TEST(an_idle_editor_repaints_when_the_host_changes_a_value) {
@@ -795,7 +1253,7 @@ TEST(an_output_repaints_the_editor_only_where_it_is_shown) {
         ProductEditor p;
         const Ui& ui = p.editor->layout();
         bool shown = false;
-        for (int c = 0; c < ui.count(); ++c) shown |= ui.control(c).param == params::at(i).id && ui.control(c).visible;
+        for (int c = 0; c < ui.count(); ++c) shown |= ui.control(c).param == params::at(i).id && ui.shown(c);
         p.editor->idle(0.016);
         p.draw();
         p.host.values[i] = fromNormalized(params::at(i), 0.6);  // the processor reported something new
@@ -899,8 +1357,9 @@ TEST(random_use_of_the_whole_editor_keeps_the_gesture_contract) {
     CHECK(!p.host.nested);
     CHECK(!p.host.strayEnd);
     CHECK(!p.host.valueOutsideGesture);
-    CHECK_MSG(p.host.maxOpen <= 1, "%d gestures open at once", p.host.maxOpen);
+    CHECK_MSG(p.host.maxOpen <= 2, "%d parameters in gestures at once", p.host.maxOpen);
     CHECK_MSG(p.host.openCount == 0, "%d gestures left open", p.host.openCount);
+    CHECK_MSG(!p.host.strayNoteOff && p.host.held.empty(), "%zu notes left sounding", p.host.held.size());
     CHECK(p.host.begins > 50);  // the run actually exercised something
 }
 

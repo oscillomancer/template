@@ -33,6 +33,8 @@ set(PRODUCT_STATE_TAG       "PuLs")
 
 set(PRODUCT_DSP_SOURCES     "")
 set(PRODUCT_EDITOR_SOURCES  product/Editor.cpp)
+# Compiled in, found by file name: the logo and the light/dark switch's icons.
+set(PRODUCT_ASSETS          product/assets/logo.svg product/assets/sun.svg product/assets/moon.svg)
 set(PRODUCT_TEST_SOURCES    product/test/processor_test.cpp)
 
 set(PRODUCT_SMOKE_PLAIN_PARAM   "Depth")

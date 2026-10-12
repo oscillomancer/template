@@ -3,6 +3,7 @@
 //
 // The product's own claims, measured through the Engine the plugin runs.
 #include <algorithm>
+#include <cmath>
 #include <memory>
 
 #include "Check.h"
@@ -91,6 +92,23 @@ TEST(release_ends_within_the_reported_tail) {
     const int tail = static_cast<int>(e->tail());
     CHECK(tail > 0);
     for (size_t i = static_cast<size_t>(4800 + tail + 1); i < out[0].size(); ++i) CHECK(out[0][i] == 0.0);
+}
+
+TEST(a_held_note_decays_to_the_sustain_level_and_holds_it) {
+    // The loudest sample of the same sine in the same window, with full
+    // sustain and with half: half the level, exactly, once decayed.
+    auto peakFrom = [](double sustain) {
+        auto e = std::make_unique<Engine>();
+        e->store().set(static_cast<size_t>(params::indexOf(kDecay)), toHost(*params::find(kDecay), 20.0));
+        e->store().set(static_cast<size_t>(params::indexOf(kSustain)), toHost(*params::find(kSustain), sustain));
+        const test::Signal out = play({{0, on(69)}}, 24000, {256}, *e);
+        double peak = 0.0;
+        for (size_t i = 12000; i < 24000; ++i) peak = std::max(peak, std::fabs(out[0][i]));
+        return peak;
+    };
+    const double full = peakFrom(1.0), half = peakFrom(0.5);
+    CHECK(full > 0.1);
+    CHECK_NEAR(half / full, 0.5, 1e-3);
 }
 
 TEST(the_ninth_note_steals_rather_than_stalls) {
