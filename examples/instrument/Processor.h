@@ -201,7 +201,7 @@ class Processor : public supple::ProcessorBase<Processor> {
         double previous = std::cos(theta), current = previous;  // cos(-theta), cos(theta)
         double sum = 0.0;
         for (int k = 1; k * hz < 0.5 * sampleRate_; k += 2) {
-            sum += current / (k * k);
+            sum += current / (static_cast<double>(k) * k);
             const double next = c2 * current - previous;
             previous = current;
             current = next;

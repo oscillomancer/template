@@ -322,6 +322,18 @@ TEST(a_tuning_moves_every_note_and_an_unmapped_key_stays_silent) {
     CHECK(test::peak(test::render(test::silence(2, 9600), o)) == 0.0);
 }
 
+TEST(the_offline_triangle_keeps_its_level_at_sub_hertz_pitches) {
+    test::RenderOptions o;
+    o.offline = true;
+    o.initial = {{kWaveform, 1.0}, {kAttack, 1.0}, {kLevel, 0.0}};
+    o.events = {test::noteOn(0, 0), test::expression(0, NoteExpression::Type::Tuning, -60.0)};
+    // At about 0.255 Hz the Fourier series includes harmonics beyond 46340,
+    // whose squares no longer fit in an int. One sample is enough: phase 0
+    // is the triangle's -1 corner, through a 48-sample attack and gain 1/2.
+    const test::Signal out = test::render(test::silence(2, 1), o);
+    CHECK_NEAR(out[0][0] * 96.0, -1.0, 1e-5);
+}
+
 // --- the voice manager's modes --------------------------------------------------------------
 
 TEST(the_sustain_pedal_holds_a_released_note) {
