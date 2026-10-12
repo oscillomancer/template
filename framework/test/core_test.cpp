@@ -73,6 +73,12 @@ TEST(signal_differences_never_hide_nonfinite_samples) {
     }
 }
 
+TEST(nonautomatable_modifiers_clear_every_modulation_scope) {
+    const auto poly = percent(1, "Level", 50).polyModulatable();
+    for (const auto& p : {poly.notAutomatable(), poly.retired(), poly.output()})
+        CHECK(!p.is(pflag::kAutomatable | pflag::kModulatable | pflag::kPolyMod));
+}
+
 TEST(frequency_text_switches_units_where_the_rounded_value_does) {
     const ParamDef f = frequency(0, "F", 20.0, 20000.0, 1000.0);
     CHECK(text(f, toHost(f, 1000.0)) == "1.00 kHz");
