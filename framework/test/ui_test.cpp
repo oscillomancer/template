@@ -1071,6 +1071,30 @@ std::vector<uint32_t> continuousParams(size_t n) {
 }
 }  // namespace
 
+TEST(a_two_slot_gesture_coalesces_duplicate_parameter_ids) {
+    const auto ids = continuousParams(1);
+    if (ids.empty()) return;
+    const auto& p = params::at(static_cast<size_t>(params::indexOf(ids[0])));
+    const double a = p.hostMin() + (p.hostMax() - p.hostMin()) * 0.25;
+    const double b = p.hostMin() + (p.hostMax() - p.hostMin()) * 0.75;
+    MockHost host;
+    Ui ui(host, 800, 600);
+    ui.knob(ids[0], {20, 20, 100, 120});
+    ui.knob(ids[0], {140, 20, 100, 120});
+    host.values[MockHost::slot(ids[0])] = b;
+    ui.dragEdit(0, a, 1, b);
+    CHECK(host.value(ids[0]) == b && host.begins == 1 && host.openCount == 1);
+    ui.dragEdit(0, b, 1, a);
+    CHECK(host.value(ids[0]) == a && host.begins == 1);
+    ui.endDragEdit();
+    CHECK(host.ends == 1 && host.clean());
+    ui.xyPad(ids[0], ids[0], {300, 20, 200, 200});
+    ui.pointerDown(400, 150, 0, 0, false);
+    ui.pointerMove(420, 130, 0);
+    ui.pointerUp(420, 130, 0, 0);
+    CHECK(host.begins == 2 && host.ends == 2 && host.clean());
+}
+
 TEST(an_xy_pad_moves_two_parameters_in_one_gesture) {
     const std::vector<uint32_t> ids = continuousParams(2);
     if (ids.size() < 2) {

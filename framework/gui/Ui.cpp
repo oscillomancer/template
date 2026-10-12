@@ -567,7 +567,10 @@ void Ui::send(int entry, double host) {
     const double v = sanitizeHost(*p, host);
     if (v == currentValue(i, slot)) return;
     const uint32_t id = paramOf(i, slot);
-    if (!gesture_.open[entry]) {
+    const int other = 1 - entry;
+    const bool alreadyOpen = gesture_.open[other] &&
+        paramOf(gesture_.control[other], gesture_.slot[other]) == id;
+    if (!gesture_.open[entry] && !alreadyOpen) {
         host_.beginEdit(id);
         gesture_.open[entry] = true;
     }
