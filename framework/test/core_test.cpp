@@ -1590,6 +1590,30 @@ TEST(user_presets_save_load_rename_and_delete) {
     if (presets::kFactoryCount > 0) CHECK(!lib.rename(0, "Mine") && !lib.remove(0));
 }
 
+TEST(comparison_slots_follow_preset_identity_through_library_changes) {
+    TempFolder folder;
+    MemoryState st;
+    PresetLibrary lib(st, folder.path);
+    CHECK(lib.save("Zulu", false) == PresetLibrary::SaveResult::Ok);
+    const auto saved = st.saveState(state::Context::Preset);
+    lib.compare(1);
+    CHECK(lib.save("Alpha", false) == PresetLibrary::SaveResult::Ok);
+    lib.compare(0);
+    CHECK(lib.current() >= 0 && lib.entries()[static_cast<size_t>(lib.current())].name == "Zulu");
+    CHECK(lib.rename(lib.current(), "Beta"));
+    lib.compare(1);
+    lib.compare(0);
+    CHECK(lib.currentName() == "Beta");
+    CHECK(lib.current() >= 0 && lib.entries()[static_cast<size_t>(lib.current())].name == "Beta");
+    lib.copyToOther();
+    CHECK(lib.remove(lib.current()));
+    lib.compare(1);
+    CHECK(lib.current() == -1 && lib.modified());
+    CHECK(st.saveState(state::Context::Preset) == saved);
+    lib.refresh();
+    CHECK(lib.current() == -1);
+}
+
 TEST(a_failed_preset_rename_is_not_reported_as_a_success) {
     TempFolder folder;
     MemoryState st;

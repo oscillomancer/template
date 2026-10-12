@@ -71,7 +71,7 @@ class PresetLibrary {
 
     // --- what is loaded -------------------------------------------------------
     // Index in entries(), or -1 (the defaults, pasted text, a deleted preset).
-    int current() const { return current_; }
+    int current() const { return current_ >= 0 && static_cast<size_t>(current_) < entries_.size() ? current_ : -1; }
     // "Default" for the defaults, "" when nothing named is loaded.
     const std::string& currentName() const { return name_; }
     // The state differs from what the current preset (or the defaults) set.
@@ -119,7 +119,8 @@ class PresetLibrary {
         bool used = false;
         std::vector<uint8_t> state;
         std::string name;
-        int current = -1;
+        std::string factoryName;
+        std::filesystem::path file;
         std::vector<uint8_t> baseline;
         bool stickyModified = false;
     };

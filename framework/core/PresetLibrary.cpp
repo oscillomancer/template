@@ -119,8 +119,8 @@ PresetLibrary::PresetLibrary(StateAccess& state, fs::path userFolder) : state_(s
 }
 
 void PresetLibrary::refresh() {
-    const std::string currentName = current_ >= 0 ? entries_[static_cast<size_t>(current_)].name : "";
-    const bool currentUser = current_ >= 0 && entries_[static_cast<size_t>(current_)].user();
+    const std::string currentName = current() >= 0 ? entries_[static_cast<size_t>(current_)].name : "";
+    const bool currentUser = current() >= 0 && entries_[static_cast<size_t>(current_)].user();
     entries_.clear();
     for (size_t i = 0; i < presets::kFactoryCount; ++i)
         entries_.push_back({presets::factory(i).name, presets::factory(i).category, static_cast<int>(i), {}});
@@ -167,7 +167,7 @@ bool PresetLibrary::apply(const std::vector<uint8_t>& blob) {
 }
 
 void PresetLibrary::loaded(int index, std::string name) {
-    current_ = index;
+    current_ = index >= 0 && static_cast<size_t>(index) < entries_.size() ? index : -1;
     name_ = std::move(name);
     baseline_ = state_.saveState(state::Context::Preset);
     stickyModified_ = false;
@@ -205,7 +205,7 @@ bool PresetLibrary::load(int index) {
 bool PresetLibrary::step(int delta) {
     const int n = static_cast<int>(entries_.size());
     if (n == 0) return false;
-    const int from = current_ >= 0 ? current_ : delta > 0 ? -1 : 0;
+    const int from = current() >= 0 ? current() : delta > 0 ? -1 : 0;
     return load(((from + delta) % n + n) % n);
 }
 
@@ -262,7 +262,13 @@ bool PresetLibrary::rename(int index, std::string_view name) {
     if (fs::exists(target, ec) && !fs::equivalent(entry.file, target, ec)) return false;
     fs::rename(entry.file, target, ec);
     if (ec) return false;
-    const bool wasCurrent = index == current_;
+    for (Slot& slot : slots_) {
+        if (slot.file == entry.file) {
+            slot.file = target;
+            slot.name = std::string(name);
+        }
+    }
+    const bool wasCurrent = index == current();
     refresh();
     if (wasCurrent) {
         current_ = findEntry(name, true);
@@ -278,7 +284,7 @@ bool PresetLibrary::remove(int index) {
     std::error_code ec;
     if (!fs::remove(entry.file, ec)) return false;
     // The sound stays; it is just no longer a preset.
-    if (index == current_) {
+    if (index == current()) {
         current_ = -1;
         name_.clear();
         baseline_.clear();
@@ -294,7 +300,11 @@ PresetLibrary::Slot PresetLibrary::capture() {
     s.used = true;
     s.state = state_.saveState(state::Context::Preset);
     s.name = name_;
-    s.current = current_;
+    if (current() >= 0) {
+        const Entry& entry = entries_[static_cast<size_t>(current())];
+        if (entry.user()) s.file = entry.file;
+        else s.factoryName = entry.name;
+    }
     s.baseline = baseline_;
     s.stickyModified = stickyModified_;
     return s;
@@ -308,9 +318,20 @@ void PresetLibrary::compare(int slot) {
     if (!apply(to.state)) return;
     slot_ = slot;
     name_ = to.name;
-    current_ = to.current;
+    current_ = -1;
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        const Entry& entry = entries_[i];
+        if (entry.user() ? !to.file.empty() && entry.file == to.file
+                         : !to.factoryName.empty() && entry.name == to.factoryName)
+            current_ = static_cast<int>(i);
+    }
     baseline_ = to.baseline;
     stickyModified_ = to.stickyModified;
+    if (current() < 0 && (!to.file.empty() || !to.factoryName.empty())) {
+        name_.clear();
+        baseline_.clear();
+        stickyModified_ = true;
+    }
 }
 
 void PresetLibrary::copyToOther() { slots_[1 - slot_] = capture(); }
