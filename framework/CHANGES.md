@@ -4,6 +4,14 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.15.3
+
+What a product must do: nothing.
+
+- `x11-probe` keeps the plugin loaded at exit, so the asan preset passes
+  under Mesa's software GL (CI's Xvfb): the driver's own allocations, held
+  in its globals, were reported as leaks once unloading unmapped them.
+
 ## 1.15.2
 
 Windows passes its tests again, for the first time since 1.3. What a product

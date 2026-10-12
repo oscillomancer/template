@@ -145,7 +145,10 @@ int main(int argc, char** argv) {
     if (argc < 2) { std::fprintf(stderr, "usage: x11-probe plugin.clap [capture.ppm] [--no-host-timer] [--companion]\n"); return 2; }
     Display* display = XOpenDisplay(nullptr);
     if (!display) { std::fprintf(stderr, "no X11 display: skipped\n"); return 77; }
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+    // Kept mapped at exit: the GL driver it loads (Mesa's llvmpipe on CI)
+    // holds memory in its globals, which LeakSanitizer reports as lost once
+    // dlclose has unmapped them. Unloading is the module tests' business.
+    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
     if (!lib) { std::fprintf(stderr, "%s\n", dlerror()); return 2; }
     auto* entry = static_cast<const clap_plugin_entry_t*>(dlsym(lib, "clap_entry"));
     if (!entry || !entry->init(argv[1])) return 2;
