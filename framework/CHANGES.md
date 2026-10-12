@@ -4,6 +4,97 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.13.0
+
+An audit: fixes across the framework, its tools and the examples, each with
+the test that would have caught it. What a product must do: run
+`benchmark --update` and commit `product/benchmark.txt` (the benchmark now
+times the render alone, so old baselines read about 10% high and would hide
+a regression of that size); and a product using `dsp::Voices` passes its
+handler to `setMode(mode, handler)`. A product showing `dsp::TruePeak` reads
+higher, correct, values on high-frequency material.
+
+Engine and plugin:
+- Note ends a processor sends from `reset()`, or that the host's queue
+  refuses, are delivered at the start of the next block instead of lost;
+  note ends sent from `update()` are stamped at that update's frame, not
+  the previous block's last.
+- The editor's keyboard never loses a note-off when its queue is full (a
+  note-on is dropped instead), asks the host to process, and reset clears
+  the held keys it shows.
+- Activation waits for pending file loads even when the session is
+  unchanged, as documented; a file property's non-empty default is loaded.
+- Activation delivers every pending property, and a full retirement queue
+  asks for the main-thread callback that empties it.
+- `polyModulatable()` parameters advertise per-note modulation to CLAP
+  hosts; `notAutomatable()` also clears it. Truncated CLAP events are
+  ignored rather than read past their end.
+- The audio feed carries silence, not the previous block, for an input
+  channel the host leaves unconnected.
+
+State and files:
+- A/B slots remember their preset by name or file rather than by list
+  position: deleting or renaming a preset no longer leaves a slot pointing
+  at another one, or past the end of the list.
+- Presets and the remembered-folders file are written through a uniquely
+  named temporary and replaced atomically (`MoveFileExW` on Windows); a
+  failed replacement reports failure and leaves the original. Preset files
+  and CLAP preset discovery read at most 64 MiB, refusing special files.
+
+Editor:
+- A momentary control, an XY pad or a tab page let go of what they hold when
+  focus is lost, the control is disabled or hidden, or the editor closes; a
+  menu or text field whose control becomes unavailable closes, discarding
+  the edit. An XY pad keeps its place when Shift is released mid-drag.
+- One host gesture per parameter even when two slots of a gesture name it.
+- A product's `onPointerDown` that starts a `dragEdit` keeps its gesture,
+  and pointer motion reaches open menus and text fields first.
+- File slots show their path as a tooltip, and Space no longer opens their
+  dialog. The meters' last falling frame is drawn.
+- `Spectrum::fall(seconds)` lets a trace decay when no audio arrives; the
+  starter uses it, so the analyser no longer freezes when the host stops.
+- The automatic editor accepts a product with nothing to show.
+- Windows: the file dialog's thread ID is published atomically.
+- `gui-preview` fails when a scenario names a control that does not exist or
+  cannot take input (`preview-invalid-control` test).
+
+DSP:
+- `TruePeak` never reads below the sample peak, and its interpolator is
+  within 0.5 dB to 0.45 fs (it under-read by up to 7 dB near Nyquist).
+- `Voices::setMode(mode, handler)` releases sounding voices on a change of
+  mode, so a held note cannot stick. Sustain and CC120/123 are documented as
+  omni.
+- `Lfo`'s random shapes change at the cycle boundary, not a sample early.
+- `Loudness` keeps very loud blocks (above +100 LUFS) in an overflow bin
+  that still gates; integrated loudness no longer reads silence for them.
+- Decoded non-finite float samples become zero; `DiskStream` refuses a file
+  whose length is unknown; `saveWavFile` rejects a bad rate or ragged
+  channels before opening the file.
+
+Tools and build:
+- `new_product` refuses the starter's and the examples' names and IDs as
+  well as their codes, and names with characters not allowed in file names;
+  packages strip only a name's final extension and escape it in installer XML.
+- `update_framework` refuses a source inside its own staging folders.
+- `benchmark` times the render alone, not construction and warm-up.
+- A patched copy of a `FETCHCONTENT_SOURCE_DIR_*` checkout is refreshed when
+  that checkout changes.
+- MSVC with `SUPPLE_SANITIZE` set fails at configure instead of building
+  uninstrumented.
+- `render_cli` refuses `--at` on a restart-on-change parameter; the offline
+  WAV writer reports a failed write.
+- The X11 embedding probe uses the plugin's real buses.
+- New tests: `bin2c`, `sanitizer-config`, `new-product`, `patched-source`,
+  `ci-product-names`, and a realtime-marked runner for prepared DSP
+  primitives in `dsp-tests`.
+- The template's workflow passes product names to shell steps through the
+  environment, safe for any legal name.
+
+Examples: Chord retires a note beyond its capacity; Tone's offline triangle
+stays bounded below 20 Hz and at extreme tuning; Duck's reduction trace comes
+from each telemetry frame and its history fits any sample rate; Drive's
+Quality restart is exercised by the host smoke tests.
+
 ## 1.12.0
 
 Packaging and verification. Nothing for a product to do: the new tests run
