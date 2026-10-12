@@ -287,6 +287,8 @@ class Lfo {
     double tick() {
         const double previous = phasor_.phase;
         const double t = phasor_.tick();
+        const double held = current_;
+        const double from = previous_;
         if (phasor_.phase < previous) advanceRandom();  // wrapped
         switch (shape_) {
             case Shape::Sine: return std::sin(2.0 * kPi * t);
@@ -294,11 +296,11 @@ class Lfo {
             case Shape::SawUp: return 2.0 * t - 1.0;
             case Shape::SawDown: return 1.0 - 2.0 * t;
             case Shape::Square: return t < 0.5 ? 1.0 : -1.0;
-            case Shape::SampleAndHold: return current_;
+            case Shape::SampleAndHold: return held;
             case Shape::SmoothRandom: {
                 // Cosine-eased from the last value to the next over a cycle.
                 const double ease = 0.5 - 0.5 * std::cos(kPi * t);
-                return previous_ + (current_ - previous_) * ease;
+                return from + (held - from) * ease;
             }
         }
         return 0.0;

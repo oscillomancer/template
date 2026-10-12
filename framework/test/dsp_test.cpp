@@ -470,6 +470,27 @@ TEST(lfo_shapes_phases_and_sync) {
     CHECK(changes == 9 || changes == 10);
 }
 
+TEST(random_lfo_changes_at_the_start_of_the_next_cycle) {
+    Random random(7);
+    double previous = 0.0, current = random.bipolar();
+    Lfo held, smooth;
+    held.setShape(Lfo::Shape::SampleAndHold);
+    smooth.setShape(Lfo::Shape::SmoothRandom);
+    // An exactly representable increment puts the boundary on sample 8.
+    held.setRate(1.0, 8.0);
+    smooth.setRate(1.0, 8.0);
+    for (int n = 0; n < 32; ++n) {
+        if (n > 0 && n % 8 == 0) {
+            previous = current;
+            current = random.bipolar();
+        }
+        const double phase = (n % 8) / 8.0;
+        const double ease = 0.5 - 0.5 * std::cos(kPi * phase);
+        CHECK(held.tick() == current);
+        CHECK_NEAR(smooth.tick(), previous + (current - previous) * ease, 1e-12);
+    }
+}
+
 TEST(noise_colours_have_their_slopes) {
     Noise n(9);
     const size_t size = 1 << 16;
