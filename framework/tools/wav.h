@@ -150,12 +150,12 @@ inline bool write(const std::string& path, const Audio& a, int bitDepth, std::st
 
     FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) { err = "cannot write " + path; return false; }
-    std::fwrite(h.data(), 1, h.size(), f);
+    bool written = std::fwrite(h.data(), 1, h.size(), f) == h.size();
 
     const size_t kBlock = 1 << 16;
     std::vector<uint8_t> buf(kBlock * (size_t)(chans * bytes));
     size_t done = 0;
-    while (done < frames) {
+    while (written && done < frames) {
         const size_t n = std::min(kBlock, frames - done);
         uint8_t* p = buf.data();
         for (size_t i = 0; i < n; ++i) {
@@ -171,10 +171,12 @@ inline bool write(const std::string& path, const Audio& a, int bitDepth, std::st
                 }
             }
         }
-        std::fwrite(buf.data(), 1, (size_t)(p - buf.data()), f);
+        const size_t size = static_cast<size_t>(p - buf.data());
+        written = std::fwrite(buf.data(), 1, size, f) == size;
         done += n;
     }
-    std::fclose(f);
+    if (std::fclose(f) != 0) written = false;  // buffered writes can fail on close
+    if (!written) { err = "could not write all of " + path; return false; }
     return true;
 }
 

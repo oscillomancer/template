@@ -33,6 +33,7 @@
 #include "dsp/Stft.h"
 #include "dsp/Voices.h"
 #include "dsp/Worker.h"
+#include "tools/wav.h"
 
 using namespace supple;
 using namespace supple::dsp;
@@ -1084,6 +1085,17 @@ TEST(wav_writer_rejects_invalid_audio_before_opening_the_file) {
     CHECK(contents == "keep");
     std::filesystem::remove_all(dir.parent_path());
 }
+
+#ifdef __linux__
+TEST(tool_wav_writer_reports_a_full_disk) {
+    wavio::Audio audio;
+    audio.channels = 1;
+    audio.ch = {{0.25}};
+    std::string error;
+    CHECK(!wavio::write("/dev/full", audio, 32, error));
+    CHECK(!error.empty());
+}
+#endif
 
 TEST(resampling_keeps_the_band_and_drops_what_cannot_fit) {
     AudioData in;
