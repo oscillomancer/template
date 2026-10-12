@@ -417,6 +417,7 @@ class BasicEngine {
     void process(const AudioBuses<T>& io, int frames, Source& events,
                  const Transport* transport = nullptr) SUPPLE_REALTIME {
         noteOutput_.clear();
+        noteOutput_.setOffset(0);
         if (!active_ || frames <= 0 || (!io.out && channelsOut_ > 0)) return;
         ScopedFlushDenormals noDenormals;
         syncStore();

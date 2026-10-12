@@ -681,6 +681,30 @@ class TransportProbe : public ProcessorBase<TransportProbe> {
 
 }  // namespace
 
+TEST(a_store_update_ends_notes_at_the_start_of_the_new_block) {
+    class EndsOnUpdate : public ProcessorBase<EndsOnUpdate> {
+      public:
+        void prepare(const ProcessSetup&, const ParamValues&) {}
+        void update(const ParamValues& v) {
+            if (!v.initial()) noteEnded(NoteEvent{});
+        }
+        void process(Block&) {}
+    };
+    auto e = std::make_unique<BasicEngine<EndsOnUpdate>>();
+    e->activate(48000.0, 64, 2, 2);
+    double left[64]{}, right[64]{};
+    double* io[] = {left, right};
+    e->process<double>(io, io, 64);
+    size_t index = 0;
+    while (index < params::kCount && params::at(index).isOutput()) ++index;
+    if (index == params::kCount) return;
+    const ParamDef& p = params::at(index);
+    e->store().set(index, hostDefault(p) == p.hostMax() ? p.hostMin() : p.hostMax());
+    e->process<double>(io, io, 64);
+    CHECK(e->noteOutput().count() == 1);
+    CHECK(e->noteOutput().count() == 1 && e->noteOutput()[0].time == 0);
+}
+
 TEST(each_split_sees_the_transport_where_it_starts) {
     auto engine = std::make_unique<BasicEngine<TransportProbe>>();
     engine->activate(48000.0, 512, 2, 2);
