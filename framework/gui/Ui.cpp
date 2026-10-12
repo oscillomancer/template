@@ -786,9 +786,10 @@ void Ui::xyDrag(int i, float x, float y) {
     const ParamDef* py = def(i, 1);
     const Rect area = c.bounds.inset(kPadInset);
     double nx, ny;
-    if (drag_.fine) {
-        nx = drag_.anchorNormal + (x - drag_.anchorX) / std::max(1.0f, area.w) * kFine;
-        ny = drag_.anchorNormal2 - (y - drag_.anchorY) / std::max(1.0f, area.h) * kFine;
+    if (drag_.fine || drag_.relative) {
+        const double speed = drag_.fine ? kFine : 1.0;
+        nx = drag_.anchorNormal + (x - drag_.anchorX) / std::max(1.0f, area.w) * speed;
+        ny = drag_.anchorNormal2 - (y - drag_.anchorY) / std::max(1.0f, area.h) * speed;
     } else {
         nx = (x - area.x) / std::max(1.0f, area.w);
         ny = 1.0 - (y - area.y) / std::max(1.0f, area.h);
@@ -859,6 +860,7 @@ bool Ui::pointerMove(float x, float y, uint32_t mods) {
                     drag_.anchorNormal = drag_.normal;
                     drag_.anchorNormal2 = drag_.normal2;
                     drag_.fine = fine;
+                    drag_.relative = true;
                 }
                 xyDrag(i, x, y);
                 return true;

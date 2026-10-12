@@ -410,6 +410,7 @@ class Ui {
         double anchorNormal = 0.0, anchorNormal2 = 0.0;
         double normal = 0.0, normal2 = 0.0;
         bool fine = false;
+        bool relative = false;  // an XY pad keeps its offset after changing speed
         int handle = -1;  // an envelope's handle; a keyboard's key
     };
     // One control's (or two controls') parameters in one host gesture.

@@ -1069,6 +1069,26 @@ TEST(an_xy_pad_moves_two_parameters_in_one_gesture) {
     CHECK(host.openCount == 0 && host.clean());
 }
 
+TEST(an_xy_pad_keeps_its_position_when_shift_is_released) {
+    const auto ids = continuousParams(2);
+    if (ids.size() < 2) return;
+    MockHost host;
+    Ui ui(host, 800.0f, 600.0f);
+    ui.xyPad(ids[0], ids[1], {100, 100, 216, 216});
+    ui.pointerDown(208, 208, 0, 0, false);
+    ui.pointerMove(208, 208, mod::kShift);
+    ui.pointerMove(268, 148, mod::kShift);
+    const auto fine = ui.state(0);
+    ui.pointerMove(268, 148, 0);
+    CHECK_NEAR(ui.state(0).slots[0].normalized, fine.slots[0].normalized, 1e-6);
+    CHECK_NEAR(ui.state(0).slots[1].normalized, fine.slots[1].normalized, 1e-6);
+    ui.pointerMove(278, 138, 0);
+    CHECK_NEAR(ui.state(0).slots[0].normalized, fine.slots[0].normalized + 0.05, 1e-6);
+    CHECK_NEAR(ui.state(0).slots[1].normalized, fine.slots[1].normalized + 0.05, 1e-6);
+    ui.pointerUp(278, 138, 0, 0);
+    CHECK(host.begins == 2 && host.ends == 2 && host.clean());
+}
+
 TEST(an_envelopes_handles_edit_their_stages_and_the_corner_moves_two) {
     const std::vector<uint32_t> ids = continuousParams(4);
     if (ids.size() < 4) {
