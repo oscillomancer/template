@@ -1,0 +1,78 @@
+--- a/src/wrapasauv2.cpp
++++ b/src/wrapasauv2.cpp
+@@ -350,6 +350,15 @@
+   }
+ }
+ 
++// Whether a rescan found a parameter's info as it was.
++static bool sameInfo(const clap_param_info_t &a, const clap_param_info_t &b)
++{
++  return a.id == b.id && a.flags == b.flags && a.cookie == b.cookie && a.min_value == b.min_value &&
++         a.max_value == b.max_value && a.default_value == b.default_value &&
++         std::strncmp(a.name, b.name, sizeof(a.name)) == 0 &&
++         std::strncmp(a.module, b.module, sizeof(a.module)) == 0;
++}
++
+ void WrapAsAUV2::setupParameters(const clap_plugin_t *plugin, const clap_plugin_params_t *params)
+ {
+   auto guarantee_mainthread = _plugin->AlwaysMainThread();
+@@ -362,7 +371,9 @@
+   // _clumps is not cleared here, and cannot be -- see the note on the class.
+   _orderedParameterList.clear();
+   _paramOrderingProvided = false;
+-  _bypassParamID = CLAP_INVALID_ID;
++  // Settled at the end, not cleared here: SetParameter() reads it without the
++  // lock, so a rescan must not take it away even for a moment.
++  clap_id bypassParamID = CLAP_INVALID_ID;
+   auto *p = _plugin->_ext._params;
+   if (p)
+   {
+@@ -435,8 +446,11 @@
+             _parametertree[paraminfo.id] =
+                 std::make_unique<Clap::AUv2::Parameter>(_plugin->_plugin, p, paraminfo);
+           }
+-          else
++          else if (!sameInfo(piter->second->info(), paraminfo))
+           {
++            // Only when it changed: SetParameter() reads the info without the
++            // lock, on the host's automation thread, and a rescan after every
++            // state load would otherwise rewrite it under that reader.
+             piter->second->updateInfo(_plugin->_plugin, p, paraminfo);
+           }
+           // Assign the clump id here rather than leaving it to GetParameterInfo,
+@@ -448,7 +462,7 @@
+           }
+           if (paraminfo.flags & CLAP_PARAM_IS_BYPASS)
+           {
+-            _bypassParamID = paraminfo.id;
++            bypassParamID = paraminfo.id;
+             _bypassThreshold = 0.5 * (paraminfo.min_value + paraminfo.max_value);
+             noteBypassValue(paraminfo.id, result);
+           }
+@@ -458,11 +472,14 @@
+       }
+     }
+   }
++  if (_bypassParamID.load() != bypassParamID) _bypassParamID = bypassParamID;
+ }
+ 
+ OSStatus WrapAsAUV2::GetParameterList(AudioUnitScope inScope, AudioUnitParameterID *outParameterList,
+                                       UInt32 &outNumParameters)
+ {
++  // The ordered list is rebuilt by setupParameters() under this lock.
++  std::lock_guard<std::mutex> guard(_paramTreeMutex);
+   if (inScope != kAudioUnitScope_Global || !_paramOrderingProvided)
+   {
+     return AUBase::GetParameterList(inScope, outParameterList, outNumParameters);
+--- a/src/detail/auv2/auv2_base_classes.h
++++ b/src/detail/auv2/auv2_base_classes.h
+@@ -809,7 +809,8 @@
+   Clumps _clumps;
+ 
+   // the CLAP parameter flagged CLAP_PARAM_IS_BYPASS, driven by kAudioUnitProperty_BypassEffect
+-  clap_id _bypassParamID = CLAP_INVALID_ID;
++  // Read by SetParameter() on the host's automation thread; rescans settle it.
++  std::atomic<clap_id> _bypassParamID{CLAP_INVALID_ID};
+   std::atomic<bool> _isBypassed{false};
+   // The bypass parameter's midpoint: at or above it, bypassed.
+   std::atomic<double> _bypassThreshold{0.5};
