@@ -148,7 +148,7 @@ std::string pathOf(IShellItem* item) {
 
 struct NativeFiles::Platform {
     std::thread thread;
-    DWORD threadId = 0;
+    std::atomic<DWORD> threadId{0};
     std::atomic<bool> finished{false};
     std::mutex lock;
     std::vector<std::string> paths;
@@ -157,7 +157,7 @@ struct NativeFiles::Platform {
         if (!thread.joinable()) return;
         // Closing the dialog's windows ends its modal loop; then it returns.
         while (!finished.load()) {
-            EnumThreadWindows(threadId, [](HWND w, LPARAM) -> BOOL { PostMessageW(w, WM_CLOSE, 0, 0); return TRUE; }, 0);
+            EnumThreadWindows(threadId.load(), [](HWND w, LPARAM) -> BOOL { PostMessageW(w, WM_CLOSE, 0, 0); return TRUE; }, 0);
             Sleep(10);
         }
         thread.join();
@@ -171,7 +171,7 @@ bool NativeFiles::start(const Options& o, bool saving, Done done) {
     Platform* p = platform_.get();
     const HWND owner = GetAncestor(reinterpret_cast<HWND>(parent_), GA_ROOT);
     p->thread = std::thread([p, o, saving, owner] {
-        p->threadId = GetCurrentThreadId();
+        p->threadId.store(GetCurrentThreadId());
         const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
         std::vector<std::string> chosen;
         IFileDialog* dialog = nullptr;
