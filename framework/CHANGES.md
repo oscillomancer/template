@@ -32,6 +32,20 @@ Engine and plugin:
 - The audio feed carries silence, not the previous block, for an input
   channel the host leaves unconnected.
 
+VST3 and AU (five more clap-wrapper patches, `cmake/patches`):
+- AU: a restart-on-change parameter takes effect -- the wrapper now answers
+  `request_restart` by deactivating and activating the plugin from its idle
+  loop (a render arriving meanwhile is silent), where it used to ignore it.
+- AU: a state the plugin refuses to save or load is reported to the host as
+  an error, not as saved or restored.
+- AU: the native bypass property follows the Bypass parameter when
+  automation, the editor or a loaded state moves it.
+- VST3: a tail change reaches the host from the UI thread (it was called
+  from the audio thread, with no check that the host gave a handler).
+- VST3: the notes a host leaves sounding are tracked in a fixed 1024 slots
+  made at activation, so many held notes no longer allocate on the audio
+  thread.
+
 State and files:
 - A/B slots remember their preset by name or file rather than by list
   position: deleting or renaming a preset no longer leaves a slot pointing

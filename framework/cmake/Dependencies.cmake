@@ -183,6 +183,22 @@ if (SUPPLE_BUILD_PLUGIN)
     # - vst3-midi-out: MIDI the plugin sent (controllers, pitch bend,
     #   pressure, program changes) was dropped; it now leaves as VST3 MIDI CC
     #   output events.
+    # - vst3-tail-on-main: a tail change (CLAP calls it on the audio thread)
+    #   called the host's IComponentHandler there, and without checking the
+    #   host had given one; it now goes from the idle loop on the UI thread.
+    # - vst3-note-capacity: the notes a host left sounding were kept in a
+    #   vector reserved for 32 that grew on the audio thread; it now holds
+    #   1024, made at activation, and recycles a slot when full. Polyphonic
+    #   pressure for a note it does not know is dropped, not sent half-made.
+    # - auv2-restart: request_restart did nothing in AU, so a parameter that
+    #   needs one (restartOnChange) never took effect; the wrapper now
+    #   deactivates and activates the plugin itself from its idle loop, and a
+    #   render that arrives meanwhile outputs silence rather than waiting.
+    # - auv2-state-errors: a state the plugin refused to save or load was
+    #   reported to the host as saved or restored.
+    # - auv2-bypass-sync: the native BypassEffect property followed only the
+    #   host setting it; it now follows the bypass parameter however it moves
+    #   (automation, the plugin's editor, a loaded state), and tells the host.
     supple_apply_patches(clap-wrapper)
 endif()
 

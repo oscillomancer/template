@@ -48,7 +48,9 @@ set(SUPPLE_PIN_nanovg_metal_WHEN metal)
 # Patches, by the dependency they apply to (cmake/patches/).
 set(SUPPLE_PATCHES_clap-wrapper
     clap-wrapper-vst3-all-points.patch clap-wrapper-vst3-timer-floor.patch clap-wrapper-vst3-self-handle.patch
-    clap-wrapper-vst3-surround.patch clap-wrapper-vst3-midi-out.patch)
+    clap-wrapper-vst3-surround.patch clap-wrapper-vst3-midi-out.patch clap-wrapper-vst3-tail-on-main.patch
+    clap-wrapper-vst3-note-capacity.patch clap-wrapper-auv2-restart.patch clap-wrapper-auv2-state-errors.patch
+    clap-wrapper-auv2-bypass-sync.patch)
 set(SUPPLE_PATCHES_pugl pugl-win-module-class.patch)
 
 # What a vendored checkout records about itself (tools/vendor.cmake writes
