@@ -14,6 +14,11 @@ endfunction()
 
 # --- SDK-free -----------------------------------------------------------------------------
 
+add_test(NAME bin2c
+    COMMAND ${CMAKE_COMMAND} -DFRAMEWORK=${SUPPLE_FRAMEWORK}
+        -DWORK=${CMAKE_BINARY_DIR}/bin2c-test
+        -P ${SUPPLE_FRAMEWORK}/cmake/test/Bin2c.cmake)
+
 add_test(NAME sanitizer-config
     COMMAND ${CMAKE_COMMAND} -DFRAMEWORK=${SUPPLE_FRAMEWORK}
         -P ${SUPPLE_FRAMEWORK}/cmake/test/Sanitizer.cmake)
