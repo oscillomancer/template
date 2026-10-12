@@ -64,6 +64,14 @@ TEST(the_renderer_rejects_restart_parameter_automation) {
 
 // --- parameter text -------------------------------------------------------------
 
+TEST(signal_differences_never_hide_nonfinite_samples) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (double bad : {nan, double(INFINITY), -double(INFINITY)}) {
+        CHECK(std::isinf(test::maxDifference({{0.0}}, {{bad}})));
+        CHECK(std::isinf(test::maxDifference({{bad}}, {{0.0}})));
+        CHECK(std::isinf(test::maxDifference({{bad}}, {{bad}})));
+    }
+}
 
 TEST(frequency_text_switches_units_where_the_rounded_value_does) {
     const ParamDef f = frequency(0, "F", 20.0, 20000.0, 1000.0);
@@ -887,15 +895,13 @@ namespace {
 // reads it.
 class GlideProbe : public ProcessorBase<GlideProbe> {
   public:
-    static constexpr int kFrames = 64000;
-    GlideProbe() : trace(params::kSmoothedCount, std::vector<double>(kFrames, 0.0)) {}
     void prepare(const ProcessSetup&, const ParamValues&) {}
     void update(const ParamValues&) {}
     void process(Block& b) {
         for (size_t k = 0; k < params::kSmoothedCount; ++k) {
             const uint32_t id = params::at(params::kSmoothedIndices[k]).id;
             const double* v = b.smoothed(id);
-            for (int i = 0; i < b.frames && at + i < kFrames; ++i) trace[k][static_cast<size_t>(at + i)] = v[i];
+            for (int i = 0; i < b.frames && static_cast<size_t>(at + i) < trace[k].size(); ++i) trace[k][static_cast<size_t>(at + i)] = v[i];
             if (!b.gliding(id))
                 for (int i = 1; i < b.frames; ++i) constantLied |= v[i] != v[0];
         }
@@ -908,7 +914,8 @@ class GlideProbe : public ProcessorBase<GlideProbe> {
 
 // Every smoothed parameter starts at `from` and is moved to `to` (both
 // normalized) at frame `when`, through host blocks of the given sizes.
-void glide(BasicEngine<GlideProbe>& e, std::vector<int> blocks, int frames, int when, double from, double to) {
+void glide(BasicEngine<GlideProbe>& e, std::vector<int> blocks, int frames, int when, double from, double to, int trailing = 0) {
+    e.processor().trace.assign(params::kSmoothedCount, std::vector<double>(static_cast<size_t>(frames + trailing)));
     for (uint16_t i : params::kSmoothedIndices) e.store().set(i, fromNormalized(params::at(i), from));
     e.activate(48000.0, *std::max_element(blocks.begin(), blocks.end()), 2, 2);
     struct Moves {
@@ -937,6 +944,12 @@ void glide(BasicEngine<GlideProbe>& e, std::vector<int> blocks, int frames, int 
 
 }  // namespace
 
+TEST(smoothing_capture_is_sized_for_the_requested_duration) {
+    if (!params::kSmoothedCount) return;
+    auto e = std::make_unique<BasicEngine<GlideProbe>>();
+    glide(*e, {512}, 70000, 1000, 0.2, 0.8);
+    CHECK(e->processor().trace.front().size() >= 70000);
+}
 
 TEST(smoothed_parameters_glide_sample_accurately_and_settle_exactly) {
     if (params::kSmoothedCount == 0) {
@@ -977,7 +990,7 @@ TEST(smoothed_parameters_glide_sample_accurately_and_settle_exactly) {
     }
     // Reset snaps: what follows starts at the value, not on the way to it.
     auto reused = std::make_unique<BasicEngine<GlideProbe>>();
-    glide(*reused, {512}, 4096, 1000, 0.2, 0.8);
+    glide(*reused, {512}, 4096, 1000, 0.2, 0.8, 512);
     reused->reset();
     std::vector<double> l(512), r(512);
     double* io[] = {l.data(), r.data()};

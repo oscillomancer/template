@@ -37,6 +37,7 @@
 
 #include "core/ParamTable.h"
 #include "host_contract.h"
+#include "Check.h"
 #include "ProductInfo.h"
 
 using namespace Steinberg;
@@ -574,7 +575,7 @@ int main(int argc, char** argv) {
         std::snprintf(what, sizeof(what), "%s: VST3 and CLAP render alike", info::kAudioOutput ? layoutName(l) : "notes");
         double worst = a.audio.size() == b.audio.size() ? 0.0 : INFINITY;
         for (size_t k = 0; k < a.audio.size() && k < b.audio.size(); ++k)
-            worst = std::max(worst, static_cast<double>(std::fabs(a.audio[k] - b.audio[k])));
+            worst = std::max(worst, supple::test::finiteDifference(a.audio[k], b.audio[k]));
         if (!(worst <= 1e-6)) std::printf("     largest difference %g\n", worst);
         check(a.ok && b.ok && worst <= 1e-6 && (!info::kAudioOutput || !a.audio.empty()), what);
         if (info::kNoteOutput) {

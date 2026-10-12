@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "Check.h"
 #include "core/Engine.h"
 #include "core/ParamTable.h"
 
@@ -81,7 +82,7 @@ inline double maxDifference(const Signal& a, const Signal& b) {
     double d = 0.0;
     for (size_t c = 0; c < a.size(); ++c) {
         if (a[c].size() != b[c].size()) return INFINITY;
-        for (size_t i = 0; i < a[c].size(); ++i) d = std::max(d, std::fabs(a[c][i] - b[c][i]));
+        for (size_t i = 0; i < a[c].size(); ++i) d = std::max(d, finiteDifference(a[c][i], b[c][i]));
     }
     return d;
 }

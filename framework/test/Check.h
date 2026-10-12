@@ -22,6 +22,10 @@
 
 namespace supple::test {
 
+inline double finiteDifference(double a, double b) {
+    return std::isfinite(a) && std::isfinite(b) ? std::fabs(a - b) : INFINITY;
+}
+
 struct Case {
     const char* name;
     void (*run)();
