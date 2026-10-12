@@ -34,6 +34,7 @@
 #include "dsp/Voices.h"
 #include "dsp/Worker.h"
 #include "tools/wav.h"
+#include "tools/Timing.h"
 
 using namespace supple;
 using namespace supple::dsp;
@@ -296,6 +297,27 @@ TEST(true_peak_keeps_sample_peaks_and_measures_the_high_band_at_every_phase) {
         }
     }
     std::printf("      worst true peak under-read %.3f dB through 0.455 fs\n", worst);
+}
+
+namespace {
+struct TestClock {
+    using duration = std::chrono::duration<double>;
+    using time_point = std::chrono::time_point<TestClock>;
+    static inline double seconds = 0.0;
+    static time_point now() { return time_point(duration(seconds)); }
+};
+}
+
+TEST(benchmark_timing_excludes_every_trials_preparation) {
+    int trials = 0;
+    const double elapsed = tools::fastestPrepared<TestClock>(5, [&] {
+        TestClock::seconds += 100.0;
+        ++trials;
+    }, [&] {
+        TestClock::seconds += 2.0 + trials;
+    });
+    CHECK(trials == 5);
+    CHECK_NEAR(elapsed, 3.0, 1e-12);
 }
 
 // --- oversampling ---------------------------------------------------------------------
