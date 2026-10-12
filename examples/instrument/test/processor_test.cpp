@@ -327,11 +327,21 @@ TEST(the_offline_triangle_keeps_its_level_at_sub_hertz_pitches) {
     o.offline = true;
     o.initial = {{kWaveform, 1.0}, {kAttack, 1.0}, {kLevel, 0.0}};
     o.events = {test::noteOn(0, 0), test::expression(0, NoteExpression::Type::Tuning, -60.0)};
-    // At about 0.255 Hz the Fourier series includes harmonics beyond 46340,
-    // whose squares no longer fit in an int. One sample is enough: phase 0
+    // Below 20 Hz the bounded offline path uses the naive shape. Phase 0
     // is the triangle's -1 corner, through a 48-sample attack and gain 1/2.
     const test::Signal out = test::render(test::silence(2, 1), o);
     CHECK_NEAR(out[0][0] * 96.0, -1.0, 1e-5);
+}
+
+TEST(extreme_negative_tuning_finishes_offline_with_finite_audio) {
+    test::RenderOptions o;
+    o.offline = true;
+    o.initial = {{kWaveform, 1.0}, {kAttack, 1.0}, {kLevel, 0.0}};
+    o.events = {test::noteOn(0, 60), test::expression(0, NoteExpression::Type::Tuning, -1e9)};
+    const auto out = test::render(test::silence(2, 512), o);
+    for (const auto& channel : out)
+        for (double x : channel) CHECK(std::isfinite(x));
+    CHECK(test::peak(out) > 0.1);
 }
 
 // --- the voice manager's modes --------------------------------------------------------------
