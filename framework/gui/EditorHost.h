@@ -51,7 +51,11 @@ class EditorHost {
 
     // What the plugin is: its parameters, properties and identity. It
     // outlives the editor. By default a product with tables' own.
+#if SUPPLE_PRODUCT_RUNTIME
+    virtual const Definition& pluginDefinition() const = 0;
+#else
     virtual const Definition& pluginDefinition() const { return *productDefinition(); }
+#endif
 
     virtual double value(uint32_t id) const = 0;
     // Non-destructive host modulation currently applied, in host units.

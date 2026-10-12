@@ -242,6 +242,33 @@ inline size_t maxSavedBytes(const Definition& d) {
     return maxSavedBytes(d.params().count() - d.params().outputs().size(), d.properties().count(), limits);
 }
 
+// Appends a chunk to a saved blob: what a layer adds (plugin/Layer.h).
+inline void appendChunk(std::vector<uint8_t>& blob, uint32_t chunkTag, const std::vector<uint8_t>& payload) {
+    const uint32_t size = static_cast<uint32_t>(payload.size());
+    for (int i = 3; i >= 0; --i) blob.push_back(static_cast<uint8_t>(chunkTag >> (8 * i)));
+    for (int i = 0; i < 4; ++i) blob.push_back(static_cast<uint8_t>(size >> (8 * i)));
+    blob.insert(blob.end(), payload.begin(), payload.end());
+}
+
+// The payload of the first chunk tagged `chunkTag` in a blob that load()
+// accepts, or false when there is none.
+inline bool findChunk(const uint8_t* data, size_t size, uint32_t chunkTag, const uint8_t*& payload, size_t& length) {
+    Reader r(data, size);
+    uint32_t magic = 0, version = 0;
+    if (!r.tag(magic) || !r.u32(version)) return false;
+    while (r.remaining() > 0) {
+        uint32_t tag = 0, n = 0;
+        if (!r.tag(tag) || !r.u32(n) || r.remaining() < n) return false;
+        if (tag == chunkTag) {
+            payload = data + r.position();
+            length = n;
+            return true;
+        }
+        r.skip(n);
+    }
+    return false;
+}
+
 enum class LoadResult { Ok, NotOurs, Corrupt };
 
 // NotOurs means the magic did not match: the caller may try a legacy loader.

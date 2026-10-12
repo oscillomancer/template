@@ -40,7 +40,9 @@ fs::path PresetLibrary::fromUtf8(std::string_view text) { return files::fromUtf8
 
 std::string PresetLibrary::toUtf8(const fs::path& path) { return files::toUtf8(path); }
 
+#if !SUPPLE_PRODUCT_RUNTIME
 fs::path PresetLibrary::defaultUserFolder() { return defaultUserFolder(productDefinition()->info()); }
+#endif
 
 fs::path PresetLibrary::defaultUserFolder(const PluginInfo& info) {
     if (const char* forced = std::getenv("SUPPLE_PRESETS_DIR"); forced && *forced) return fromUtf8(forced);

@@ -60,8 +60,10 @@ class PresetLibrary {
 
     // The platform's folder for this plugin's presets.
     static std::filesystem::path defaultUserFolder(const PluginInfo& info);
+#if !SUPPLE_PRODUCT_RUNTIME
     // A product with tables: its own.
     static std::filesystem::path defaultUserFolder();
+#endif
     static std::filesystem::path fromUtf8(std::string_view text);
     static std::string toUtf8(const std::filesystem::path& path);
     // A name that can be a file on every platform: 1 to 64 bytes, no

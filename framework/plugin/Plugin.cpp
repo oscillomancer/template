@@ -47,6 +47,7 @@
 #include "core/StateFormat.h"
 #include "plugin/EditBridge.h"
 #include "plugin/Entry.h"
+#include "plugin/Layer.h"
 #include "plugin/PresetDiscovery.h"
 #include "plugin/TestHooks.h"
 #include "ProductInfo.h"
@@ -64,7 +65,8 @@ namespace {
 
 using Processor = product::Processor;
 
-constexpr uint32_t kTimerMs = 16;  // ~60 Hz editor ticks
+constexpr uint32_t kTimerMs = 16;       // ~60 Hz editor ticks
+constexpr uint32_t kLayerTimerMs = 33;  // ~30 Hz layer ticks
 
 #ifdef NDEBUG
 constexpr bool kDebugBuild = false;
@@ -303,7 +305,7 @@ class PluginTuning final : public TuningSource {
 
 // --- the plugin -------------------------------------------------------------------
 
-struct Plugin : StateAccess
+struct Plugin final : StateAccess, Instance
 #if SUPPLE_WITH_GUI
     , gui::EditorHost
 #endif
@@ -323,6 +325,8 @@ struct Plugin : StateAccess
     const clap_host_context_menu_t* hostContextMenu = nullptr;
     const clap_host_track_info_t* hostTrackInfo = nullptr;
     const clap_host_note_name_t* hostNoteName = nullptr;
+    const clap_host_audio_ports_t* hostAudioPorts = nullptr;
+    const clap_host_note_ports_t* hostNotePorts = nullptr;
     uint16_t tuningSpace = UINT16_MAX;  // where the host's tuning events are, if anywhere
     // The host creates the plugin on its main thread; without thread-check,
     // that is how a debug build knows it.
@@ -350,6 +354,14 @@ struct Plugin : StateAccess
     PluginTuning tuning;  // PRODUCT_TUNING
     NoteNames noteNameList;  // main thread: the note names as the host last read them
 
+    // The product's layer (plugin/Layer.h), if it has one, and its timer.
+    std::unique_ptr<Layer> layer;
+    clap_id layerTimerId = CLAP_INVALID_ID;
+    std::atomic<bool> layerCallback{false};
+    // What redefine() asked for, applied at the next deactivation.
+    DefinitionPtr pendingDefinition;
+    bool applyRestart = false;  // main thread: an apply changed a restart parameter
+
     explicit Plugin(DefinitionPtr d)
         : definition(std::move(d)),
           magic(state::fourcc(definition->info().stateTag.c_str())),
@@ -368,6 +380,35 @@ struct Plugin : StateAccess
     bool namesNotes() const { return NamesNotes<Processor> && info().takesNotes(); }
     // Voices, for hosts that plan around them (CLAP voice-info).
     int voiceCapacity() const { return info().voices > 0 ? info().voices : Processor::kVoices; }
+    // --- Instance: what the layer sees (main thread) --------------------------------
+
+    const clap_plugin_t* clapPlugin() const override { return &clap; }
+    const clap_host_t* clapHost() const override { return host; }
+    const void* hostExtension(const char* id) const override {
+        return host && host->get_extension ? host->get_extension(host, id) : nullptr;
+    }
+    const DefinitionPtr& currentDefinition() const override { return definition; }
+    bool isActive() const override { return active; }
+    state::Snapshot snapshot() const override {
+        engine->properties().collect();
+        state::Snapshot s(*definition);
+        for (size_t i = 0; i < table().count(); ++i) s.host[i] = engine->store().get(i);
+        for (size_t i = 0; i < propertyList().count(); ++i) {
+            s.property[i] = engine->properties().get(i);
+            s.hasProperty[i] = true;
+        }
+        return s;
+    }
+    void* processor() override { return &engine->processor(); }
+    void requestLayerCallback() override {
+        layerCallback.store(true, std::memory_order_release);
+        requestCallback();
+    }
+    void log(clap_log_severity severity, std::string_view text) const override {
+        const std::string line(text);
+        log(severity, line.c_str());
+    }
+
     // The table index of a parameter the host and the editor may set: an
     // output is read-only. -1 otherwise.
     int editable(uint32_t id) const {
@@ -487,16 +528,13 @@ struct Plugin : StateAccess
     }
 
     std::vector<uint8_t> save(state::Context context) {
-        engine->properties().collect();
-        state::Snapshot s(*definition);
-        for (size_t i = 0; i < table().count(); ++i) s.host[i] = engine->store().get(i);
-        for (size_t i = 0; i < propertyList().count(); ++i) {
-            s.property[i] = engine->properties().get(i);
-            s.hasProperty[i] = true;
-        }
+        state::Snapshot s = snapshot();
         s.editorScale = currentEditorScale();
         if (presets && context == state::Context::Project) presets->describe(s);
-        return state::save(magic, s, context);
+        std::vector<uint8_t> bytes = state::save(magic, s, context);
+        if (layer && layer->chunkTag() != 0)
+            state::appendChunk(bytes, layer->chunkTag(), layer->saveChunk(s, context));
+        return bytes;
     }
 
     bool load(const uint8_t* data, size_t size, state::Context context) {
@@ -517,6 +555,16 @@ struct Plugin : StateAccess
                 return false;
             }
         }
+        // The layer's chunk may rewrite the snapshot, or refuse it, before
+        // anything is applied.
+        const uint8_t* chunk = nullptr;
+        size_t chunkSize = 0;
+        if (result == state::LoadResult::Ok && layer && layer->chunkTag() != 0 &&
+            state::findChunk(data, size, layer->chunkTag(), chunk, chunkSize) &&
+            !layer->loadChunk(chunk, chunkSize, snapshot, context)) {
+            log(CLAP_LOG_WARNING, "the state to load has a chunk this plugin cannot read; nothing was loaded");
+            return false;
+        }
         apply(snapshot, context);
         return true;
     }
@@ -524,9 +572,21 @@ struct Plugin : StateAccess
     // Everything the snapshot holds, for its context: a preset changes the
     // sound and leaves the session (editor size, perProject() properties,
     // which preset is loaded) as it was.
-    void apply(const state::Snapshot& snapshot, state::Context context) {
+    void apply(const state::Snapshot& snapshot, state::Context context) override {
         const bool session = context == state::Context::Project;
-        const bool restart = active && restartParamsDiffer(snapshot.host);
+        applySound(snapshot, session);
+        if (session && snapshot.editorScale > 0.0) restoreEditorScale(snapshot.editorScale);
+        if (session && presets) presets->restore(snapshot);
+        afterApply();
+    }
+    void applyValues(const state::Snapshot& snapshot) override {
+        applySound(snapshot, true);
+        afterApply();
+    }
+
+    // The values and properties; perProject() properties only with `perProject`.
+    void applySound(const state::Snapshot& snapshot, bool perProject) {
+        applyRestart = active && restartParamsDiffer(snapshot.host);
         // Only the stores are written here; the audio thread applies them.
         // Outputs are the processor's, and state does not carry them.
         for (size_t i = 0; i < table().count(); ++i)
@@ -534,15 +594,18 @@ struct Plugin : StateAccess
         // A file property's file is relocated if it moved, and loaded before
         // this returns, so the next block plays it.
         for (size_t i = 0; i < propertyList().count(); ++i) {
-            if (!session && propertyList().at(i).perProjectOnly()) continue;
+            if (!perProject && propertyList().at(i).perProjectOnly()) continue;
             engine->setProperty(i, snapshot.hasProperty[i] ? std::string_view(snapshot.property[i])
                                                            : std::string_view(propertyList().at(i).def),
                                 true);
         }
-        if (session && snapshot.editorScale > 0.0) restoreEditorScale(snapshot.editorScale);
-        if (session && presets) presets->restore(snapshot);
+    }
+
+    // Hosts hear that the values moved.
+    void afterApply() {
         if (hostParams && hostParams->rescan) hostParams->rescan(host, CLAP_PARAM_RESCAN_VALUES);
-        if (restart) requestRestart();
+        if (applyRestart) requestRestart();
+        applyRestart = false;
         // A stopped host would otherwise apply the new values only when it
         // next processes; a flush applies them now.
         if (active) requestFlush();
@@ -569,7 +632,7 @@ struct Plugin : StateAccess
     }
 
     // The session changed from inside the plugin; the host should save it.
-    void markDirty() {
+    void markDirty() override {
         if (hostState && hostState->mark_dirty) hostState->mark_dirty(host);
     }
 
@@ -764,6 +827,73 @@ struct Plugin : StateAccess
         for (size_t i = 0; i < table().count(); ++i)
             if (table().at(i).is(pflag::kRestart) && hostValues[i] != engine->store().get(i)) return true;
         return false;
+    }
+
+    // --- redefinition (main thread) ----------------------------------------------------
+
+    bool redefine(DefinitionPtr next) override {
+        if (!next || next->info().id != info().id || next->info().stateTag != info().stateTag ||
+            !next->problems().empty())
+            return false;
+        pendingDefinition = std::move(next);
+        if (!active) swapDefinition();
+        else requestRestart();  // the swap happens as the host deactivates
+        return true;
+    }
+
+    // While inactive: the pending definition replaces the current one. What
+    // the instance holds carries over through the state, by parameter ID and
+    // the layer's chunk.
+    void swapDefinition() {
+        DefinitionPtr next = std::move(pendingDefinition);
+        pendingDefinition.reset();
+        if (!next || next == definition) return;
+        const std::vector<uint8_t> carried = save(state::Context::Project);
+        const PluginInfo before = info();
+        const int channelsBefore = channels;
+        const bool offline = engine->offline();
+        definition = std::move(next);
+        engine = std::make_unique<Engine>(definition);
+        engine->setOffline(offline);
+        if (info().tuning) engine->setTuning(&tuning);
+        edits = std::make_unique<EditBridge>(table().count());
+        heardOutputs = std::make_unique<std::atomic<double>[]>(std::max<size_t>(1, table().outputs().size()));
+        for (size_t k = 0; k < table().outputs().size(); ++k)
+            heardOutputs[k].store(hostDefault(table().at(table().outputs()[k])), std::memory_order_relaxed);
+        resendOutputs = true;
+        if (!info().offers(channels)) channels = info().layouts.empty() ? 0 : info().layouts[0].channels;
+        presets.reset();
+        createPresets();
+        load(carried.data(), carried.size(), state::Context::Project);
+        if (hostParams && hostParams->rescan) hostParams->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        const PluginInfo& after = info();
+        const bool ports = before.kind != after.kind || before.sidechain != after.sidechain ||
+                           before.auxOutputs != after.auxOutputs || before.layouts != after.layouts ||
+                           channels != channelsBefore;
+        if (ports && hostAudioPorts && hostAudioPorts->rescan) {
+            const uint32_t flags = CLAP_AUDIO_PORTS_RESCAN_NAMES | CLAP_AUDIO_PORTS_RESCAN_FLAGS |
+                                   CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT | CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE |
+                                   CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR | CLAP_AUDIO_PORTS_RESCAN_LIST;
+            hostAudioPorts->rescan(host, flags);
+        }
+        if ((before.takesNotes() != after.takesNotes() || before.sendsNotes() != after.sendsNotes()) && hostNotePorts &&
+            hostNotePorts->rescan)
+            hostNotePorts->rescan(host, CLAP_NOTE_PORTS_RESCAN_ALL);
+        if (namesNotes() && !hostNoteName) hostNoteName = hostExtension<const clap_host_note_name_t>(CLAP_EXT_NOTE_NAME);
+        checkNoteNames();
+#if SUPPLE_WITH_GUI
+        if (editor) {
+            // The editor shows the old table: a new one for the new, at the
+            // same scale if the host agrees to the size.
+            editor->rebuild(*this);
+            engine->setMetering(true);
+            uint32_t w = 0, h = 0, cw = 0, ch = 0;
+            editor->sizeAt(editor->userScale(), w, h);
+            editor->size(cw, ch);
+            if ((w != cw || h != ch) && hostGui && hostGui->request_resize) hostGui->request_resize(host, w, h);
+        }
+#endif
+        if (layer) layer->redefined();
     }
 
 #if SUPPLE_WITH_GUI
@@ -1581,15 +1711,19 @@ const clap_plugin_gui_t kGui = {guiIsApiSupported, guiPreferredApi, guiCreate,  
                                 guiAdjustSize,     guiSetSize,      guiSetParent,    guiSetTransient,
                                 guiSuggestTitle,   guiShow,         guiHide};
 
+#endif  // SUPPLE_WITH_GUI
+
+// The editor's timer, and the layer's.
 void CLAP_ABI timerTick(const clap_plugin_t* p, clap_id id) {
     Plugin* s = self(p);
     s->expect(Thread::Main, Site::Timer);
+#if SUPPLE_WITH_GUI
     if (s->editor && id == s->timerId) s->editor->tick();
+#endif
+    if (s->layer && id == s->layerTimerId) s->layer->tick();
 }
 
 const clap_plugin_timer_support_t kTimer = {timerTick};
-
-#endif  // SUPPLE_WITH_GUI
 
 // --- lifecycle ---------------------------------------------------------------------------------
 
@@ -1620,16 +1754,29 @@ bool CLAP_ABI pluginInit(const clap_plugin_t* p) {
         s->tuning.attach(s->host, s->hostExtension<const clap_host_tuning_t>(CLAP_EXT_TUNING));
         s->engine->setTuning(&s->tuning);
     }
+    s->hostAudioPorts = s->hostExtension<const clap_host_audio_ports_t>(CLAP_EXT_AUDIO_PORTS);
+    s->hostNotePorts = s->hostExtension<const clap_host_note_ports_t>(CLAP_EXT_NOTE_PORTS);
 #if SUPPLE_WITH_GUI
     s->refreshTrack();  // the host may never say it changed
 #endif
     s->createPresets();
+#if SUPPLE_PRODUCT_LAYER
+    s->layer = product::makeLayer(*s);
+    if (s->layer && s->hostTimer && s->hostTimer->register_timer) {
+        clap_id id = CLAP_INVALID_ID;
+        if (s->hostTimer->register_timer(s->host, kLayerTimerMs, &id)) s->layerTimerId = id;
+    }
+#endif
     return true;
 }
 
 void CLAP_ABI pluginDestroy(const clap_plugin_t* p) {
     Plugin* s = self(p);
     s->expect(Thread::Main, Site::Destroy);
+    if (s->layerTimerId != CLAP_INVALID_ID && s->hostTimer && s->hostTimer->unregister_timer)
+        s->hostTimer->unregister_timer(s->host, s->layerTimerId);
+    s->layerTimerId = CLAP_INVALID_ID;
+    s->layer.reset();  // first: it may reach the rest until it goes
     s->tuning.detach();
 #if SUPPLE_WITH_GUI
     // A host should destroy the editor first; not all do, and a timer left
@@ -1655,6 +1802,7 @@ bool CLAP_ABI pluginActivate(const clap_plugin_t* p, double sampleRate, uint32_t
     s->resendOutputs = true;
     s->restartWanted.store(false, std::memory_order_relaxed);
     s->active = true;
+    if (s->layer) s->layer->activated();
     return true;
 }
 
@@ -1663,6 +1811,9 @@ void CLAP_ABI pluginDeactivate(const clap_plugin_t* p) {
     s->expect(Thread::Main, Site::Deactivate);
     s->engine->deactivate();
     s->active = false;
+    // A redefinition waits for this: parameters change only while inactive.
+    if (s->pendingDefinition) s->swapDefinition();
+    if (s->layer) s->layer->deactivated();
 }
 
 bool CLAP_ABI pluginStartProcessing(const clap_plugin_t* p) SUPPLE_REALTIME {
@@ -1782,6 +1933,8 @@ clap_process_status CLAP_ABI pluginProcess(const clap_plugin_t* p, const clap_pr
 const void* CLAP_ABI pluginExtension(const clap_plugin_t* p, const char* id) {
     const Plugin& s = *self(p);
     const PluginInfo& info = s.info();
+    if (s.layer)
+        if (const void* own = s.layer->extension(id)) return own;
     if (!std::strcmp(id, CLAP_EXT_AUDIO_PORTS)) return &kAudioPorts;
     if (info.audioOutput()) {
         if (!std::strcmp(id, CLAP_EXT_AUDIO_PORTS_CONFIG)) return &kAudioPortsConfig;
@@ -1810,8 +1963,10 @@ const void* CLAP_ABI pluginExtension(const clap_plugin_t* p, const char* id) {
     if (info.tuning && !std::strcmp(id, CLAP_EXT_TUNING)) return &kTuningExt;
 #if SUPPLE_WITH_GUI
     if (!std::strcmp(id, CLAP_EXT_GUI)) return &kGui;
-    if (!std::strcmp(id, CLAP_EXT_TIMER_SUPPORT)) return &kTimer;
     if (!std::strcmp(id, CLAP_EXT_TRACK_INFO) || !std::strcmp(id, CLAP_EXT_TRACK_INFO_COMPAT)) return &kTrackInfo;
+    if (!std::strcmp(id, CLAP_EXT_TIMER_SUPPORT)) return &kTimer;
+#else
+    if (s.layer && !std::strcmp(id, CLAP_EXT_TIMER_SUPPORT)) return &kTimer;
 #endif
     return nullptr;
 }
@@ -1830,6 +1985,7 @@ void CLAP_ABI pluginOnMainThread(const clap_plugin_t* p) {
         s->flushRequested.store(false, std::memory_order_release);
         s->requestFlush();
     }
+    if (s->layer && s->layerCallback.exchange(false, std::memory_order_acq_rel)) s->layer->onMainThread();
 }
 
 // --- factory ----------------------------------------------------------------------------------
@@ -1915,6 +2071,11 @@ const clap_plugin_t* CLAP_ABI factoryCreate(const clap_plugin_factory_t*, const 
 const clap_plugin_factory_t kFactory = {factoryCount, factoryDescriptor, factoryCreate};
 
 }  // namespace
+
+Layer* Layer::of(const clap_plugin_t* plugin) {
+    return plugin && plugin->plugin_data ? self(plugin)->layer.get() : nullptr;
+}
+
 }  // namespace supple::plugin
 
 supple::gui::EditorHost* supple_test_editor_host(const clap_plugin_t* plugin) {

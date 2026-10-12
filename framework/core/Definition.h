@@ -40,6 +40,7 @@ enum class PluginKind : uint8_t {
 struct BusLayout {
     int channels = 2;
     Layout layout = Layout::Stereo;
+    bool operator==(const BusLayout&) const = default;
 };
 
 // A plugin's identity and capabilities: what product.cmake says of a C++

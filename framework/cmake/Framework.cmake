@@ -160,6 +160,10 @@ endfunction()
 supple_sources(product_dsp_sources ${PRODUCT_DSP_SOURCES})
 supple_sources(product_editor_sources ${PRODUCT_EDITOR_SOURCES})
 supple_sources(product_test_sources ${PRODUCT_TEST_SOURCES})
+supple_sources(product_layer_sources ${PRODUCT_LAYER_SOURCES})
+if (product_layer_sources AND NOT PRODUCT_LAYER)
+    message(FATAL_ERROR "PRODUCT_LAYER_SOURCES needs PRODUCT_LAYER ON")
+endif()
 
 # --- the product ----------------------------------------------------------------------------
 
@@ -283,8 +287,12 @@ if (SUPPLE_BUILD_GUI)
 endif()
 
 if (SUPPLE_BUILD_PLUGIN)
-    add_library(product-impl STATIC ${SUPPLE_FRAMEWORK}/plugin/Plugin.cpp ${SUPPLE_FRAMEWORK}/plugin/PresetDiscovery.cpp)
+    add_library(product-impl STATIC ${SUPPLE_FRAMEWORK}/plugin/Plugin.cpp ${SUPPLE_FRAMEWORK}/plugin/PresetDiscovery.cpp
+        ${product_layer_sources})
     target_link_libraries(product-impl PUBLIC product-core clap)
+    # A product's layer (plugin/Layer.h): product::makeLayer, defined in
+    # PRODUCT_LAYER_SOURCES or a library targets.cmake links in.
+    target_compile_definitions(product-impl PUBLIC SUPPLE_PRODUCT_LAYER=$<BOOL:${PRODUCT_LAYER}>)
     # clapwrapper/vst3.h: the extension that tells the VST3 wrapper about
     # note expressions and MIDI channels.
     target_include_directories(product-impl PRIVATE ${clap-wrapper_SOURCE_DIR}/include)
@@ -301,7 +309,9 @@ if (SUPPLE_BUILD_PLUGIN)
     supple_defaults(product-impl)
 
     set(formats CLAP VST3)
-    if (APPLE)
+    # An AU component is one plugin, its codes fixed in its bundle: a
+    # run-time product, whose plugins are found when it runs, has none.
+    if (APPLE AND NOT PRODUCT_RUNTIME)
         list(APPEND formats AUV2)
     endif()
     set(SUPPLE_ASSETS ${CMAKE_BINARY_DIR}/plugins)
