@@ -368,6 +368,12 @@ struct Plugin : StateAccess
     bool namesNotes() const { return NamesNotes<Processor> && info().takesNotes(); }
     // Voices, for hosts that plan around them (CLAP voice-info).
     int voiceCapacity() const { return info().voices > 0 ? info().voices : Processor::kVoices; }
+    // The table index of a parameter the host and the editor may set: an
+    // output is read-only. -1 otherwise.
+    int editable(uint32_t id) const {
+        const int i = table().indexOf(id);
+        return i >= 0 && !table().at(static_cast<size_t>(i)).isOutput() ? i : -1;
+    }
 
     // --- diagnostics ---------------------------------------------------------------
 
@@ -775,11 +781,7 @@ struct Plugin : StateAccess
         const int i = table().indexOf(id);
         return i >= 0 ? engine->modulation(static_cast<size_t>(i)) : 0.0;
     }
-    // An output is read-only for the editor too.
-    int editable(uint32_t id) const {
-        const int i = table().indexOf(id);
-        return i >= 0 && !table().at(static_cast<size_t>(i)).isOutput() ? i : -1;
-    }
+
     void beginEdit(uint32_t id) override {
         const int i = editable(id);
         if (i < 0) return;
