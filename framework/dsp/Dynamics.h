@@ -192,7 +192,7 @@ class TruePeak {
         int write = 0;
     };
 
-    // Allocates nothing: the interpolator is designed once, at construction.
+    // Designs the interpolator once, allocating at construction, off the audio thread.
     TruePeak() {
         const std::vector<double> h = lowpassKernel(kFactor * kTaps, 0.5 / kFactor * 0.92, 70.0);
         for (int p = 0; p < kFactor; ++p)

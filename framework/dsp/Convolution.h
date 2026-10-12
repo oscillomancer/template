@@ -9,11 +9,11 @@
 //
 // Building one partitions and transforms the whole response, which
 // allocates and takes a while for a long one: do it in prepare(), or off the
-// audio thread (a FileProcessor's load(), dsp/Worker.h) and hand the
+// audio thread (a processor's loadFile(), dsp/Worker.h) and hand the
 // finished object over. process() allocates nothing.
 //
 //   auto room = std::make_unique<dsp::Convolution>();
-//   room->prepare(ir.data(), ir.channels(), ir.frames(), setup.channels);
+//   room->prepare(ir.data().data(), ir.channels(), ir.frames(), setup.channels);
 //   ...
 //   room->process(c, b.channel(c), b.frames);    // in place, per channel
 //
