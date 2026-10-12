@@ -14,6 +14,11 @@ endfunction()
 
 # --- SDK-free -----------------------------------------------------------------------------
 
+add_test(NAME patched-source
+    COMMAND ${CMAKE_COMMAND} -DFRAMEWORK=${SUPPLE_FRAMEWORK}
+        -DWORK=${CMAKE_BINARY_DIR}/patched-source-test
+        -P ${SUPPLE_FRAMEWORK}/cmake/test/PatchedSource.cmake)
+
 add_test(NAME framework-update
     COMMAND ${CMAKE_COMMAND} -DFRAMEWORK=${SUPPLE_FRAMEWORK}
         -DWORK=${CMAKE_BINARY_DIR}/framework-update-test
