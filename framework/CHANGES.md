@@ -4,6 +4,17 @@ The framework is versioned on its own (`framework/VERSION.txt`) so a product can
 tell which one it carries. Each entry says what a product must do, if
 anything, after `framework/tools/update_framework.cmake` brings it in.
 
+## 1.23.1
+
+What a product must do: nothing.
+
+- **Repeated editor rebuilds keep the attached editor alive** (`gui/Gui.cpp`).
+  A native or fallback update could adopt a replacement before the GUI
+  timer collected the previous editor. Rebuilding again in that interval
+  destroyed the editor still attached to the window, crashing at its next
+  draw or teardown. The previous retirement is collected before another
+  replacement is queued.
+
 ## 1.23.0
 
 What a product must do: nothing.
