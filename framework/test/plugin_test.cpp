@@ -906,6 +906,8 @@ TEST(a_deactivated_sidechain_is_unconnected_whatever_its_buffers_hold) {
     if (!activation) return;
     const uint32_t key = product::info::kAudioInput ? 1 : 0;
     CHECK(!activation->set_active(i.plugin, false, 0, false, 32));  // only the sidechain
+    for (uint32_t bits : {0u, 32u, 64u}) CHECK(activation->set_active(i.plugin, true, key, true, bits));
+    for (uint32_t bits : {1u, 16u, 128u}) CHECK(!activation->set_active(i.plugin, true, key, false, bits));
     // The main output of a fresh instance, its key loud but maybe deactivated,
     // or not connected at all.
     auto render = [&](bool active, bool connected) {

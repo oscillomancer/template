@@ -1306,11 +1306,12 @@ const clap_plugin_configurable_audio_ports_t kConfigurablePorts = {configurableC
 // still passes silent buffers. Other ports stay active.
 bool CLAP_ABI portsCanActivateWhileProcessing(const clap_plugin_t*) { return false; }
 
-bool CLAP_ABI portsSetActive(const clap_plugin_t* p, bool isInput, uint32_t index, bool isActive, uint32_t) {
+bool CLAP_ABI portsSetActive(const clap_plugin_t* p, bool isInput, uint32_t index, bool isActive, uint32_t sampleSize) {
     Plugin* s = self(p);
     s->expect(Thread::Main, Site::PortsActivation);
     const PluginInfo& info = s->info();
-    if (s->active || !portExists(info, isInput, index)) return false;
+    if (s->active || !portExists(info, isInput, index) ||
+        (sampleSize != 0 && sampleSize != 32 && sampleSize != 64)) return false;
     if (isInput && info.sidechain && index == sidechainPort(info)) {
         s->sidechainActive = isActive;
         return true;

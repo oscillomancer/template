@@ -18,6 +18,9 @@ What a product must do: nothing.
   (`examples/stages/Layer.cpp`). Its named-stage chunk uses round-trippable
   ASCII numbers in every locale, refuses malformed or non-finite values
   before applying anything, and reads stage names containing tabs intact.
+- **Audio-port activation refuses invalid sample sizes** (`plugin/Plugin.cpp`).
+  CLAP permits 0 (unspecified), 32 or 64; other values now fail without
+  changing whether the sidechain is connected.
 
 ## 1.23.0
 
