@@ -181,6 +181,9 @@ jobs:
       - name: gui-preview (OpenGL, every named scenario, and 2x)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
+          if [ ! -e build/release/gui-preview ] && [ ! -e build/release/gui-preview.exe ]; then
+            echo "No gui-preview: a run-time product has no fixed editor to preview."; exit 0
+          fi
           mkdir -p preview
           .github/scripts/step.sh previews ./build/release/gui-preview --all preview
           .github/scripts/step.sh preview-2x ./build/release/gui-preview preview/default-2x.png --scale 2
@@ -281,6 +284,9 @@ jobs:
       - name: gui-preview (every named scenario, and 2x)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
+          if [ ! -e build/release/gui-preview ] && [ ! -e build/release/gui-preview.exe ]; then
+            echo "No gui-preview: a run-time product has no fixed editor to preview."; exit 0
+          fi
           mkdir -p preview
           .github/scripts/step.sh previews xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview --all preview
           .github/scripts/step.sh preview-2x xvfb-run -a -s "-screen 0 1920x1080x24" ./build/release/gui-preview preview/default-2x.png --scale 2
@@ -403,6 +409,9 @@ jobs:
       - name: gui-preview (every named scenario, and 2x)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.preset == 'release' }}
         run: |
+          if [ ! -e build/release/gui-preview ] && [ ! -e build/release/gui-preview.exe ]; then
+            echo "No gui-preview: a run-time product has no fixed editor to preview."; exit 0
+          fi
           mkdir -p preview
           .github/scripts/step.sh previews ./build/release/gui-preview --all preview
           .github/scripts/step.sh preview-2x ./build/release/gui-preview preview/default-2x.png --scale 2
