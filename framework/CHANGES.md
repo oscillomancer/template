@@ -12,8 +12,8 @@ What a product must do: nothing.
   Its state used `std::to_chars` and `std::from_chars` for doubles, which
   Apple's libc++ offers only from macOS 13.3 (the deployment target is 11).
   It now writes and reads them with streams in the C locale, as exactly.
-- **CI skips `gui-preview` for a run-time product** (`.github/workflows/build.yml`),
-  which builds none.
+- **CI skips `gui-preview` and the AU checks for a run-time product**
+  (`.github/workflows/build.yml`), which builds neither.
 
 ## 1.23.1
 
