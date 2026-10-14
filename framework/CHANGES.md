@@ -14,6 +14,10 @@ What a product must do: nothing.
   destroyed the editor still attached to the window, crashing at its next
   draw or teardown. The previous retirement is collected before another
   replacement is queued.
+- **Stages' state is locale-independent and rejects damaged numbers**
+  (`examples/stages/Layer.cpp`). Its named-stage chunk uses round-trippable
+  ASCII numbers in every locale, refuses malformed or non-finite values
+  before applying anything, and reads stage names containing tabs intact.
 
 ## 1.23.0
 
