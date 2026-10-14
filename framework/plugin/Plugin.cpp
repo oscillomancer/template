@@ -912,7 +912,8 @@ struct Plugin final : StateAccess, Instance
         if (!info().offers(channels)) channels = info().layouts.empty() ? 0 : info().layouts[0].channels;
         presets.reset();
         createPresets();
-        load(carried.data(), carried.size(), state::Context::Project);
+        if (!load(carried.data(), carried.size(), state::Context::Project))
+            log(CLAP_LOG_WARNING, "the state did not carry over to the new definition: it starts from its defaults");
         if (hostParams && hostParams->rescan) hostParams->rescan(host, CLAP_PARAM_RESCAN_ALL);
         const PluginInfo& after = info();
         const bool ports = before.kind != after.kind || before.sidechain != after.sidechain ||
@@ -2086,8 +2087,8 @@ struct Descriptor {
     }
 };
 
-// What the factory has listed (main thread). A descriptor lives as long as
-// the module: hosts keep the pointers.
+// What the factory has listed (under catalogMutex()). A descriptor lives as
+// long as the module: hosts keep the pointers.
 struct Listing {
     std::vector<std::unique_ptr<Descriptor>> all;  // every one handed out
     std::vector<const Descriptor*> current;        // the catalog as last listed
@@ -2116,23 +2117,30 @@ Listing& listing() {
 }
 
 uint32_t CLAP_ABI factoryCount(const clap_plugin_factory_t*) {
+    const std::lock_guard lock(catalogMutex());
     listing().refresh();
     return static_cast<uint32_t>(listing().current.size());
 }
 
 const clap_plugin_descriptor_t* CLAP_ABI factoryDescriptor(const clap_plugin_factory_t*, uint32_t index) {
+    const std::lock_guard lock(catalogMutex());
     if (listing().current.empty()) listing().refresh();
     return index < listing().current.size() ? &listing().current[index]->clap : nullptr;
 }
 
 const clap_plugin_t* CLAP_ABI factoryCreate(const clap_plugin_factory_t*, const clap_host_t* host, const char* id) {
     if (!host || !id) return nullptr;
-    DefinitionPtr definition = catalog().find(id);
-    if (!definition || !Listing::usable(*definition)) return nullptr;
-    const Descriptor& descriptor = listing().descriptorFor(definition);
+    DefinitionPtr definition;
+    const Descriptor* descriptor = nullptr;
+    {
+        const std::lock_guard lock(catalogMutex());
+        definition = catalog().find(id);
+        if (!definition || !Listing::usable(*definition)) return nullptr;
+        descriptor = &listing().descriptorFor(definition);
+    }
     auto* s = new Plugin(std::move(definition));
     s->host = host;
-    s->clap.desc = &descriptor.clap;
+    s->clap.desc = &descriptor->clap;
     s->clap.plugin_data = s;
     s->clap.init = pluginInit;
     s->clap.destroy = pluginDestroy;
@@ -2201,6 +2209,7 @@ const void* supple_entry_get_factory(const char* factoryId) {
     if (!std::strcmp(factoryId, CLAP_PRESET_DISCOVERY_FACTORY_ID) ||
         !std::strcmp(factoryId, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT)) {
         // Offered while any plugin in the catalog has presets.
+        const std::lock_guard lock(supple::catalogMutex());
         for (const supple::DefinitionPtr& d : supple::catalog().list())
             if (d->info().presets) return supple::plugin::presetDiscoveryFactory();
     }

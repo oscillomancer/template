@@ -510,6 +510,20 @@ TEST(the_descriptor_is_the_product_identity) {
     CHECK(factory()->create_plugin(factory(), &host.clap, "com.example.not-this") == nullptr);
 }
 
+// CLAP lets a host call the factory from any thread at once (tsan checks).
+TEST(the_factory_lists_from_several_threads_at_once) {
+    std::vector<std::thread> scans;
+    for (int t = 0; t < 4; ++t)
+        scans.emplace_back([] {
+            for (int k = 0; k < 50; ++k) {
+                const uint32_t n = factory()->get_plugin_count(factory());
+                for (uint32_t i = 0; i < n; ++i) (void)factory()->get_plugin_descriptor(factory(), i);
+            }
+        });
+    for (std::thread& t : scans) t.join();
+    CHECK(factory()->get_plugin_count(factory()) == 1);
+}
+
 TEST(the_host_parameter_list_is_the_table) {
     Instance i;
     CHECK(i.params->count(i.plugin) == params::kCount);

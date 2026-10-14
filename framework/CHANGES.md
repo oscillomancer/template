@@ -6,7 +6,9 @@ anything, after `framework/tools/update_framework.cmake` brings it in.
 
 ## 1.23.1
 
-What a product must do: nothing.
+What a product must do: a run-time product's `Catalog` is now called from
+whichever thread the host scans on (never the audio thread), one call at a
+time; it must not assume the main thread. Nothing else.
 
 - **Repeated editor rebuilds keep the attached editor alive** (`gui/Gui.cpp`).
   A native or fallback update could adopt a replacement before the GUI
@@ -21,6 +23,16 @@ What a product must do: nothing.
 - **Audio-port activation refuses invalid sample sizes** (`plugin/Plugin.cpp`).
   CLAP permits 0 (unspecified), 32 or 64; other values now fail without
   changing whether the sidechain is connected.
+- **Hosts may scan from several threads at once** (`core/Catalog.h`,
+  `plugin/Plugin.cpp`, `plugin/PresetDiscovery.cpp`). CLAP lets a host call
+  the plugin and preset-discovery factories from any thread, concurrently;
+  their lists of descriptors and the catalog were unguarded. They are now
+  used under `catalogMutex()`.
+- **A redefinition whose layer refuses the carried state says so**
+  (`plugin/Plugin.cpp`). The plugin still starts from its defaults; the
+  host's log now tells why.
+- **`drawOffscreen()` documents its thread** (`gui/Offscreen.h`): the editor
+  and what its edits call run on the drawing thread while the caller waits.
 
 ## 1.23.0
 
